@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Publisher Rocket Reader</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+
+      <div id="titlebar">
+        <h1>Publisher Rocket Reader</h1>
+        <div id="rocket-status">
+          <span class="status-dot" id="status-dot"></span>
+          <span id="status-label">Checking…</span>
+          <button id="btn-launch">Launch Rocket</button>
+        </div>
+      </div>
+
+      <nav id="sidebar">
+        <div class="nav-section">
+          <div class="nav-label">Tools</div>
+          <button class="nav-item active" data-panel="category">Category Analyzer</button>
+          <button class="nav-item" data-panel="csv">CSV Analyzer</button>
+        </div>
+        <div class="nav-section settings-section">
+          <div class="nav-label">Settings</div>
+          <button class="nav-item" data-panel="settings">API Settings</button>
+        </div>
+      </nav>
+
+      <main id="main">
+
+        <!-- Category Analyzer -->
+        <div id="category-panel" class="panel visible">
+          <div class="panel-title">Category Analyzer</div>
+          <p class="panel-desc">
+            Enter one category path per line, e.g.<br>
+            <code>Literature &amp; Fiction &gt; Historical Fiction &gt; Ancient World</code>
+          </p>
+          <textarea id="category-paths"
+            placeholder="Literature &amp; Fiction > Historical Fiction > Ancient World&#10;Mystery, Thriller &amp; Suspense > Mystery > Historical"></textarea>
+          <button class="btn" id="btn-run-category">Run Category Analyzer</button>
+
+          <div class="output-area">
+            <div class="output-tabs">
+              <button class="output-tab active" data-tab="log">Log</button>
+              <button class="output-tab" data-tab="markdown">Markdown</button>
+            </div>
+            <div class="output-pane" id="log-pane">
+              <pre id="log-output"></pre>
+            </div>
+            <div class="output-pane hidden" id="markdown-pane">
+              <pre id="markdown-output"></pre>
+            </div>
+            <button id="btn-copy">Copy markdown</button>
+          </div>
+        </div>
+
+        <!-- CSV Analyzer -->
+        <div id="csv-panel" class="panel">
+          <div class="panel-title">CSV Analyzer</div>
+          <p class="panel-desc">
+            Drop a Competition Analyzer CSV exported from Publisher Rocket.
+          </p>
+          <div id="csv-drop">Drop CSV here or click to browse</div>
+          <div id="csv-filename"></div>
+          <button class="btn" id="btn-run-csv">Analyze CSV</button>
+
+          <div class="output-area">
+            <div class="output-tabs">
+              <button class="output-tab active" data-tab="csv-log">Log</button>
+              <button class="output-tab" data-tab="csv-markdown">Markdown</button>
+            </div>
+            <div class="output-pane" id="csv-log-pane">
+              <pre id="csv-log-output"></pre>
+            </div>
+            <div class="output-pane hidden" id="csv-markdown-pane">
+              <pre id="csv-markdown-output"></pre>
+            </div>
+            <button id="btn-copy-csv">Copy markdown</button>
+          </div>
+        </div>
+
+        <!-- Settings -->
+        <div id="settings-panel" class="panel">
+          <div class="panel-title">API Settings</div>
+          <p class="panel-desc">
+            Settings are saved locally on your Mac and never transmitted anywhere except directly to Anthropic.
+          </p>
+
+          <div class="settings-form">
+            <label for="api-key">Anthropic API Key</label>
+            <input type="password" id="api-key" placeholder="sk-ant-…" autocomplete="off" />
+
+            <label for="model-select">Model</label>
+            <select id="model-select">
+              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (fast, cheap)</option>
+              <option value="claude-sonnet-4-6" selected>Claude Sonnet 4.6 (recommended)</option>
+              <option value="claude-opus-4-6">Claude Opus 4.6 (most capable)</option>
+            </select>
+
+            <button class="btn" id="btn-save-settings">Save Settings</button>
+            <span id="settings-saved" class="settings-saved"></span>
+          </div>
+        </div>
+
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

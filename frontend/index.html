@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Publisher Rocket Reader</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+
+      <!-- Title bar -->
+      <div id="titlebar">
+        <h1>Publisher Rocket Reader</h1>
+        <div id="rocket-status">
+          <span class="status-dot" id="status-dot"></span>
+          <span id="status-label">Checking…</span>
+          <button id="btn-launch">Launch Rocket</button>
+        </div>
+      </div>
+
+      <!-- Sidebar -->
+      <nav id="sidebar">
+        <div class="nav-section">
+          <div class="nav-label">Tools</div>
+          <button class="nav-item active" data-panel="category">Category Analyzer</button>
+          <button class="nav-item" data-panel="csv">CSV Analyzer</button>
+        </div>
+      </nav>
+
+      <!-- Main -->
+      <main id="main">
+
+        <!-- Category Analyzer panel -->
+        <div id="category-panel" class="panel visible">
+          <div class="panel-title">Category Analyzer</div>
+          <p style="color:var(--text-muted);margin-bottom:12px;font-size:13px;">
+            Enter one category path per line, e.g.<br>
+            <code style="font-family:var(--mono)">Literature &amp; Fiction &gt; Historical Fiction &gt; Ancient World</code>
+          </p>
+          <textarea id="category-paths" placeholder="Literature &amp; Fiction > Historical Fiction > Ancient World&#10;Mystery, Thriller &amp; Suspense > Mystery > Historical"></textarea>
+          <button class="btn" id="btn-run-category">Run Category Analyzer</button>
+
+          <div class="output-area">
+            <div class="output-tabs">
+              <button class="output-tab active" data-tab="log">Log</button>
+              <button class="output-tab" data-tab="markdown">Markdown</button>
+            </div>
+            <div class="output-pane" id="log-pane">
+              <pre id="log-output"></pre>
+            </div>
+            <div class="output-pane" id="markdown-pane" style="display:none">
+              <pre id="markdown-output"></pre>
+            </div>
+            <button id="btn-copy">Copy markdown</button>
+          </div>
+        </div>
+
+        <!-- CSV Analyzer panel -->
+        <div id="csv-panel" class="panel">
+          <div class="panel-title">CSV Analyzer</div>
+          <p style="color:var(--text-muted);margin-bottom:12px;font-size:13px;">
+            Drop a Competition Analyzer CSV exported from Publisher Rocket.
+          </p>
+          <div id="csv-drop">Drop CSV here or click to browse</div>
+          <div id="csv-filename"></div>
+          <button class="btn" id="btn-run-csv">Analyze CSV</button>
+        </div>
+
+      </main>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

@@ -1,0 +1,19 @@
+# Binaries
+build/bin/
+build/bin.nosync/
+
+# Go build cache
+*.exe
+*.test
+
+# Frontend build output
+frontend/dist/
+frontend/node_modules/
+frontend/package-lock.json
+frontend/package.json.md5
+
+# Wails dev temp
+frontend/wailsjs/
+
+# macOS
+.DS_Store

@@ -1,15 +1,12 @@
-// competition_analyzer.rs — Competitive positioning analysis
+// competition_analyzer.rs — Competition analysis via PR CSV exports only
 //
-// Flow:
-//   1. Read _analysis/kdp-keywords.md for the 7 optimized keyword strings
-//   2. For each keyword: open PR Competition Analyzer, type keyword, scrape 10 books
-//   3. For each book ASIN: fetch Amazon product page → subtitle, description, series
-//   4. Fetch cover images (base64) for top 5 books per keyword
-//   5. Send all text data + covers to Claude → unified brief report
-//   6. Save full data to _analysis/competition-data.json
-//   7. Save brief report to _analysis/competition-report.md
+// Per keyword:
+//   1. Competition Analyzer → search → Export Competition Data → Export All → CSV
+//   2. Competition Analyzer → Unleash the Categories → Export Categories → CSV
+//
+// Both CSVs moved to _analysis/competition-csvs/
+// Then: parse → fetch covers → AI analysis → competition-report.md + competition-data.json
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
 use std::time::Duration;
@@ -27,26 +24,37 @@ use crate::models;
 pub struct CompetitorBook {
     pub title:        String,
     pub subtitle:     String,
+    pub review_score: String,
+    pub ratings:      String,
     pub author:       String,
-    pub asin:         String,
-    pub rank:         String,
-    pub reviews:      String,
-    pub rating:       String,
+    pub age:          String,
+    pub absr:         String,
+    pub pages:        String,
+    pub kwt:          String,
     pub price:        String,
-    pub monthly_sales: String,
-    pub cover_url:    String,
-    pub description:  String,
-    pub series:       String,
-    pub pub_date:     String,
-    pub page_count:   String,
+    pub dy_sales:     String,
+    pub mo_sales:     String,
+    pub amazon_url:   String,
     pub keyword:      String,
+    pub cover_url:    String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CategoryRow {
+    pub category:      String,
+    pub sales_to_one:  String,
+    pub sales_to_ten:  String,
+    pub publisher_pct: String,
+    pub ku_pct:        String,
+    pub keyword:       String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CompetitionData {
-    pub generated: String,
+    pub generated:         String,
     pub keywords_analyzed: Vec<String>,
-    pub books: Vec<CompetitorBook>,
+    pub books:             Vec<CompetitorBook>,
+    pub categories:        Vec<CategoryRow>,
 }
 
 #[derive(Serialize)]
@@ -61,7 +69,7 @@ pub struct CompetitionRequest {
     pub folder:  String,
     pub api_key: String,
     pub model:   String,
-    pub store:   String, // "Books" or "Kindle"
+    pub store:   String,
 }
 
 // ── Command ───────────────────────────────────────────────────────────────────
@@ -85,19 +93,25 @@ fn run_competition_analysis(app: &AppHandle, req: &CompetitionRequest) -> Compet
     let analysis_dir = folder.join("_analysis");
 
     if !analysis_dir.exists() {
-        return err("No _analysis folder. Run Full Analysis first.");
+        return err("No _analysis folder. Run Full Analysis and PR Keywords first.");
     }
 
-    crate::reset_cancel();
-
-    // ── Step 1: Load keywords ─────────────────────────────────────────────────
-    let keywords = load_keywords(&analysis_dir);
+    let keywords = load_pr_keywords(&analysis_dir);
     if keywords.is_empty() {
-        return err("No PR search terms found. Run \'Generate PR Keywords\' first.");
+        return err("No PR search terms found. Run 'PR Keywords' first.");
     }
-    emit(app, &format!("Loaded {} keyword strings to analyze.", keywords.len()));
+    emit(app, &format!("Loaded {} PR keyword(s).", keywords.len()));
 
-    // ── Step 2: Connect to Publisher Rocket ───────────────────────────────────
+    let csvs_dir = analysis_dir.join("competition-csvs");
+    if let Err(e) = fs::create_dir_all(&csvs_dir) {
+        return err(&format!("Cannot create competition-csvs folder: {}", e));
+    }
+
+    let downloads = match home_dir() {
+        Some(h) => h.join("Downloads"),
+        None    => return err("Cannot find home directory"),
+    };
+
     emit(app, "Connecting to Publisher Rocket...");
     let target = match cdp::ensure_rocket() {
         Ok(t) => t,
@@ -109,117 +123,126 @@ fn run_competition_analysis(app: &AppHandle, req: &CompetitionRequest) -> Compet
     };
     emit(app, "  CDP session established.");
 
-    // ── Step 3: Competition Analyzer per keyword ──────────────────────────────
-    let mut all_books: Vec<CompetitorBook> = Vec::new();
-    let mut analyzed_keywords: Vec<String> = Vec::new();
-    let mut seen_asins: std::collections::HashSet<String> = std::collections::HashSet::new();
+    crate::reset_cancel();
+
+    // ── Per-keyword: export both CSVs ─────────────────────────────────────────
+    let mut book_csvs:     Vec<(PathBuf, String)> = Vec::new();
+    let mut category_csvs: Vec<(PathBuf, String)> = Vec::new();
 
     for (i, keyword) in keywords.iter().enumerate() {
-        emit(app, &format!("[{}/{}] Analyzing: \"{}\"", i + 1, keywords.len(), keyword));
+        if crate::is_cancelled() { emit(app, "⚠ Cancelled."); break; }
 
-        let books = scrape_pr_competition(&mut session, keyword, &req.store, app);
-        emit(app, &format!("  {} books found.", books.len()));
+        emit(app, &format!("[{}/{}] \"{}\"", i + 1, keywords.len(), keyword));
 
-        for book in books {
-            // Deduplicate by ASIN across keywords
-            if !seen_asins.contains(&book.asin) && !book.asin.is_empty() {
-                seen_asins.insert(book.asin.clone());
-                all_books.push(book);
+        // ── Books CSV ─────────────────────────────────────────────────────────
+        match export_books_csv(&mut session, keyword, &req.store, &downloads, &csvs_dir, app) {
+            Ok(p)  => {
+                emit(app, &format!("  ✓ Books CSV: {}", p.file_name().unwrap_or_default().to_string_lossy()));
+                book_csvs.push((p, keyword.clone()));
             }
+            Err(e) => emit(app, &format!("  ⚠ Books CSV failed: {}", e)),
         }
-        analyzed_keywords.push(keyword.clone());
 
-        // Small delay between keywords
+        // ── Categories CSV (Unleash the Categories) ───────────────────────────
+        match export_categories_csv(&mut session, &downloads, &csvs_dir, keyword, app) {
+            Ok(p)  => {
+                emit(app, &format!("  ✓ Categories CSV: {}", p.file_name().unwrap_or_default().to_string_lossy()));
+                category_csvs.push((p, keyword.clone()));
+            }
+            Err(e) => emit(app, &format!("  ⚠ Categories CSV failed: {}", e)),
+        }
+
         std::thread::sleep(Duration::from_secs(2));
+    }
 
-        // Check for cancellation
-        if crate::is_cancelled() {
-            emit(app, "⚠ Cancelled by user.");
-            break;
+    if book_csvs.is_empty() {
+        return err("No book CSVs exported. Check Publisher Rocket is open and logged in.");
+    }
+
+    // ── Parse ─────────────────────────────────────────────────────────────────
+    emit(app, "Parsing CSVs...");
+
+    let mut all_books: Vec<CompetitorBook> = Vec::new();
+    let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for (path, keyword) in &book_csvs {
+        match parse_books_csv(path, keyword) {
+            Ok(books) => {
+                emit(app, &format!("  {} books — \"{}\"", books.len(), keyword));
+                for b in books {
+                    if !seen_urls.contains(&b.amazon_url) {
+                        seen_urls.insert(b.amazon_url.clone());
+                        all_books.push(b);
+                    }
+                }
+            }
+            Err(e) => emit(app, &format!("  ⚠ {}", e)),
         }
     }
 
-    emit(app, &format!("Total unique books scraped: {}", all_books.len()));
+    let mut all_categories: Vec<CategoryRow> = Vec::new();
+    let mut seen_cats: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    // ── Step 4: Enrich with Amazon product pages ──────────────────────────────
-    emit(app, "Fetching Amazon product pages for top books...");
-    let to_enrich: Vec<_> = all_books.iter()
-        .filter(|b| !b.asin.is_empty())
-        .take(20) // cap at 20 to keep it fast
-        .map(|b| b.asin.clone())
-        .collect();
-
-    let amazon_data = fetch_amazon_pages(&to_enrich, app);
-
-    // Merge Amazon data back into books
-    for book in &mut all_books {
-        if let Some(data) = amazon_data.get(&book.asin) {
-            if book.subtitle.is_empty() {
-                book.subtitle = data.get("subtitle").cloned().unwrap_or_default();
+    for (path, keyword) in &category_csvs {
+        match parse_categories_csv(path, keyword) {
+            Ok(cats) => {
+                emit(app, &format!("  {} categories — \"{}\"", cats.len(), keyword));
+                for c in cats {
+                    if !seen_cats.contains(&c.category) {
+                        seen_cats.insert(c.category.clone());
+                        all_categories.push(c);
+                    }
+                }
             }
-            if book.description.is_empty() {
-                book.description = data.get("description").cloned().unwrap_or_default();
-            }
-            if book.series.is_empty() {
-                book.series = data.get("series").cloned().unwrap_or_default();
-            }
-            if book.pub_date.is_empty() {
-                book.pub_date = data.get("pub_date").cloned().unwrap_or_default();
-            }
-            if book.page_count.is_empty() {
-                book.page_count = data.get("page_count").cloned().unwrap_or_default();
-            }
+            Err(e) => emit(app, &format!("  ⚠ {}", e)),
         }
     }
 
-    // ── Step 5: Fetch cover images (top 10 unique books) ─────────────────────
+    emit(app, &format!("Total: {} unique books, {} unique categories", all_books.len(), all_categories.len()));
+
+    // ── Cover images ──────────────────────────────────────────────────────────
     emit(app, "Fetching cover images...");
-    let cover_books: Vec<_> = all_books.iter()
-        .filter(|b| !b.cover_url.is_empty())
-        .take(10)
-        .collect();
+    let mut covers_b64: Vec<(String, String)> = Vec::new();
 
-    let mut covers_b64: Vec<(String, String)> = Vec::new(); // (title, base64)
-    for book in &cover_books {
-        match fetch_image_b64(&book.cover_url) {
-            Ok(b64) => {
-                emit(app, &format!("  ✓ Cover: {}", book.title));
-                covers_b64.push((book.title.clone(), b64));
+    for book in all_books.iter().take(10) {
+        if let Some(asin) = extract_asin(&book.amazon_url) {
+            let url = format!("https://images-na.ssl-images-amazon.com/images/P/{}.01.LZZZZZZZ.jpg", asin);
+            match fetch_image_b64(&url) {
+                Ok(b64) => {
+                    emit(app, &format!("  ✓ {}", book.title));
+                    covers_b64.push((book.title.clone(), b64));
+                }
+                Err(e) => emit(app, &format!("  ⚠ {}: {}", book.title, e)),
             }
-            Err(e) => emit(app, &format!("  ⚠ Cover fetch failed for {}: {}", book.title, e)),
         }
     }
-    emit(app, &format!("  {} covers fetched.", covers_b64.len()));
 
-    // ── Step 6: Save raw data ─────────────────────────────────────────────────
-    let competition_data = CompetitionData {
-        generated: chrono::Utc::now().to_rfc3339(),
-        keywords_analyzed: analyzed_keywords.clone(),
-        books: all_books.clone(),
+    // ── Save raw data ─────────────────────────────────────────────────────────
+    let data = CompetitionData {
+        generated:         chrono::Utc::now().to_rfc3339(),
+        keywords_analyzed: keywords.clone(),
+        books:             all_books.clone(),
+        categories:        all_categories.clone(),
     };
-    if let Ok(json) = serde_json::to_string_pretty(&competition_data) {
-        let _ = fs::write(analysis_dir.join("competition-data.json"), json);
+    if let Ok(json) = serde_json::to_string_pretty(&data) {
+        let _ = fs::write(analysis_dir.join("competition-data.json"), &json);
         emit(app, "  ✓ competition-data.json saved.");
     }
 
-    // ── Step 7: AI analysis ───────────────────────────────────────────────────
-    emit(app, "Sending data to AI for competitive analysis...");
+    // ── AI analysis ───────────────────────────────────────────────────────────
+    emit(app, "Running AI analysis...");
     let analysis_model = models::resolve_analysis_model(&req.model);
     emit(app, &format!("  Using {}", analysis_model));
 
-    // Load genre context
     let genre_context = fs::read_to_string(analysis_dir.join("genre-analysis.md"))
         .unwrap_or_default();
 
     match call_competition_ai(
-        &req.api_key,
-        analysis_model,
-        &all_books,
-        &covers_b64,
-        &genre_context,
-        &analyzed_keywords,
+        &req.api_key, analysis_model,
+        &all_books, &all_categories,
+        &covers_b64, &genre_context, &keywords,
     ) {
-        Err(e) => err(&format!("AI analysis error: {}", e)),
+        Err(e) => err(&format!("AI error: {}", e)),
         Ok(report) => {
             let _ = fs::write(analysis_dir.join("competition-report.md"), &report);
             emit(app, "✓ competition-report.md saved.");
@@ -228,435 +251,455 @@ fn run_competition_analysis(app: &AppHandle, req: &CompetitionRequest) -> Compet
     }
 }
 
-// ── PR Competition Analyzer scraping ─────────────────────────────────────────
+// ── CDP: export books CSV ─────────────────────────────────────────────────────
 
-fn scrape_pr_competition(
+fn export_books_csv(
     session: &mut cdp::Session,
     keyword: &str,
     store: &str,
+    downloads: &Path,
+    csvs_dir: &Path,
     app: &AppHandle,
-) -> Vec<CompetitorBook> {
+) -> Result<PathBuf, String> {
+    nav_competition(session)?;
+    open_new_search(session)?;
+    type_keyword(session, keyword)?;
+    std::thread::sleep(Duration::from_millis(300));
+    set_store_dropdown(session, store);
+    std::thread::sleep(Duration::from_millis(300));
+    click_go(session)?;
+    emit(app, "  Waiting for results...");
+    wait_for_results(session)?;
 
-    // Navigate to Competition Analyzer
-    let nav_js = r#"
-        const el = Array.from(document.querySelectorAll('p,span,div,a,li'))
-          .find(e => e.children.length === 0 &&
-            (e.textContent.trim() === 'Competition Analyzer' ||
-             e.textContent.trim() === 'Competitor Analysis'));
-        if (!el) return JSON.stringify(null);
-        el.scrollIntoView({block:'center'});
-        const r = el.getBoundingClientRect();
-        return JSON.stringify({x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)});
-    "#;
+    // Export Competition Data → Export All
+    click_button_by_exact_text(session, "Export Competition Data")?;
+    std::thread::sleep(Duration::from_millis(800));
+    click_button_by_exact_text(session, "Export All")?;
+    emit(app, "  Waiting for books CSV...");
 
-    if let Ok(s) = session.eval(nav_js, 8) {
-        if let Ok(v) = serde_json::from_str::<Value>(&s) {
-            if let (Some(x), Some(y)) = (v["x"].as_f64(), v["y"].as_f64()) {
-                let _ = session.click(x, y);
-                std::thread::sleep(Duration::from_secs(2));
-            }
-        }
+    let csv = wait_for_new_csv(downloads, 15)?;
+    let dest = csvs_dir.join(csv.file_name().unwrap_or_default());
+    fs::rename(&csv, &dest).map_err(|e| format!("Move failed: {}", e))?;
+    Ok(dest)
+}
+
+// ── CDP: export categories CSV (Unleash the Categories) ───────────────────────
+
+fn export_categories_csv(
+    session: &mut cdp::Session,
+    downloads: &Path,
+    csvs_dir: &Path,
+    _keyword: &str,
+    app: &AppHandle,
+) -> Result<PathBuf, String> {
+    // We should already be on Competition Analyzer results — click Unleash the Categories
+    click_button_by_exact_text(session, "Unleash the Categories")
+        .map_err(|_| "Unleash the Categories button not found — run books export first".to_string())?;
+
+    // Wait for categories page (Export Categories button appears)
+    emit(app, "  Waiting for categories page...");
+    for _ in 0..30 {
+        std::thread::sleep(Duration::from_millis(500));
+        let v = session.eval(r#"
+            Array.from(document.querySelectorAll('button'))
+              .find(b => b.textContent.trim() === 'Export Categories') ? 'ready' : 'waiting'
+        "#, 5).unwrap_or_default();
+        if v.contains("ready") { break; }
     }
 
-    // Look for "New Competitor Analysis" button or the dialog input
-    let new_btn_js = r#"
-        const btn = Array.from(document.querySelectorAll('button,a,div,span'))
-          .find(e => e.textContent.trim() === 'New Competitor Analysis' ||
-                     e.textContent.trim() === 'New Analysis' ||
-                     e.textContent.trim().includes('New Competitor'));
-        if (!btn) return JSON.stringify(null);
-        btn.scrollIntoView({block:'center'});
-        const r = btn.getBoundingClientRect();
-        return JSON.stringify({x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)});
-    "#;
+    // Click Export Categories
+    click_button_by_exact_text(session, "Export Categories")?;
+    emit(app, "  Waiting for categories CSV...");
 
-    if let Ok(s) = session.eval(new_btn_js, 8) {
-        if let Ok(v) = serde_json::from_str::<Value>(&s) {
-            if let (Some(x), Some(y)) = (v["x"].as_f64(), v["y"].as_f64()) {
-                let _ = session.click(x, y);
-                std::thread::sleep(Duration::from_secs(1));
-            }
-        }
-    }
+    let csv = wait_for_new_csv(downloads, 15)?;
+    let dest = csvs_dir.join(csv.file_name().unwrap_or_default());
+    fs::rename(&csv, &dest).map_err(|e| format!("Move failed: {}", e))?;
 
-    // Type keyword into dialog input
-    let kw_json = serde_json::to_string(keyword).unwrap();
-    let type_js = format!(r#"
-        const input = document.querySelector('input[placeholder*="keyword"], input[type="text"]');
-        if (!input) return 'no input';
-        input.focus();
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
-        setter.call(input, {kw});
-        input.dispatchEvent(new Event('input', {{bubbles:true}}));
-        input.dispatchEvent(new Event('change', {{bubbles:true}}));
-        return 'ok';
-    "#, kw = kw_json);
-    let _ = session.eval(&type_js, 8);
+    // Go back to results for next keyword
+    click_button_by_exact_text(session, "Back").ok();
     std::thread::sleep(Duration::from_millis(500));
 
-    // Set store dropdown
-    let store_json = serde_json::to_string(store).unwrap();
-    let store_js = format!(r#"
+    Ok(dest)
+}
+
+// ── CDP helpers ───────────────────────────────────────────────────────────────
+
+fn nav_competition(session: &mut cdp::Session) -> Result<(), String> {
+    let _ = session.eval("window.location.hash = '#/keyword';", 5);
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(400));
+        let v = session.eval(r#"
+            Array.from(document.querySelectorAll('.menubar-selection'))
+              .find(e => e.textContent.trim() === 'Competition Analyzer') ? 'ready' : 'waiting'
+        "#, 5).unwrap_or_default();
+        if v.contains("ready") { break; }
+    }
+    let js = r#"
+        const el = Array.from(document.querySelectorAll('.menubar-selection'))
+          .find(e => e.textContent.trim() === 'Competition Analyzer');
+        if (!el) return JSON.stringify(null);
+        const r = el.getBoundingClientRect();
+        return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});
+    "#;
+    if let Ok(s) = session.eval(js, 8) {
+        if let Ok(v) = serde_json::from_str::<Value>(&s) {
+            if let (Some(x), Some(y)) = (v["x"].as_f64(), v["y"].as_f64()) {
+                let _ = session.click(x, y);
+                for _ in 0..10 {
+                    std::thread::sleep(Duration::from_millis(400));
+                    let h = session.eval("window.location.hash", 5).unwrap_or_default();
+                    if h.contains("competition") { return Ok(()); }
+                }
+                return Ok(());
+            }
+        }
+    }
+    Err("Competition Analyzer nav not found".to_string())
+}
+
+fn open_new_search(session: &mut cdp::Session) -> Result<(), String> {
+    let js = r#"
+        const btn = Array.from(document.querySelectorAll('button'))
+          .find(b => b.textContent.trim().includes('New') &&
+                    (b.textContent.includes('Analysis') || b.textContent.includes('Search') ||
+                     b.textContent.includes('Competitor')));
+        if (!btn) return JSON.stringify(null);
+        const r = btn.getBoundingClientRect();
+        return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});
+    "#;
+    if let Ok(s) = session.eval(js, 8) {
+        if let Ok(v) = serde_json::from_str::<Value>(&s) {
+            if let (Some(x), Some(y)) = (v["x"].as_f64(), v["y"].as_f64()) {
+                let _ = session.click(x, y);
+                std::thread::sleep(Duration::from_millis(800));
+                return Ok(());
+            }
+        }
+    }
+    // Already on fresh state
+    let has = session.eval(r#"document.querySelector('input[placeholder*="keyword"],input[placeholder*="Keyword"]') ? 'yes' : 'no'"#, 5).unwrap_or_default();
+    if has.contains("yes") { return Ok(()); }
+    Err("New search button not found".to_string())
+}
+
+fn type_keyword(session: &mut cdp::Session, keyword: &str) -> Result<(), String> {
+    for _ in 0..8 {
+        let v = session.eval(r#"document.querySelector('input[placeholder*="keyword"],input[placeholder*="Keyword"],input[type="text"]') ? 'found' : 'waiting'"#, 5).unwrap_or_default();
+        if v.contains("found") { break; }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    let js = r#"
+        const input = document.querySelector('input[placeholder*="keyword"],input[placeholder*="Keyword"],input[type="text"]');
+        if (!input) return JSON.stringify(null);
+        input.focus();
+        const r = input.getBoundingClientRect();
+        return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});
+    "#;
+    if let Ok(s) = session.eval(js, 8) {
+        if let Ok(v) = serde_json::from_str::<Value>(&s) {
+            if let (Some(x), Some(y)) = (v["x"].as_f64(), v["y"].as_f64()) {
+                let _ = session.click(x, y);
+                std::thread::sleep(Duration::from_millis(200));
+                session.select_all();
+                std::thread::sleep(Duration::from_millis(100));
+                session.send_backspace();
+                std::thread::sleep(Duration::from_millis(100));
+                for ch in keyword.chars() {
+                    session.send_char(ch);
+                    std::thread::sleep(Duration::from_millis(40));
+                }
+                return Ok(());
+            }
+        }
+    }
+    Err("Keyword input not found".to_string())
+}
+
+fn set_store_dropdown(session: &mut cdp::Session, store: &str) {
+    let sj = serde_json::to_string(store).unwrap();
+    let js = format!(r#"
         const sel = document.querySelector('select');
         if (!sel) return 'no select';
         const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype,'value').set;
         setter.call(sel, {s});
-        sel.dispatchEvent(new Event('change', {{bubbles:true}}));
-        return 'ok';
-    "#, s = store_json);
-    let _ = session.eval(&store_js, 8);
-    std::thread::sleep(Duration::from_millis(300));
+        sel.dispatchEvent(new Event('change',{{bubbles:true}}));
+        return sel.value;
+    "#, s = sj);
+    let _ = session.eval(&js, 5);
+}
 
-    // Click "Go Get Em Rocket!"
-    let go_js = r#"
+fn click_go(session: &mut cdp::Session) -> Result<(), String> {
+    let js = r#"
         const btn = Array.from(document.querySelectorAll('button'))
-          .find(b => b.textContent.trim().includes('Go Get Em') ||
-                     b.textContent.trim().includes('Go!') ||
-                     b.textContent.trim() === 'Search');
+          .find(b => b.textContent.trim().includes('Go') || b.textContent.trim() === 'Search');
         if (!btn) return JSON.stringify(null);
         const r = btn.getBoundingClientRect();
-        return JSON.stringify({x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)});
+        return JSON.stringify({x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)});
     "#;
-
-    if let Ok(s) = session.eval(go_js, 8) {
+    if let Ok(s) = session.eval(js, 8) {
         if let Ok(v) = serde_json::from_str::<Value>(&s) {
             if let (Some(x), Some(y)) = (v["x"].as_f64(), v["y"].as_f64()) {
                 let _ = session.click(x, y);
+                return Ok(());
             }
         }
     }
+    Err("Go button not found".to_string())
+}
 
-    // Wait for results
-    emit(app, "  Waiting for results...");
-    std::thread::sleep(Duration::from_secs(8));
+fn wait_for_results(session: &mut cdp::Session) -> Result<(), String> {
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(500));
+        let v = session.eval(r#"Array.from(document.querySelectorAll('button')).find(b=>b.textContent.trim()==='Export Competition Data')?'ready':'waiting'"#, 5).unwrap_or_default();
+        if v.contains("ready") { return Ok(()); }
+    }
+    Err("Results did not load in 20s".to_string())
+}
 
-    // Scrape results table
-    let scrape_js = format!(r#"
-        const kw = {kw};
-        const rows = Array.from(document.querySelectorAll('tr')).slice(1);
-        const books = [];
-        for (const row of rows) {{
-            const cells = Array.from(row.querySelectorAll('td'));
-            if (cells.length < 3) continue;
-            const img   = row.querySelector('img');
-            const link  = row.querySelector('a[href*="amazon.com"],a[href*="/dp/"]');
-            const asin  = link ? (link.href.match(/\/dp\/([A-Z0-9]{{10}})/) || [])[1] || '' : '';
-            const cover = img ? img.src : '';
-            books.push({{
-                title:        cells[0]?.querySelector('p,span,div,a')?.textContent.trim() || cells[0]?.textContent.trim() || '',
-                author:       cells[1]?.textContent.trim() || '',
-                rank:         cells[2]?.textContent.trim() || '',
-                reviews:      cells[3]?.textContent.trim() || '',
-                rating:       cells[4]?.textContent.trim() || '',
-                price:        cells[5]?.textContent.trim() || '',
-                monthly_sales: cells[6]?.textContent.trim() || '',
-                asin,
-                cover_url: cover,
-                keyword: kw,
-            }});
-        }}
-        return JSON.stringify(books.slice(0, 10));
-    "#, kw = kw_json);
-
-    let books: Vec<CompetitorBook> = match session.eval(&scrape_js, 15) {
-        Ok(ref s) if !s.is_empty() && s != "null" => {
-            match serde_json::from_str::<Vec<Value>>(s) {
-                Ok(vals) => vals.iter().map(|v| CompetitorBook {
-                    title:         v["title"].as_str().unwrap_or("").to_string(),
-                    author:        v["author"].as_str().unwrap_or("").to_string(),
-                    rank:          v["rank"].as_str().unwrap_or("").to_string(),
-                    reviews:       v["reviews"].as_str().unwrap_or("").to_string(),
-                    rating:        v["rating"].as_str().unwrap_or("").to_string(),
-                    price:         v["price"].as_str().unwrap_or("").to_string(),
-                    monthly_sales: v["monthly_sales"].as_str().unwrap_or("").to_string(),
-                    asin:          v["asin"].as_str().unwrap_or("").to_string(),
-                    cover_url:     v["cover_url"].as_str().unwrap_or("").to_string(),
-                    keyword:       v["keyword"].as_str().unwrap_or("").to_string(),
-                    subtitle:      String::new(),
-                    description:   String::new(),
-                    series:        String::new(),
-                    pub_date:      String::new(),
-                    page_count:    String::new(),
-                }).filter(|b| !b.title.is_empty()).collect(),
-                Err(_) => Vec::new(),
+/// Click any button whose exact trimmed text matches.
+fn click_button_by_exact_text(session: &mut cdp::Session, text: &str) -> Result<(), String> {
+    let tj = serde_json::to_string(text).unwrap();
+    let js = format!(r#"
+        const btn = Array.from(document.querySelectorAll('button'))
+          .find(b => b.textContent.trim() === {t});
+        if (!btn) return JSON.stringify(null);
+        btn.scrollIntoView({{block:'center'}});
+        const r = btn.getBoundingClientRect();
+        return JSON.stringify({{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}});
+    "#, t = tj);
+    // Poll up to 5s for the button to appear
+    for _ in 0..10 {
+        if let Ok(s) = session.eval(&js, 5) {
+            if let Ok(v) = serde_json::from_str::<Value>(&s) {
+                if let (Some(x), Some(y)) = (v["x"].as_f64(), v["y"].as_f64()) {
+                    let _ = session.click(x, y);
+                    std::thread::sleep(Duration::from_millis(300));
+                    return Ok(());
+                }
             }
         }
-        _ => Vec::new(),
-    };
-
-    books
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    Err(format!("Button '{}' not found", text))
 }
 
-// ── Amazon page fetching ──────────────────────────────────────────────────────
-
-fn fetch_amazon_pages(asins: &[String], app: &AppHandle) -> HashMap<String, HashMap<String, String>> {
-    let mut results = HashMap::new();
-
-    for asin in asins {
-        emit(app, &format!("  Fetching Amazon page: {}", asin));
-        match fetch_amazon_page(asin) {
-            Ok(data) => { results.insert(asin.clone(), data); }
-            Err(e)   => emit(app, &format!("  ⚠ {}: {}", asin, e)),
-        }
-        // Polite delay
-        std::thread::sleep(Duration::from_millis(800));
-    }
-
-    results
-}
-
-fn fetch_amazon_page(asin: &str) -> Result<HashMap<String, String>, String> {
-    let url = format!("https://www.amazon.com/dp/{}", asin);
-
-    let body = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-        .build()
-        .unwrap()
-        .get(&url)
-        .header("Accept-Language", "en-US,en;q=0.9")
-        .send()
-        .map_err(|e| e.to_string())?
-        .text()
-        .map_err(|e| e.to_string())?;
-
-    let mut data = HashMap::new();
-
-    // Extract subtitle — appears after title in <span id="productSubtitle">
-    if let Some(sub) = extract_between(&body, r#"id="productSubtitle""#, "</span>") {
-        let clean = strip_html(&sub).trim().to_string();
-        if !clean.is_empty() { data.insert("subtitle".to_string(), clean); }
-    }
-
-    // Extract series
-    if let Some(series) = extract_between(&body, r#"id="seriesBulletWidget""#, "</span>") {
-        let clean = strip_html(&series).trim().to_string();
-        if !clean.is_empty() { data.insert("series".to_string(), clean); }
-    }
-
-    // Extract description — in <div id="bookDescription_feature_div">
-    if let Some(desc) = extract_between(&body, r#"id="bookDescription_feature_div""#, "</div>") {
-        let clean = strip_html(&desc).trim().to_string();
-        // Truncate to ~500 chars for AI
-        let truncated = if clean.len() > 500 { clean[..500].to_string() + "…" } else { clean };
-        if !truncated.is_empty() { data.insert("description".to_string(), truncated); }
-    }
-
-    // Extract pub date
-    if let Some(pub_date) = extract_between(&body, "Publication date", "</span>") {
-        let clean = strip_html(&pub_date).trim()
-            .trim_start_matches(':').trim().to_string();
-        if !clean.is_empty() && clean.len() < 30 {
-            data.insert("pub_date".to_string(), clean);
+fn wait_for_new_csv(downloads: &Path, timeout_secs: u64) -> Result<PathBuf, String> {
+    let before: std::collections::HashSet<PathBuf> = list_csvs(downloads);
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs() < timeout_secs {
+        std::thread::sleep(Duration::from_millis(500));
+        let after = list_csvs(downloads);
+        let mut new: Vec<_> = after.difference(&before).cloned().collect();
+        if !new.is_empty() {
+            new.sort_by_key(|p| std::cmp::Reverse(
+                p.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+            ));
+            return Ok(new.remove(0));
         }
     }
+    Err(format!("No CSV appeared in Downloads within {}s", timeout_secs))
+}
 
-    // Extract page count
-    if let Some(pages) = extract_between(&body, "Print length", "</span>") {
-        let clean = strip_html(&pages).trim()
-            .trim_start_matches(':').trim().to_string();
-        if !clean.is_empty() && clean.len() < 20 {
-            data.insert("page_count".to_string(), clean);
+fn list_csvs(dir: &Path) -> std::collections::HashSet<PathBuf> {
+    fs::read_dir(dir).map(|e| e.flatten()
+        .filter(|e| e.file_name().to_string_lossy().to_lowercase().ends_with(".csv"))
+        .map(|e| e.path()).collect()
+    ).unwrap_or_default()
+}
+
+// ── CSV Parsers ───────────────────────────────────────────────────────────────
+
+fn parse_books_csv(path: &Path, keyword: &str) -> Result<Vec<CompetitorBook>, String> {
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let content = content.trim_start_matches('\u{feff}');
+    let mut books = Vec::new();
+    let mut lines = content.lines();
+    lines.next(); // skip header
+    for line in lines {
+        if line.trim().is_empty() { continue; }
+        let f = parse_csv_line(line);
+        if f.len() < 13 { continue; }
+        books.push(CompetitorBook {
+            title: f[0].clone(), subtitle: f[1].clone(),
+            review_score: f[2].clone(), ratings: f[3].clone(),
+            author: f[4].clone(), age: f[5].clone(),
+            absr: f[6].clone(), pages: f[7].clone(),
+            kwt: f[8].clone(), price: f[9].clone(),
+            dy_sales: f[10].clone(), mo_sales: f[11].clone(),
+            amazon_url: f[12].clone(),
+            keyword: keyword.to_string(), cover_url: String::new(),
+        });
+    }
+    Ok(books)
+}
+
+fn parse_categories_csv(path: &Path, keyword: &str) -> Result<Vec<CategoryRow>, String> {
+    // Columns: category, sales1, sales10, largePublisher, kindleUnlimited
+    let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let content = content.trim_start_matches('\u{feff}');
+    let mut rows = Vec::new();
+    let mut lines = content.lines();
+    lines.next(); // skip header
+    for line in lines {
+        if line.trim().is_empty() { continue; }
+        let f = parse_csv_line(line);
+        if f.len() < 5 { continue; }
+        rows.push(CategoryRow {
+            category:      f[0].clone(),
+            sales_to_one:  f[1].clone(),
+            sales_to_ten:  f[2].clone(),
+            publisher_pct: f[3].clone(),
+            ku_pct:        f[4].clone(),
+            keyword:       keyword.to_string(),
+        });
+    }
+    Ok(rows)
+}
+
+fn parse_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                if in_quotes && chars.peek() == Some(&'"') { chars.next(); current.push('"'); }
+                else { in_quotes = !in_quotes; }
+            }
+            ',' if !in_quotes => { fields.push(current.trim().to_string()); current = String::new(); }
+            _ => current.push(ch),
         }
     }
-
-    Ok(data)
+    fields.push(current.trim().to_string());
+    fields
 }
 
-fn extract_between(html: &str, start_marker: &str, end_tag: &str) -> Option<String> {
-    let start = html.find(start_marker)?;
-    let after = &html[start..];
-    // Find the next > to skip past the opening tag
-    let content_start = after.find('>')? + 1;
-    let content = &after[content_start..];
-    let end = content.find(end_tag)?;
-    Some(content[..end].to_string())
-}
-
-fn strip_html(html: &str) -> String {
-    let mut out = String::new();
-    let mut in_tag = false;
-    for c in html.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _   => if !in_tag { out.push(c); }
-        }
-    }
-    // Collapse whitespace
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-// ── Cover image fetching ──────────────────────────────────────────────────────
-
-fn fetch_image_b64(url: &str) -> Result<String, String> {
-    // Skip data: URLs and empty
-    if url.is_empty() || url.starts_with("data:") { return Err("invalid url".to_string()); }
-
-    let bytes = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .user_agent("Mozilla/5.0")
-        .build()
-        .unwrap()
-        .get(url)
-        .send()
-        .map_err(|e| e.to_string())?
-        .bytes()
-        .map_err(|e| e.to_string())?;
-
-    use base64::Engine;
-    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
-}
-
-// ── AI analysis ───────────────────────────────────────────────────────────────
+// ── AI Analysis ───────────────────────────────────────────────────────────────
 
 fn call_competition_ai(
     api_key: &str,
     model: &str,
     books: &[CompetitorBook],
-    covers: &[(String, String)], // (title, base64_jpeg)
+    categories: &[CategoryRow],
+    covers: &[(String, String)],
     genre_context: &str,
     keywords: &[String],
 ) -> Result<String, String> {
 
-    // Build compact text summary of all books
-    let mut book_summary = String::new();
+    // Build book summary
+    let mut book_text = String::new();
     for (i, b) in books.iter().take(20).enumerate() {
-        book_summary.push_str(&format!(
-            "{}. \"{}\" {}{} by {} | Rank: {} | Reviews: {} ({}) | Price: ${} | Sales/mo: {}\n",
-            i + 1,
-            b.title,
-            if b.subtitle.is_empty() { String::new() } else { format!(": {}", b.subtitle) },
-            if b.series.is_empty() { String::new() } else { format!(" [{}]", b.series) },
-            b.author,
-            b.rank,
-            b.reviews,
-            b.rating,
-            b.price,
-            b.monthly_sales,
+        book_text.push_str(&format!(
+            "{}. \"{}\"{}  by {}  ABSR:{}  {} ratings ({})  {}  MO:{}\n",
+            i + 1, b.title,
+            if b.subtitle.is_empty() { String::new() } else { format!(" ({})", b.subtitle) },
+            b.author, b.absr, b.ratings, b.review_score, b.price, b.mo_sales
         ));
-        if !b.description.is_empty() {
-            book_summary.push_str(&format!("   Blurb: {}\n", &b.description[..b.description.len().min(200)]));
-        }
     }
 
-    let system = r#"You are a book marketing expert helping an indie author compete in their genre.
+    // Build category summary — sort by sales_to_ten ascending (easiest to rank)
+    let mut cat_rows = categories.to_vec();
+    cat_rows.sort_by(|a, b| {
+        let av: u64 = a.sales_to_ten.parse().unwrap_or(999999);
+        let bv: u64 = b.sales_to_ten.parse().unwrap_or(999999);
+        av.cmp(&bv)
+    });
 
-You will receive:
-- The book's genre context
-- Data on 10-20 competing books (titles, subtitles, series, rankings, reviews, pricing, descriptions)
-- Cover images of the top competitors
+    let mut cat_text = String::new();
+    for c in cat_rows.iter().take(20) {
+        cat_text.push_str(&format!(
+            "  {} | #1:{} #10:{} | Pub:{}  KU:{}\n",
+            c.category, c.sales_to_one, c.sales_to_ten, c.publisher_pct, c.ku_pct
+        ));
+    }
 
-Produce a BRIEF competitive positioning report. Be specific and direct. No padding.
+    let system = r#"You are a book publishing strategist helping an indie author maximize sales.
 
-Return ONLY a JSON object with this exact structure:
+You have two data sources from Publisher Rocket:
+1. Competition Analyzer: the top competing books for relevant keywords
+2. Unleash Categories: all categories those books rank in, with competition stats
+
+Use both to produce a BRIEF, ACTIONABLE positioning brief.
+
+Return ONLY a JSON object — no markdown, no preamble:
 {
-  "cover": "2-3 bullet points on cover design patterns and what to do/avoid",
-  "title": "2-3 bullet points on title conventions and power words",
-  "subtitle": "2-3 bullet points on subtitle formula and examples",
-  "series": "1-2 bullet points on series naming patterns",
-  "pricing": "ebook and print sweet spots with specific numbers",
-  "positioning": "2-3 bullet points on how to position this book against competition",
-  "top_comps": ["Book Title by Author — one sentence on why it matters", ...up to 3],
-  "summary": "One paragraph synthesis — the single most important thing to get right"
+  "best_categories": ["Full > Category > Path — reason it's good (sales#1/sales#10)", "(2-3 best opportunities)"],
+  "avoid_categories": ["Category — reason (too competitive or wrong fit)"],
+  "cover": "2-3 bullet points on cover design patterns",
+  "title": "2-3 bullet points on title conventions",
+  "subtitle": "2-3 bullet points on subtitle formula with example",
+  "series": "1-2 bullet points on series naming",
+  "pricing": "ebook and print sweet spots with specific $ numbers",
+  "positioning": "2-3 bullet points on differentiation",
+  "top_comps": ["Title by Author — why it matters", "(up to 3)"],
+  "summary": "One paragraph: what matters most for this book's success"
 }"#;
 
     let user_text = format!(
-        "Genre context:\n{}\n\nKeywords analyzed: {}\n\nCompeting books:\n{}",
-        if genre_context.len() > 1000 { &genre_context[..1000] } else { genre_context },
+        "Genre: {}\nKeywords analyzed: {}\n\nCOMPETING BOOKS:\n{}\nCATEGORY OPPORTUNITIES (sorted easiest to rank first):\n{}",
+        if genre_context.len() > 600 { &genre_context[..600] } else { genre_context },
         keywords.join(", "),
-        book_summary
+        book_text,
+        cat_text
     );
 
-    // Build message with covers if available
-    if covers.is_empty() {
-        // Text-only call
-        let raw = call_anthropic(api_key, model, system, &user_text, 1000)?;
-        return build_report_from_json(&raw, books, keywords);
-    }
+    let raw = if covers.is_empty() {
+        call_anthropic(api_key, model, system, &user_text, 1200)?
+    } else {
+        let mut parts = vec![json!({"type":"text","text":user_text})];
+        for (title, b64) in covers.iter().take(8) {
+            parts.push(json!({"type":"text","text":format!("Cover: {}", title)}));
+            parts.push(json!({"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64}}));
+        }
+        let body = json!({
+            "model": model, "max_tokens": 1200,
+            "system": system,
+            "messages": [{"role":"user","content":parts}]
+        });
+        let resp = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(120)).build().unwrap()
+            .post("https://api.anthropic.com/v1/messages")
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&body).send().map_err(|e| format!("API: {}", e))?;
+        let jv: Value = resp.json().map_err(|e| format!("Parse: {}", e))?;
+        if let Some(e) = jv.get("error") {
+            return Err(format!("Anthropic: {}", e["message"].as_str().unwrap_or("unknown")));
+        }
+        jv["content"][0]["text"].as_str().ok_or("Empty response")?.to_string()
+    };
 
-    // Vision call with cover images
-    let mut content_parts = vec![
-        json!({"type": "text", "text": user_text}),
-    ];
-
-    for (title, b64) in covers.iter().take(8) {
-        content_parts.push(json!({
-            "type": "text",
-            "text": format!("Cover image for: {}", title)
-        }));
-        content_parts.push(json!({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": b64
-            }
-        }));
-    }
-
-    let body = json!({
-        "model": model,
-        "max_tokens": 1000,
-        "system": system,
-        "messages": [{"role": "user", "content": content_parts}]
-    });
-
-    let resp = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .unwrap()
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .map_err(|e| format!("Anthropic request failed: {}", e))?;
-
-    let json_resp: Value = resp.json()
-        .map_err(|e| format!("Anthropic response parse failed: {}", e))?;
-
-    if let Some(err) = json_resp.get("error") {
-        return Err(format!("Anthropic API error: {}",
-            err["message"].as_str().unwrap_or("unknown")));
-    }
-
-    let raw = json_resp["content"][0]["text"]
-        .as_str()
-        .ok_or("Empty response from Anthropic")?
-        .to_string();
-
-    build_report_from_json(&raw, books, keywords)
+    build_report(&raw, books, categories, keywords)
 }
 
-fn build_report_from_json(
-    raw: &str,
-    books: &[CompetitorBook],
-    keywords: &[String],
-) -> Result<String, String> {
+fn build_report(raw: &str, books: &[CompetitorBook], categories: &[CategoryRow], keywords: &[String]) -> Result<String, String> {
     let clean = raw.trim()
         .trim_start_matches("```json").trim_start_matches("```")
         .trim_end_matches("```").trim();
 
     let v: Value = serde_json::from_str(clean)
-        .map_err(|e| format!("JSON parse error: {} | got: {}", e, &clean[..clean.len().min(300)]))?;
+        .map_err(|e| format!("JSON parse: {} | got: {}", e, &clean[..clean.len().min(300)]))?;
 
-    let str_field = |key: &str| v[key].as_str().unwrap_or("").to_string();
+    let str_field  = |key: &str| v[key].as_str().unwrap_or("").to_string();
+    let arr_field  = |key: &str| -> Vec<String> {
+        v[key].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).map(String::from).collect()).unwrap_or_default()
+    };
 
     let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
 
     let mut md = vec![
         "# Competition Analysis".to_string(),
         format!("Generated: {}", now),
-        format!("Keywords analyzed: {}", keywords.len()),
-        format!("Books analyzed: {}", books.len().min(20)),
+        format!("Keywords: {}", keywords.join(", ")),
+        format!("Books analyzed: {}  |  Categories analyzed: {}", books.len().min(20), categories.len()),
         String::new(),
         "---".to_string(),
         String::new(),
     ];
 
-    // Summary first — most important thing
+    // Summary
     let summary = str_field("summary");
     if !summary.is_empty() {
         md.push(format!("> {}", summary));
@@ -665,65 +708,84 @@ fn build_report_from_json(
         md.push(String::new());
     }
 
-    // Top comps
-    if let Some(comps) = v["top_comps"].as_array() {
-        if !comps.is_empty() {
-            md.push("## Study These Books".to_string());
-            md.push(String::new());
-            for c in comps {
-                if let Some(s) = c.as_str() {
-                    md.push(format!("- {}", s));
-                }
-            }
-            md.push(String::new());
-        }
+    // Best categories — the most actionable section
+    let best_cats = arr_field("best_categories");
+    if !best_cats.is_empty() {
+        md.push("## Best Categories to Target".to_string());
+        md.push(String::new());
+        for c in &best_cats { md.push(format!("- {}", c)); }
+        md.push(String::new());
     }
 
-    for (section, label) in &[
-        ("cover",        "## Cover Design"),
-        ("title",        "## Title"),
-        ("subtitle",     "## Subtitle"),
-        ("series",       "## Series"),
-        ("pricing",      "## Pricing"),
-        ("positioning",  "## Positioning"),
+    let avoid_cats = arr_field("avoid_categories");
+    if !avoid_cats.is_empty() {
+        md.push("## Categories to Avoid".to_string());
+        md.push(String::new());
+        for c in &avoid_cats { md.push(format!("- {}", c)); }
+        md.push(String::new());
+    }
+
+    // Top comps
+    let comps = arr_field("top_comps");
+    if !comps.is_empty() {
+        md.push("## Study These Books".to_string());
+        md.push(String::new());
+        for c in &comps { md.push(format!("- {}", c)); }
+        md.push(String::new());
+    }
+
+    // Remaining sections
+    for (key, label) in &[
+        ("cover",       "## Cover Design"),
+        ("title",       "## Title"),
+        ("subtitle",    "## Subtitle"),
+        ("series",      "## Series"),
+        ("pricing",     "## Pricing"),
+        ("positioning", "## Positioning"),
     ] {
-        let text = str_field(section);
-        if !text.is_empty() {
-            md.push(label.to_string());
-            md.push(String::new());
-            // Each bullet on its own line
-            for line in text.lines() {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    if trimmed.starts_with('-') || trimmed.starts_with('•') {
-                        md.push(trimmed.to_string());
-                    } else {
-                        md.push(format!("- {}", trimmed));
-                    }
-                }
-            }
-            md.push(String::new());
+        let text = str_field(key);
+        if text.is_empty() { continue; }
+        md.push(label.to_string());
+        md.push(String::new());
+        for line in text.lines() {
+            let t = line.trim();
+            if t.is_empty() { continue; }
+            if t.starts_with('-') || t.starts_with('•') { md.push(t.to_string()); }
+            else { md.push(format!("- {}", t)); }
         }
+        md.push(String::new());
     }
 
     Ok(md.join("\n"))
 }
 
-// ── Keyword loader ────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn load_keywords(analysis_dir: &Path) -> Vec<String> {
-    // Use pr-keywords.json — short phrases specifically for PR Competition Analyzer.
-    // These are generated by generate_pr_keywords() and are completely separate
-    // from the KDP keyword strings in kdp-keywords.md.
+fn load_pr_keywords(analysis_dir: &Path) -> Vec<String> {
     if let Ok(text) = fs::read_to_string(analysis_dir.join("pr-keywords.json")) {
-        if let Ok(keywords) = serde_json::from_str::<Vec<String>>(&text) {
-            if !keywords.is_empty() {
-                return keywords;
-            }
+        if let Ok(kws) = serde_json::from_str::<Vec<String>>(&text) {
+            if !kws.is_empty() { return kws; }
         }
     }
-
     Vec::new()
+}
+
+fn extract_asin(url: &str) -> Option<String> {
+    let re = regex::Regex::new(r"/(?:dp|product)/([A-Z0-9]{10})").ok()?;
+    re.captures(url)?.get(1).map(|m| m.as_str().to_string())
+}
+
+fn fetch_image_b64(url: &str) -> Result<String, String> {
+    let bytes = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(10)).user_agent("Mozilla/5.0").build().unwrap()
+        .get(url).send().map_err(|e| e.to_string())?
+        .bytes().map_err(|e| e.to_string())?;
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME").ok().map(PathBuf::from)
 }
 
 fn err(msg: &str) -> CompetitionResult {

@@ -119,10 +119,39 @@ html, body {
 .panel-desc { color: var(--text-muted); margin-bottom: 14px; font-size: 13px; line-height: 1.5; }
 .panel-desc code { font-family: var(--mono); font-size: 11px; }
 
-.genre-buttons {
+.genre-buttons-primary {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   margin-top: 12px;
+}
+.btn-run-all {
+  flex: 1;
+  background: var(--accent);
+  font-size: 14px;
+  padding: 10px 16px;
+  font-weight: 700;
+}
+.btn-run-all:hover { background: #c87820; }
+.btn-run-all-comp {
+  flex: 1;
+  font-size: 14px;
+  padding: 10px 16px;
+  font-weight: 700;
+}
+.genre-buttons-secondary {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.secondary-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 2px;
+  white-space: nowrap;
 }
 .btn-secondary {
   background: var(--surface2);
@@ -383,6 +412,63 @@ html, body {
 .settings-saved {
   font-size: 12px; color: var(--success);
   min-height: 18px;
+}
+
+/* ── Reports ── */
+.report-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.report-item:hover { border-color: var(--accent); }
+.report-item-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.report-item-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.report-item-arrow {
+  color: var(--text-muted);
+  font-size: 16px;
+}
+.reports-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.reports-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+#reports-viewer-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#reports-viewer-content {
+  flex: 1;
+  overflow-y: auto;
+  user-select: text;
 }
 .model-hint {
   display: block;

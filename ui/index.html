@@ -22,10 +22,8 @@
       <nav id="sidebar">
         <div class="nav-section">
           <div class="nav-label">Tools</div>
-          <button class="nav-item" data-panel="genre">Genre Analyzer</button>
-          <button class="nav-item active" data-panel="finder">Category Finder</button>
-          <button class="nav-item" data-panel="category">Category Analyzer</button>
-          <button class="nav-item" data-panel="csv">CSV Analyzer</button>
+          <button class="nav-item active" data-panel="genre">Analyzer</button>
+          <button class="nav-item" data-panel="reports">Reports</button>
         </div>
         <div class="nav-section settings-section">
           <div class="nav-label">Settings</div>
@@ -36,8 +34,8 @@
       <main id="main">
 
         <!-- Genre Analyzer -->
-        <div id="genre-panel" class="panel">
-          <div class="panel-title">Genre Analyzer</div>
+        <div id="genre-panel" class="panel visible">
+          <div class="panel-title">Analyzer</div>
           <p class="panel-desc">
             Select your manuscript folder. The app will read each chapter, build genre-signal summaries, then produce a full genre and KDP category report.
           </p>
@@ -50,14 +48,18 @@
             </div>
           </div>
 
-          <div class="genre-buttons">
-            <button class="btn btn-secondary" id="btn-gen-summaries">Generate Summaries</button>
-            <button class="btn" id="btn-run-genre">Analyze</button>
-            <button class="btn btn-full" id="btn-full-analysis">Full Analysis</button>
-            <button class="btn btn-keywords" id="btn-optimize-keywords">Optimize Keywords</button>
-            <button class="btn btn-pr-keywords" id="btn-gen-pr-keywords">PR Keywords</button>
-            <button class="btn btn-competition" id="btn-analyze-competition">Analyze Competition</button>
-            <button class="btn btn-stop" id="btn-stop" style="display:none">&#x23F9; Stop</button>
+          <div class="genre-buttons-primary">
+            <button class="btn btn-run-all" id="btn-run-everything">&#9654; Run Analysis</button>
+            <button class="btn btn-competition btn-run-all-comp" id="btn-analyze-competition">&#9654; Analyze Competition</button>
+          </div>
+          <div class="genre-buttons-secondary">
+            <span class="secondary-label">Individual steps:</span>
+            <button class="btn btn-secondary btn-sm" id="btn-gen-summaries">Summaries</button>
+            <button class="btn btn-secondary btn-sm" id="btn-run-genre">Analyze</button>
+            <button class="btn btn-secondary btn-sm" id="btn-full-analysis">Full Analysis</button>
+            <button class="btn btn-secondary btn-sm" id="btn-optimize-keywords">KDP Keywords</button>
+            <button class="btn btn-secondary btn-sm" id="btn-gen-pr-keywords">PR Keywords</button>
+            <button class="btn btn-stop btn-sm" id="btn-stop" style="display:none">&#x23F9; Stop</button>
           </div>
 
           <div class="store-selector" id="competition-store-row" style="display:none">
@@ -89,7 +91,7 @@
         </div>
 
         <!-- Category Finder -->
-        <div id="finder-panel" class="panel visible">
+        <div id="finder-panel" class="panel">
           <div class="panel-title">Category Finder</div>
           <p class="panel-desc">
             Describe your book's genre and the AI will find the best matching Kindle categories and their keywords.
@@ -220,6 +222,21 @@
               <pre id="csv-markdown-output"></pre>
             </div>
             <button id="btn-copy-csv">Copy markdown</button>
+          </div>
+        </div>
+
+        <!-- Reports -->
+        <div id="reports-panel" class="panel">
+          <div class="panel-title">Reports</div>
+          <p class="panel-desc" id="reports-folder-note">No manuscript folder selected.</p>
+          <div id="reports-list"></div>
+          <div id="reports-viewer" class="reports-viewer hidden">
+            <div class="reports-viewer-header">
+              <button class="btn btn-secondary btn-sm" id="btn-reports-back">← Back to list</button>
+              <span id="reports-viewer-title"></span>
+              <button class="btn btn-secondary btn-sm" id="btn-reports-copy">Copy</button>
+            </div>
+            <div id="reports-viewer-content" class="markdown-preview"></div>
           </div>
         </div>
 

@@ -5,7 +5,6 @@ mod category_finder;
 mod competition_analyzer;
 mod genre_analyzer;
 mod models;
-mod pr_scraper;
 
 pub use cancel::{is_cancelled, reset as reset_cancel};
 
@@ -24,6 +23,7 @@ pub fn run() {
             commands::find_categories,
             genre_analyzer::pick_manuscript_folder,
             genre_analyzer::generate_summaries,
+            genre_analyzer::run_everything,
             genre_analyzer::analyze_genre,
             genre_analyzer::run_full_analysis,
             genre_analyzer::optimize_keywords,

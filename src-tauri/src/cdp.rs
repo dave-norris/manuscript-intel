@@ -298,31 +298,16 @@ impl Session {
     }
 
     /// Type a single character using CDP Input.dispatchKeyEvent.
-    /// This is real keyboard input — no framework can ignore it.
+    /// Send only the 'char' event type — keyDown+char together causes double input.
     pub fn send_char(&mut self, ch: char) {
         let text = ch.to_string();
-        // keyDown with the character
-        let _ = self.send("Input.dispatchKeyEvent", json!({
-            "type": "keyDown",
-            "key":  text,
-            "text": text,
-            "unmodifiedText": text,
-        }));
-        std::thread::sleep(Duration::from_millis(20));
-        // char event — this is what actually inserts the text
         let _ = self.send("Input.dispatchKeyEvent", json!({
             "type": "char",
             "key":  text,
             "text": text,
             "unmodifiedText": text,
         }));
-        std::thread::sleep(Duration::from_millis(20));
-        // keyUp
-        let _ = self.send("Input.dispatchKeyEvent", json!({
-            "type": "keyUp",
-            "key":  text,
-            "text": text,
-        }));
+        std::thread::sleep(Duration::from_millis(30));
     }
 
     /// Send Ctrl+A to select all text in the focused element.

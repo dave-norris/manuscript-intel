@@ -9,7 +9,7 @@
   <body>
     <div id="app">
 
-      <div id="titlebar">
+      <div id="titlebar" data-tauri-drag-region>
         <h1>Publisher Rocket Reader</h1>
         <div id="rocket-status">
           <span class="status-dot" id="status-dot"></span>
@@ -21,7 +21,8 @@
       <nav id="sidebar">
         <div class="nav-section">
           <div class="nav-label">Tools</div>
-          <button class="nav-item active" data-panel="category">Category Analyzer</button>
+          <button class="nav-item active" data-panel="finder">Category Finder</button>
+          <button class="nav-item" data-panel="category">Category Analyzer</button>
           <button class="nav-item" data-panel="csv">CSV Analyzer</button>
         </div>
         <div class="nav-section settings-section">
@@ -32,13 +33,94 @@
 
       <main id="main">
 
+        <!-- Category Finder -->
+        <div id="finder-panel" class="panel visible">
+          <div class="panel-title">Category Finder</div>
+          <p class="panel-desc">
+            Describe your book's genre and the AI will find the best matching Kindle categories and their keywords.
+          </p>
+          <div class="store-selector">
+            <label class="store-label">Store</label>
+            <div class="store-options">
+              <label class="store-option"><input type="radio" name="finder-store" value="All" /> All</label>
+              <label class="store-option"><input type="radio" name="finder-store" value="Books" /> Books</label>
+              <label class="store-option"><input type="radio" name="finder-store" value="Kindle" checked /> Kindle</label>
+              <label class="store-option"><input type="radio" name="finder-store" value="Audible" /> Audible</label>
+            </div>
+          </div>
+          <div class="store-selector">
+            <label class="store-label">Filter</label>
+            <div class="store-options">
+              <label class="store-option"><input type="radio" name="finder-filter" value="All" /> All</label>
+              <label class="store-option"><input type="radio" name="finder-filter" value="Selectable" /> Selectable</label>
+              <label class="store-option"><input type="radio" name="finder-filter" value="Selectable Excluding Ghosts" checked /> Selectable Excl. Ghosts</label>
+              <label class="store-option"><input type="radio" name="finder-filter" value="Ghost" /> Ghost</label>
+              <label class="store-option"><input type="radio" name="finder-filter" value="Duplicate" /> Duplicate</label>
+            </div>
+          </div>
+          <textarea id="genre-description"
+            placeholder="e.g. First-century Christian historical fiction with mystery and romantic elements, set in ancient Rome during the reign of Nero"></textarea>
+          <button class="btn" id="btn-run-finder">Find Categories</button>
+
+          <div class="output-area">
+            <div class="output-tabs">
+              <button class="output-tab active" data-tab="finder-log">Log</button>
+              <button class="output-tab" data-tab="finder-markdown">Results</button>
+            </div>
+            <div class="output-pane" id="finder-log-pane">
+              <pre id="finder-log-output"></pre>
+            </div>
+            <div class="output-pane hidden" id="finder-markdown-pane">
+              <pre id="finder-markdown-output"></pre>
+            </div>
+            <button id="btn-copy-finder">Copy results</button>
+          </div>
+        </div>
+
         <!-- Category Analyzer -->
-        <div id="category-panel" class="panel visible">
+        <div id="category-panel" class="panel">
           <div class="panel-title">Category Analyzer</div>
           <p class="panel-desc">
             Enter one category path per line, e.g.<br>
             <code>Literature &amp; Fiction &gt; Historical Fiction &gt; Ancient World</code>
           </p>
+          <div class="store-selector">
+            <label class="store-label">Store</label>
+            <div class="store-options">
+              <label class="store-option">
+                <input type="radio" name="store" value="All" /> All
+              </label>
+              <label class="store-option">
+                <input type="radio" name="store" value="Books" /> Books
+              </label>
+              <label class="store-option">
+                <input type="radio" name="store" value="Kindle" checked /> Kindle
+              </label>
+              <label class="store-option">
+                <input type="radio" name="store" value="Audible" /> Audible
+              </label>
+            </div>
+          </div>
+          <div class="store-selector">
+            <label class="store-label">Filter</label>
+            <div class="store-options">
+              <label class="store-option">
+                <input type="radio" name="filter" value="All" /> All
+              </label>
+              <label class="store-option">
+                <input type="radio" name="filter" value="Selectable" /> Selectable
+              </label>
+              <label class="store-option">
+                <input type="radio" name="filter" value="Selectable Excluding Ghosts" checked /> Selectable Excl. Ghosts
+              </label>
+              <label class="store-option">
+                <input type="radio" name="filter" value="Ghost" /> Ghost
+              </label>
+              <label class="store-option">
+                <input type="radio" name="filter" value="Duplicate" /> Duplicate
+              </label>
+            </div>
+          </div>
           <textarea id="category-paths"
             placeholder="Literature &amp; Fiction > Historical Fiction > Ancient World&#10;Mystery, Thriller &amp; Suspense > Mystery > Historical"></textarea>
           <button class="btn" id="btn-run-category">Run Category Analyzer</button>

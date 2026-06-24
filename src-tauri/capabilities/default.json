@@ -5,6 +5,9 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "core:window:allow-start-dragging",
+    "core:webview:allow-set-webview-focus",
+    "clipboard-manager:allow-write-text",
     "shell:allow-execute",
     "shell:allow-open"
   ]

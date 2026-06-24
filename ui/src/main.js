@@ -1,5 +1,15 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
+
+// Disable the native context menu everywhere except editable fields.
+// -webkit-context-menu CSS is not supported in Tauri 2 — this is the correct approach.
+document.addEventListener('contextmenu', (e) => {
+  const tag = e.target.tagName;
+  if (!['INPUT', 'TEXTAREA', 'SELECT'].includes(tag) && !e.target.isContentEditable) {
+    e.preventDefault();
+  }
+});
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let currentMarkdown = '';
@@ -37,13 +47,7 @@ function getSettings() {
   };
 }
 
-// ── CDP log events from Rust ──────────────────────────────────────────────────
-listen('cdp:log', (event) => {
-  appendLog(event.payload);
-  appendCsvLog(event.payload);
-});
-
-// ── Rocket status ─────────────────────────────────────────────────────────────
+// ── // ── Rocket status ─────────────────────────────────────────────────────────────
 async function refreshStatus() {
   try {
     const s = await invoke('check_rocket_status');
@@ -120,13 +124,92 @@ setupTabs('[data-tab="csv-log"],[data-tab="csv-markdown"]', {
   'csv-markdown': 'csv-markdown-pane',
 });
 
+// ── Category Finder ─────────────────────────────────────────────────────────
+let currentFinderMarkdown = '';
+
+setupTabs('[data-tab="finder-log"],[data-tab="finder-markdown"]', {
+  'finder-log':      'finder-log-pane',
+  'finder-markdown': 'finder-markdown-pane',
+});
+
+document.getElementById('btn-run-finder').addEventListener('click', async () => {
+  const genre = document.getElementById('genre-description').value.trim();
+  if (!genre) return;
+
+  const store  = document.querySelector('input[name="finder-store"]:checked')?.value  || 'Kindle';
+  const filter = document.querySelector('input[name="finder-filter"]:checked')?.value || 'Selectable Excluding Ghosts';
+  const { apiKey, model } = getSettings();
+
+  if (!apiKey) {
+    appendFinderLog('✗ No API key set. Go to Settings and add your Anthropic API key.');
+    showFinderTab('finder-log');
+    return;
+  }
+
+  appendFinderLog(`Finding categories for: "${genre}"`);
+  appendFinderLog(`Store: ${store} / Filter: ${filter}`);
+  showFinderTab('finder-log');
+
+  const btn = document.getElementById('btn-run-finder');
+  btn.disabled = true;
+
+  try {
+    const result = await invoke('find_categories', {
+      request: { genre, store, filter, api_key: apiKey, model }
+    });
+    if (result.success) {
+      currentFinderMarkdown = result.markdown;
+      document.getElementById('finder-markdown-output').textContent = currentFinderMarkdown;
+      showFinderTab('finder-markdown');
+    } else {
+      appendFinderLog('✗ ' + result.error);
+    }
+  } catch (e) {
+    appendFinderLog('✗ ' + String(e));
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('btn-copy-finder').addEventListener('click', async () => {
+  if (!currentFinderMarkdown) return;
+  await writeText(currentFinderMarkdown);
+  const btn = document.getElementById('btn-copy-finder');
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = 'Copy results'; }, 1500);
+});
+
+function appendFinderLog(msg) {
+  const el = document.getElementById('finder-log-output');
+  el.textContent += (el.textContent ? '\n' : '') + msg;
+  el.scrollTop = el.scrollHeight;
+}
+
+function showFinderTab(name) {
+  document.querySelectorAll('[data-tab="finder-log"],[data-tab="finder-markdown"]').forEach(t => {
+    t.classList.toggle('active', t.dataset.tab === name);
+  });
+  document.getElementById('finder-log-pane').classList.toggle('hidden', name !== 'finder-log');
+  document.getElementById('finder-markdown-pane').classList.toggle('hidden', name !== 'finder-markdown');
+}
+
+// Also route cdp:log to finder log when finder panel is active
+listen('cdp:log', (event) => {
+  const finderVisible = document.getElementById('finder-panel').classList.contains('visible');
+  if (finderVisible) appendFinderLog(event.payload);
+  appendLog(event.payload);
+  appendCsvLog(event.payload);
+});
+
 // ── Category Analyzer ─────────────────────────────────────────────────────────
 document.getElementById('btn-run-category').addEventListener('click', async () => {
   const raw = document.getElementById('category-paths').value.trim();
   if (!raw) return;
 
   const paths = raw.split('\n').map(l => l.trim()).filter(Boolean);
-  appendLog(`Running Category Analyzer for ${paths.length} path(s)...`);
+  const store = document.querySelector('input[name="store"]:checked')?.value || 'Kindle';
+  const filter = document.querySelector('input[name="filter"]:checked')?.value || 'Selectable Excluding Ghosts';
+  appendLog(`Running Category Analyzer for ${paths.length} path(s) [${store} / ${filter}]...`);
   showTab('log');
 
   const btn = document.getElementById('btn-run-category');
@@ -134,7 +217,7 @@ document.getElementById('btn-run-category').addEventListener('click', async () =
 
   try {
     const result = await invoke('analyze_categories', {
-      request: { paths }
+      request: { paths, store, filter }
     });
     if (result.success) {
       currentMarkdown = result.markdown;
@@ -218,22 +301,20 @@ document.getElementById('btn-run-csv').addEventListener('click', async () => {
 });
 
 // ── Copy buttons ──────────────────────────────────────────────────────────────
-document.getElementById('btn-copy').addEventListener('click', () => {
+document.getElementById('btn-copy').addEventListener('click', async () => {
   if (!currentMarkdown) return;
-  navigator.clipboard.writeText(currentMarkdown).then(() => {
-    const btn = document.getElementById('btn-copy');
-    btn.textContent = 'Copied!';
-    setTimeout(() => { btn.textContent = 'Copy markdown'; }, 1500);
-  });
+  await writeText(currentMarkdown);
+  const btn = document.getElementById('btn-copy');
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = 'Copy markdown'; }, 1500);
 });
 
-document.getElementById('btn-copy-csv').addEventListener('click', () => {
+document.getElementById('btn-copy-csv').addEventListener('click', async () => {
   if (!currentCsvMarkdown) return;
-  navigator.clipboard.writeText(currentCsvMarkdown).then(() => {
-    const btn = document.getElementById('btn-copy-csv');
-    btn.textContent = 'Copied!';
-    setTimeout(() => { btn.textContent = 'Copy markdown'; }, 1500);
-  });
+  await writeText(currentCsvMarkdown);
+  const btn = document.getElementById('btn-copy-csv');
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = 'Copy markdown'; }, 1500);
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

@@ -1,9 +1,5 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* Disable native WebKit context menu — not useful in a desktop app UI */
-* { -webkit-context-menu: none; }
-textarea, input, select, [contenteditable] { -webkit-context-menu: auto; }
-
 :root {
   --bg:         #1a1a1a;
   --surface:    #242424;
@@ -50,8 +46,7 @@ html, body {
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  padding: 0 12px 0 80px;   /* 80px clears the macOS inset traffic lights */
-  -webkit-app-region: drag;
+  padding: 0 12px 0 80px;
   gap: 12px;
 }
 #titlebar h1 { font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
@@ -60,7 +55,6 @@ html, body {
   display: flex;
   align-items: center;
   gap: 6px;
-  -webkit-app-region: no-drag;
 }
 .status-dot {
   width: 7px; height: 7px;
@@ -72,7 +66,6 @@ html, body {
 .status-dot.error   { background: var(--danger); }
 
 #btn-launch {
-  -webkit-app-region: no-drag;
   background: var(--accent);
   border: none;
   border-radius: 4px;
@@ -125,6 +118,48 @@ html, body {
 .panel-title { font-size: 16px; font-weight: 700; margin-bottom: 10px; }
 .panel-desc { color: var(--text-muted); margin-bottom: 14px; font-size: 13px; line-height: 1.5; }
 .panel-desc code { font-family: var(--mono); font-size: 11px; }
+
+/* ── Store selector ── */
+.store-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.store-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+.store-options {
+  display: flex;
+  gap: 4px;
+}
+.store-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-muted);
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  user-select: none;
+}
+.store-option:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.store-option input[type="radio"] { display: none; }
+.store-option:has(input:checked) {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 
 /* ── Textarea ── */
 #category-paths {

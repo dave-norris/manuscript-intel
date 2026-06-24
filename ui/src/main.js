@@ -131,7 +131,9 @@ const savedFolder = localStorage.getItem('manuscriptFolder');
 if (savedFolder) document.getElementById('manuscript-folder').value = savedFolder;
 
 document.getElementById('manuscript-folder').addEventListener('change', (e) => {
-  localStorage.setItem('manuscriptFolder', e.target.value.trim());
+  const folder = e.target.value.trim();
+  localStorage.setItem('manuscriptFolder', folder);
+  refreshAnalysisState(folder);
 });
 
 document.getElementById('btn-pick-folder').addEventListener('click', async () => {
@@ -140,6 +142,7 @@ document.getElementById('btn-pick-folder').addEventListener('click', async () =>
     if (path) {
       document.getElementById('manuscript-folder').value = path;
       localStorage.setItem('manuscriptFolder', path);
+      refreshAnalysisState(path);
     }
   } catch (e) {
     if (!String(e).includes('No folder')) appendGenreLog('✗ ' + String(e));
@@ -161,9 +164,56 @@ function setGenreReport(markdown) {
 }
 
 function disableGenreButtons(disabled) {
+  // During a run, disable action buttons and show/hide Stop
   ['btn-gen-summaries', 'btn-run-genre', 'btn-full-analysis',
-   'btn-optimize-keywords', 'btn-analyze-competition'].forEach(id => {
+   'btn-optimize-keywords', 'btn-gen-pr-keywords', 'btn-analyze-competition'].forEach(id => {
     document.getElementById(id).disabled = disabled;
+  });
+  document.getElementById('btn-stop').style.display = disabled ? 'block' : 'none';
+  if (!disabled) {
+    const folder = getGenreFolder();
+    if (folder) refreshAnalysisState(folder);
+  }
+}
+
+async function refreshAnalysisState(folder) {
+  if (!folder) {
+    document.getElementById('btn-gen-summaries').disabled      = false;
+    document.getElementById('btn-run-genre').disabled          = true;
+    document.getElementById('btn-full-analysis').disabled      = true;
+    document.getElementById('btn-optimize-keywords').disabled  = true;
+    document.getElementById('btn-gen-pr-keywords').disabled    = true;
+    document.getElementById('btn-analyze-competition').disabled = true;
+    updateButtonLabels(null);
+    return;
+  }
+  try {
+    const state = await invoke('check_analysis_state', { folder });
+    document.getElementById('btn-gen-summaries').disabled      = false;
+    document.getElementById('btn-run-genre').disabled          = state.summary_count === 0;
+    document.getElementById('btn-full-analysis').disabled      = !state.has_genre_data;
+    document.getElementById('btn-optimize-keywords').disabled  = !state.has_full_report;
+    document.getElementById('btn-gen-pr-keywords').disabled    = !state.has_full_report;
+    document.getElementById('btn-analyze-competition').disabled = !state.has_pr_keywords;
+    updateButtonLabels(state);
+  } catch (e) {
+    console.error('check_analysis_state failed:', e);
+  }
+}
+
+function updateButtonLabels(state) {
+  const labels = [
+    ['btn-gen-summaries',      'Generate Summaries',  state?.summary_count > 0   ? ` (${state.summary_count})` : ''],
+    ['btn-run-genre',          'Analyze',             state?.has_genre_data      ? ' ✓' : ''],
+    ['btn-full-analysis',      'Full Analysis',       state?.has_full_report     ? ' ✓' : ''],
+    ['btn-optimize-keywords',  'Optimize Keywords',   state?.has_keywords        ? ' ✓' : ''],
+    ['btn-gen-pr-keywords',    'PR Keywords',         state?.has_pr_keywords     ? ' ✓' : ''],
+    ['btn-analyze-competition','Analyze Competition', state?.has_competition     ? ' ✓' : ''],
+  ];
+  labels.forEach(([id, base, suffix]) => {
+    const btn = document.getElementById(id);
+    if (!btn.disabled || suffix) btn.textContent = base + suffix;
+    else btn.textContent = base;
   });
 }
 
@@ -254,6 +304,38 @@ document.getElementById('btn-optimize-keywords').addEventListener('click', async
     }
   } catch (e) {
     appendGenreLog('✗ ' + String(e));
+  } finally {
+    disableGenreButtons(false);
+  }
+});
+
+// Stop button
+document.getElementById('btn-stop').addEventListener('click', async () => {
+  appendGenreLog('Stopping after current step...');
+  await invoke('cancel_operation');
+});
+
+// Generate PR Keywords
+document.getElementById('btn-gen-pr-keywords').addEventListener('click', async () => {
+  const folder = getGenreFolder();
+  if (!folder) { appendGenreLog('\u2717 Please select a manuscript folder first.'); return; }
+  const { apiKey, model } = getSettings();
+  if (!apiKey) { appendGenreLog('\u2717 No API key set. Go to Settings.'); return; }
+  appendGenreLog('Generating PR Competition Analyzer search terms...');
+  showGenreTab('genre-log');
+  disableGenreButtons(true);
+  try {
+    const result = await invoke('generate_pr_keywords', {
+      request: { folder, api_key: apiKey, model }
+    });
+    if (result.success) {
+      setGenreReport(result.report);
+      appendGenreLog('\u2713 PR keywords generated. See Preview tab.');
+    } else {
+      appendGenreLog('\u2717 ' + result.error);
+    }
+  } catch (e) {
+    appendGenreLog('\u2717 ' + String(e));
   } finally {
     disableGenreButtons(false);
   }
@@ -509,5 +591,19 @@ function titleCase(str) {
     .map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 }
 
+// ── Clear log buttons ───────────────────────────────────────────────────────
+[['btn-clear-genre-log',  'genre-log-output'],
+ ['btn-clear-log',        'log-output'],
+ ['btn-clear-csv-log',    'csv-log-output'],
+ ['btn-clear-finder-log', 'finder-log-output'],
+].forEach(([btnId, outputId]) => {
+  document.getElementById(btnId).addEventListener('click', () => {
+    document.getElementById(outputId).textContent = '';
+  });
+});
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadSettings();
+const _initFolder = getGenreFolder();
+if (_initFolder) refreshAnalysisState(_initFolder);
+else refreshAnalysisState('');

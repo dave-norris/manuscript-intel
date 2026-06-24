@@ -55,7 +55,9 @@
             <button class="btn" id="btn-run-genre">Analyze</button>
             <button class="btn btn-full" id="btn-full-analysis">Full Analysis</button>
             <button class="btn btn-keywords" id="btn-optimize-keywords">Optimize Keywords</button>
+            <button class="btn btn-pr-keywords" id="btn-gen-pr-keywords">PR Keywords</button>
             <button class="btn btn-competition" id="btn-analyze-competition">Analyze Competition</button>
+            <button class="btn btn-stop" id="btn-stop" style="display:none">&#x23F9; Stop</button>
           </div>
 
           <div class="store-selector" id="competition-store-row" style="display:none">
@@ -71,6 +73,7 @@
               <button class="output-tab active" data-tab="genre-log">Log</button>
               <button class="output-tab" data-tab="genre-preview">Preview</button>
               <button class="output-tab" data-tab="genre-raw">Markdown</button>
+              <button class="clear-log" id="btn-clear-genre-log">Clear</button>
             </div>
             <div class="output-pane" id="genre-log-pane">
               <pre id="genre-log-output"></pre>
@@ -118,6 +121,7 @@
             <div class="output-tabs">
               <button class="output-tab active" data-tab="finder-log">Log</button>
               <button class="output-tab" data-tab="finder-markdown">Results</button>
+              <button class="clear-log" id="btn-clear-finder-log">Clear</button>
             </div>
             <div class="output-pane" id="finder-log-pane">
               <pre id="finder-log-output"></pre>
@@ -181,6 +185,7 @@
             <div class="output-tabs">
               <button class="output-tab active" data-tab="log">Log</button>
               <button class="output-tab" data-tab="markdown">Markdown</button>
+              <button class="clear-log" id="btn-clear-log">Clear</button>
             </div>
             <div class="output-pane" id="log-pane">
               <pre id="log-output"></pre>
@@ -206,6 +211,7 @@
             <div class="output-tabs">
               <button class="output-tab active" data-tab="csv-log">Log</button>
               <button class="output-tab" data-tab="csv-markdown">Markdown</button>
+              <button class="clear-log" id="btn-clear-csv-log">Clear</button>
             </div>
             <div class="output-pane" id="csv-log-pane">
               <pre id="csv-log-output"></pre>

@@ -62,24 +62,36 @@ pub fn scrape_category_paths(
         }
 
         // ── Parse path into segments ─────────────────────────────────────────
-        let segments: Vec<&str> = path.split('>')
+        let raw_segments: Vec<&str> = path.split('>')
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .collect();
 
-        if segments.is_empty() { continue; }
+        if raw_segments.is_empty() { continue; }
 
-        // Strip "Kindle Books" / "Kindle Store" prefix if present
-        let segments: Vec<&str> = if segments[0].to_lowercase().contains("kindle") ||
-                                     segments[0].to_lowercase().contains("books store") {
-            segments[1..].to_vec()
-        } else {
-            segments
-        };
+        // Strip ALL leading store/platform prefixes until we reach a real category.
+        // AI often generates paths like "Kindle Store > Kindle eBooks > Religion..."
+        // so we need to strip multiple leading segments, not just one.
+        let store_prefixes = [
+            "kindle store", "kindle ebooks", "kindle books",
+            "books", "audible", "kindle",
+        ];
+        let mut start = 0;
+        for seg in &raw_segments {
+            let lower = seg.to_lowercase();
+            if store_prefixes.iter().any(|p| lower.as_str() == *p || lower.starts_with(p)) {
+                emit(app, &format!("    Stripping prefix '{}'", seg));
+                start += 1;
+            } else {
+                break;
+            }
+        }
+        let segments: Vec<&str> = raw_segments[start..].to_vec();
 
         if segments.is_empty() { continue; }
 
         let top = segments[0];
+        emit(app, &format!("    Top-level search term: '{}'", top));
 
         // ── Search for top-level category ────────────────────────────────────
         type_into_search(&mut session, top);
@@ -183,27 +195,49 @@ fn click_exact_button(session: &mut cdp::Session, text: &str) {
 }
 
 fn type_into_search(session: &mut cdp::Session, category: &str) {
-    // Use first word before & or , to avoid React input issues with special chars
-    let search_term = category.split(|c| c == '&' || c == ',')
-        .next().unwrap_or(category).trim().to_string();
-    let sj = serde_json::to_string(&search_term).unwrap();
+    // Use first word before & or , — enough to filter the list
+    let search_term = category
+        .split(|c| c == '&' || c == ',')
+        .next()
+        .unwrap_or(category)
+        .trim()
+        .to_string();
 
-    let js = format!(r#"
+    // Step 1: Click the input to focus it
+    let focus_js = r#"
         const input = document.querySelector(
             'input[type="text"],input[type="search"],input:not([type="radio"]):not([type="checkbox"])'
         );
-        if (input) {{
-            input.focus();
-            input.value = '';
-            input.dispatchEvent(new Event('input',{{bubbles:true}}));
-            const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;
-            setter.call(input, {s});
-            input.dispatchEvent(new Event('input',{{bubbles:true}}));
-            input.dispatchEvent(new Event('change',{{bubbles:true}}));
-        }}
-        return '';
-    "#, s = sj);
-    let _ = session.eval(&js, 8);
+        if (!input) return JSON.stringify(null);
+        input.focus();
+        const r = input.getBoundingClientRect();
+        return JSON.stringify({x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)});
+    "#;
+
+    if let Ok(s) = session.eval(focus_js, 8) {
+        if let Ok(v) = serde_json::from_str::<Value>(&s) {
+            if let (Some(x), Some(y)) = (v["x"].as_f64(), v["y"].as_f64()) {
+                let _ = session.click(x, y);
+                std::thread::sleep(Duration::from_millis(300));
+            }
+        }
+    }
+
+    // Step 2: Select all existing text and delete it
+    session.select_all();
+    std::thread::sleep(Duration::from_millis(100));
+    session.send_backspace();
+    std::thread::sleep(Duration::from_millis(200));
+
+    // Step 3: Type each character via real CDP keyboard events
+    // PR filters on every keystroke so each char should trigger an update
+    for ch in search_term.chars() {
+        session.send_char(ch);
+        std::thread::sleep(Duration::from_millis(60));
+    }
+
+    // Let PR finish filtering
+    std::thread::sleep(Duration::from_millis(800));
 }
 
 fn click_best_check_it_out(session: &mut cdp::Session, category: &str) -> bool {

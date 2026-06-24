@@ -142,6 +142,15 @@ html, body {
   background: #5a2d82;
 }
 .btn-competition:hover { background: #421f61; }
+.btn-pr-keywords {
+  background: #2d6a82;
+}
+.btn-pr-keywords:hover { background: #1f4f61; }
+.btn-stop {
+  background: var(--danger);
+  margin-left: auto;
+}
+.btn-stop:hover { background: #a04050; }
 
 /* ── Folder selector ── */
 .folder-selector {
@@ -317,6 +326,17 @@ html, body {
   font-size: 12px; padding: 5px 12px;
 }
 .output-tab.active { background: var(--surface2); color: var(--text); }
+.clear-log {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+.clear-log:hover { color: var(--danger); background: rgba(207,102,121,0.1); }
 .output-pane {
   flex: 1;
   background: var(--surface2);

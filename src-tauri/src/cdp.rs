@@ -296,4 +296,55 @@ impl Session {
             json!({"type":"keyUp","key":"Escape","code":"Escape"}));
         std::thread::sleep(Duration::from_millis(200));
     }
+
+    /// Type a single character using CDP Input.dispatchKeyEvent.
+    /// This is real keyboard input — no framework can ignore it.
+    pub fn send_char(&mut self, ch: char) {
+        let text = ch.to_string();
+        // keyDown with the character
+        let _ = self.send("Input.dispatchKeyEvent", json!({
+            "type": "keyDown",
+            "key":  text,
+            "text": text,
+            "unmodifiedText": text,
+        }));
+        std::thread::sleep(Duration::from_millis(20));
+        // char event — this is what actually inserts the text
+        let _ = self.send("Input.dispatchKeyEvent", json!({
+            "type": "char",
+            "key":  text,
+            "text": text,
+            "unmodifiedText": text,
+        }));
+        std::thread::sleep(Duration::from_millis(20));
+        // keyUp
+        let _ = self.send("Input.dispatchKeyEvent", json!({
+            "type": "keyUp",
+            "key":  text,
+            "text": text,
+        }));
+    }
+
+    /// Send Ctrl+A to select all text in the focused element.
+    pub fn select_all(&mut self) {
+        let _ = self.send("Input.dispatchKeyEvent", json!({
+            "type": "keyDown", "key": "a",
+            "modifiers": 2  // Ctrl
+        }));
+        std::thread::sleep(Duration::from_millis(30));
+        let _ = self.send("Input.dispatchKeyEvent", json!({
+            "type": "keyUp", "key": "a",
+            "modifiers": 2
+        }));
+        std::thread::sleep(Duration::from_millis(30));
+    }
+
+    /// Send Backspace.
+    pub fn send_backspace(&mut self) {
+        let _ = self.send("Input.dispatchKeyEvent",
+            json!({"type":"keyDown","key":"Backspace","code":"Backspace"}));
+        std::thread::sleep(Duration::from_millis(20));
+        let _ = self.send("Input.dispatchKeyEvent",
+            json!({"type":"keyUp","key":"Backspace","code":"Backspace"}));
+    }
 }

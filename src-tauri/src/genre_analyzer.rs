@@ -89,6 +89,7 @@ pub async fn generate_summaries(app: AppHandle, request: FolderRequest) -> Genre
             return err(&format!("Cannot create _analysis/summaries: {}", e));
         }
 
+        crate::reset_cancel();
         let chapters = collect_chapters(&folder);
         if chapters.is_empty() { return err("No .md files found."); }
 
@@ -303,6 +304,150 @@ pub async fn run_full_analysis(app: AppHandle, request: FolderRequest) -> GenreR
 }
 
 
+
+// ── Analysis state check ──────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct AnalysisState {
+    pub has_folder:      bool,
+    pub summary_count:   usize,  // number of chapter summary JSONs
+    pub has_genre_data:  bool,   // genre-data.json exists
+    pub has_full_report: bool,   // full-report.md exists
+    pub has_keywords:    bool,   // kdp-keywords.md exists
+    pub has_pr_keywords: bool,   // pr-keywords.json exists
+    pub has_competition: bool,   // competition-report.md exists
+}
+
+#[tauri::command]
+pub async fn check_analysis_state(folder: String) -> AnalysisState {
+    tokio::task::spawn_blocking(move || {
+        let folder_path  = std::path::PathBuf::from(&folder);
+        let analysis_dir = folder_path.join("_analysis");
+        let summaries_dir = analysis_dir.join("summaries");
+
+        let has_folder = folder_path.exists();
+
+        let summary_count = if summaries_dir.exists() {
+            std::fs::read_dir(&summaries_dir)
+                .map(|d| d.flatten()
+                    .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+                    .count())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        AnalysisState {
+            has_folder,
+            summary_count,
+            has_genre_data:  analysis_dir.join("genre-data.json").exists(),
+            has_full_report: analysis_dir.join("full-report.md").exists(),
+            has_keywords:    analysis_dir.join("kdp-keywords.md").exists(),
+            has_pr_keywords: analysis_dir.join("pr-keywords.json").exists(),
+            has_competition: analysis_dir.join("competition-report.md").exists(),
+        }
+    }).await.unwrap()
+}
+
+
+// ── PR Keyword Generator ──────────────────────────────────────────────────────
+// Generates short 2-4 word phrases suitable for PR Competition Analyzer.
+// Completely separate from KDP keyword strings.
+
+#[tauri::command]
+pub async fn generate_pr_keywords(app: AppHandle, request: KeywordRequest) -> GenreResult {
+    tokio::task::spawn_blocking(move || {
+        let folder = PathBuf::from(&request.folder);
+        let analysis_dir = folder.join("_analysis");
+
+        if !analysis_dir.exists() {
+            return err("No _analysis folder. Run Analyze first.");
+        }
+
+        let genre_data = match load_genre_data(&analysis_dir.join("genre-data.json")) {
+            Some(d) => d,
+            None => return err("genre-data.json not found. Run Analyze first."),
+        };
+
+        emit(&app, "Generating PR Competition Analyzer search terms...");
+        emit(&app, &format!("  Genre: {}", genre_data.industry.ebook));
+
+        let system = r#"You are a Publisher Rocket expert. Generate short search phrases for the Competition Analyzer tool.
+
+Publisher Rocket Competition Analyzer works like Amazon search — it needs SHORT, SPECIFIC phrases that real readers type.
+
+Rules:
+- 2-4 words maximum per phrase
+- Plain English, no special characters
+- Think like a reader browsing Amazon, not a marketer
+- Phrases should find competing books in the same genre niche
+- Include: genre combinations, setting descriptors, theme words, reader mood phrases
+
+Return ONLY a JSON array of strings. No markdown, no preamble. Example:
+["christian historical fiction", "first century rome", "biblical mystery", "faith romance clean"]"#;
+
+        let user = format!(
+            "Book genre: {}
+KDP categories: {}
+Genre signals from chapters: {}",
+            genre_data.industry.ebook,
+            genre_data.kdp.ebook.iter()
+                .map(|p| p.split('>').last().unwrap_or(p).trim().to_string())
+                .collect::<Vec<_>>().join(", "),
+            // Load a snippet of genre signals for context
+            fs::read_to_string(analysis_dir.join("genre-analysis.md"))
+                .map(|s| s[..s.len().min(500)].to_string())
+                .unwrap_or_default()
+        );
+
+        match call_anthropic(&request.api_key, models::HAIKU, system, &user, 300) {
+            Err(e) => err(&format!("AI error: {}", e)),
+            Ok(raw) => {
+                let clean = raw.trim()
+                    .trim_start_matches("```json").trim_start_matches("```")
+                    .trim_end_matches("```").trim();
+
+                match serde_json::from_str::<Vec<String>>(clean) {
+                    Err(e) => err(&format!("Parse error: {} | got: {}", e, &clean[..clean.len().min(200)])),
+                    Ok(keywords) => {
+                        // Save to pr-keywords.json
+                        let out_path = analysis_dir.join("pr-keywords.json");
+                        if let Ok(json) = serde_json::to_string_pretty(&keywords) {
+                            let _ = fs::write(&out_path, &json);
+                        }
+
+                        emit(&app, &format!("  ✓ Generated {} PR search terms:", keywords.len()));
+                        for kw in &keywords {
+                            emit(&app, &format!("    • {}", kw));
+                        }
+
+                        // Build a simple display report
+                        let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
+                        let mut md = vec![
+                            "# PR Competition Analyzer Keywords".to_string(),
+                            format!("Generated: {}", now),
+                            String::new(),
+                            "> These short phrases are for use with Publisher Rocket's Competition Analyzer.".to_string(),
+                            "> They are NOT the same as your KDP keyword strings.".to_string(),
+                            String::new(),
+                        ];
+                        for kw in &keywords {
+                            md.push(format!("- `{}`", kw));
+                        }
+                        md.push(String::new());
+
+                        GenreResult {
+                            success: true,
+                            report: md.join("\n"),
+                            error: String::new(),
+                        }
+                    }
+                }
+            }
+        }
+    }).await.unwrap()
+}
+
 // ── Keyword Optimizer ─────────────────────────────────────────────────────────
 
 #[derive(serde::Deserialize)]
@@ -335,21 +480,29 @@ pub async fn optimize_keywords(app: AppHandle, request: KeywordRequest) -> Genre
             Ok(s) => s,
             Err(_) => match fs::read_to_string(analysis_dir.join("genre-analysis.md")) {
                 Ok(s) => s,
-                Err(_) => return err("No report found. Run Full Analysis first."),
+                Err(_) => return err("No report found. Run Analyze or Full Analysis first."),
             },
         };
 
         emit(&app, "Extracting keywords from report...");
 
-        // Extract keyword sections from the report
+        // Extract keyword sections from the report (present after Full Analysis with PR scrape)
         let keywords_text = extract_keyword_sections(&full_report);
-        emit(&app, &format!("  Extracted {} chars of keyword material.", keywords_text.len()));
+        emit(&app, &format!("  Extracted {} chars of Publisher Rocket keyword material.", keywords_text.len()));
 
-        if keywords_text.is_empty() {
-            return err(
-                "No keyword sections found in report. Run Full Analysis (not just Analyze) to scrape Publisher Rocket keywords first."
-            );
-        }
+        // If no PR keywords found, work from genre signals instead.
+        // This happens when Analyze was run but not Full Analysis.
+        let (keywords_context, source_note) = if keywords_text.is_empty() {
+            emit(&app, "  No PR keyword sections found — using genre signals and category paths.");
+            let genre_signals = fs::read_to_string(analysis_dir.join("genre-analysis.md"))
+                .unwrap_or_default();
+            (
+                genre_signals,
+                "*(Note: Generated from genre analysis only. Run Full Analysis to include Publisher Rocket keyword data for better results.)*"
+            )
+        } else {
+            (keywords_text, "*(Generated from Publisher Rocket keyword data.)*")
+        };
 
         let analysis_model = models::resolve_analysis_model(&request.model);
         emit(&app, &format!("Asking {} to optimize keywords...", analysis_model));
@@ -358,15 +511,18 @@ pub async fn optimize_keywords(app: AppHandle, request: KeywordRequest) -> Genre
             &request.api_key,
             analysis_model,
             &genre_data,
-            &keywords_text,
+            &keywords_context,
         ) {
             Err(e) => err(&format!("AI error: {}", e)),
             Ok(result_md) => {
-                // Save to _analysis/kdp-keywords.md
+                // Prepend source note
+                let final_md = format!("{}
+
+{}", source_note, result_md);
                 let out_path = analysis_dir.join("kdp-keywords.md");
-                let _ = fs::write(&out_path, &result_md);
+                let _ = fs::write(&out_path, &final_md);
                 emit(&app, &format!("✓ Saved to {}", out_path.display()));
-                GenreResult { success: true, report: result_md, error: String::new() }
+                GenreResult { success: true, report: final_md, error: String::new() }
             }
         }
     }).await.unwrap()
@@ -555,6 +711,12 @@ fn phase1_summaries(
                 done += 1;
             }
             Err(e) => emit(app, &format!("    ⚠ AI error: {}", e)),
+        }
+
+        // Check for cancellation after each chapter
+        if crate::is_cancelled() {
+            emit(app, "⚠ Cancelled by user.");
+            break;
         }
     }
 

@@ -1,3 +1,4 @@
+mod cancel;
 mod cdp;
 mod commands;
 mod category_finder;
@@ -5,6 +6,8 @@ mod competition_analyzer;
 mod genre_analyzer;
 mod models;
 mod pr_scraper;
+
+pub use cancel::{is_cancelled, reset as reset_cancel};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -24,7 +27,10 @@ pub fn run() {
             genre_analyzer::analyze_genre,
             genre_analyzer::run_full_analysis,
             genre_analyzer::optimize_keywords,
+            genre_analyzer::generate_pr_keywords,
+            genre_analyzer::check_analysis_state,
             competition_analyzer::analyze_competition,
+            cancel::cancel_operation,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -9,6 +9,17 @@
     "core:webview:allow-set-webview-focus",
     "clipboard-manager:allow-write-text",
     "shell:allow-execute",
-    "shell:allow-open"
+    "shell:allow-open",
+    "dialog:allow-open",
+    "fs:allow-read-file",
+    "fs:allow-read-text-file",
+    "fs:allow-write-file",
+    "fs:allow-write-text-file",
+    "fs:allow-read-dir",
+    "fs:allow-mkdir",
+    "fs:allow-exists",
+    "fs:scope-home-recursive",
+    "fs:scope-document-recursive",
+    "fs:scope-desktop-recursive"
   ]
 }

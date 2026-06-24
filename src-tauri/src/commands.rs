@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
 use crate::cdp;
+use crate::models;
 
 // ── Shared result types ───────────────────────────────────────────────────────
 
@@ -625,7 +626,8 @@ pub async fn analyze_csv(
 }
 
 fn run_csv_analyzer(app: &AppHandle, req: CsvRequest) -> AnalyzerResult {
-    emit_log(app, &format!("Running CSV Analyzer for keyword: {}...", req.keyword));
+    let analysis_model = models::resolve_analysis_model(&req.model);
+    emit_log(app, &format!("Running CSV Analyzer for keyword: {} [{}]...", req.keyword, analysis_model));
 
     let system = r#"You are a publishing strategist helping an indie author analyze Amazon keyword competition data exported from Publisher Rocket.
 
@@ -644,7 +646,7 @@ Keep each section concise. No padding."#;
 
     let user = format!("Keyword: {}\n\nRaw CSV data:\n\n{}", req.keyword, req.csv_content);
 
-    match call_anthropic(&req.api_key, &req.model, system, &user, 1500) {
+    match call_anthropic(&req.api_key, analysis_model, system, &user, 1500) {
         Ok(markdown) => {
             emit_log(app, "✓ CSV analysis complete.");
             AnalyzerResult { success: true, markdown, error: String::new() }

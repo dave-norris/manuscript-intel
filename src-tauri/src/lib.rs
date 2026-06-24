@@ -1,18 +1,30 @@
 mod cdp;
 mod commands;
 mod category_finder;
+mod competition_analyzer;
+mod genre_analyzer;
+mod models;
+mod pr_scraper;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
             commands::check_rocket_status,
             commands::launch_rocket,
             commands::analyze_categories,
             commands::analyze_csv,
             commands::find_categories,
+            genre_analyzer::pick_manuscript_folder,
+            genre_analyzer::generate_summaries,
+            genre_analyzer::analyze_genre,
+            genre_analyzer::run_full_analysis,
+            genre_analyzer::optimize_keywords,
+            competition_analyzer::analyze_competition,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

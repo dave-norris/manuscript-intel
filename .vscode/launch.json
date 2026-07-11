@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Tauri Dev",
+      "type": "lldb-dap",
+      "request": "launch",
+      "program": "${workspaceFolder}/src-tauri/target/debug/pub-rocket-reader",
+      "args": [],
+      "cwd": "${workspaceFolder}/src-tauri",
+      "preLaunchTask": "cargo:build-debug",
+      "env": {
+        "RUST_BACKTRACE": "1"
+      }
+    }
+  ]
+}

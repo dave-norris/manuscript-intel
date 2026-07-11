@@ -1,0 +1,116 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "tauri:dev",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["tauri", "dev"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": [
+        {
+          "owner": "rust",
+          "fileLocation": ["relative", "${workspaceFolder}/src-tauri"],
+          "pattern": {
+            "regexp": "^(error|warning)\\[?.*\\]?:(.*)$",
+            "severity": 1,
+            "message": 2
+          },
+          "background": {
+            "activeOnStart": true,
+            "beginsPattern": "^\\s*Compiling",
+            "endsPattern": "^\\s*(Finished|Running)"
+          }
+        }
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "ui:dev",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "dev"],
+      "options": {
+        "cwd": "${workspaceFolder}/ui"
+      },
+      "isBackground": true,
+      "problemMatcher": [
+        {
+          "owner": "vite",
+          "pattern": {
+            "regexp": "^$",
+            "file": 1,
+            "location": 2,
+            "message": 3
+          },
+          "background": {
+            "activeOnStart": true,
+            "beginsPattern": "^\\s*VITE",
+            "endsPattern": "Local:\\s+http"
+          }
+        }
+      ]
+    },
+    {
+      "label": "ui:build",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "build"],
+      "options": {
+        "cwd": "${workspaceFolder}/ui"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "cargo:build-debug",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build"],
+      "options": {
+        "cwd": "${workspaceFolder}/src-tauri"
+      },
+      "dependsOn": "ui:dev",
+      "problemMatcher": ["$rustc"],
+      "group": "build"
+    },
+    {
+      "label": "tauri:build-debug",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["tauri", "build", "--debug"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": ["$rustc"],
+      "group": "build"
+    },
+    {
+      "label": "tauri:build",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["tauri", "build"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": ["$rustc"],
+      "group": "build"
+    },
+    {
+      "label": "cargo:check",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["check"],
+      "options": {
+        "cwd": "${workspaceFolder}/src-tauri"
+      },
+      "problemMatcher": ["$rustc"],
+      "group": "build"
+    }
+  ]
+}

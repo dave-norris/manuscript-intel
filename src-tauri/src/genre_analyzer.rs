@@ -355,6 +355,7 @@ pub struct AnalysisState {
     pub has_keywords:    bool,
     pub has_pr_keywords: bool,
     pub has_competition: bool,
+    pub has_categories:  bool,
 }
 
 #[tauri::command]
@@ -380,6 +381,131 @@ pub async fn check_analysis_state(folder: String) -> AnalysisState {
             has_keywords:    analysis_dir.join("kdp-keywords.md").exists(),
             has_pr_keywords: analysis_dir.join("pr-keywords.json").exists(),
             has_competition: analysis_dir.join("competition-report.md").exists(),
+            has_categories:  analysis_dir.join("category-finder.md").exists(),
+        }
+    }).await.unwrap()
+}
+
+// ── Category Finder (wired to Analyzer panel) ─────────────────────────────────────────────
+//
+// Runs Publisher Rocket's Category Search against the book's genre data.
+// The store (Kindle vs Books) is the only thing the user chooses here — the
+// filter is always locked to "Selectable Excluding Ghosts", since ghost
+// (unselectable) categories are never useful for KDP category assignment.
+
+#[derive(Deserialize)]
+pub struct FindCategoriesRequest {
+    pub folder:  String,
+    pub store:   String,  // "Kindle" or "Books"
+    pub api_key: String,
+    pub model:   String,
+}
+
+#[tauri::command]
+pub async fn find_categories_for_story(app: AppHandle, request: FindCategoriesRequest) -> GenreResult {
+    tokio::task::spawn_blocking(move || {
+        let folder       = PathBuf::from(&request.folder);
+        let analysis_dir = folder.join("_analysis");
+
+        if !analysis_dir.exists() { return err("No _analysis folder. Run Analyze first."); }
+
+        let genre_data = match load_genre_data(&analysis_dir.join("genre-data.json")) {
+            Some(d) => d,
+            None    => return err("genre-data.json not found. Run Analyze first."),
+        };
+
+        // Pull the genre signals paragraph out of genre-analysis.md, if present,
+        // to give the AI richer cross-genre context than the one-line industry tag alone.
+        let signals = fs::read_to_string(analysis_dir.join("genre-analysis.md"))
+            .ok()
+            .and_then(|s| {
+                s.split("## 3. Genre Signals Summary").nth(1)
+                    .and_then(|rest| rest.split("---").next())
+                    .map(|s| s.trim().to_string())
+            })
+            .unwrap_or_default();
+
+        let genre_description = format!(
+            "{}\n\nKDP category paths already identified from manuscript analysis: {}\n\n{}",
+            genre_data.industry.ebook,
+            genre_data.kdp.ebook.join("; "),
+            signals
+        );
+
+        emit(&app, "Running Category Finder on Publisher Rocket...");
+        emit(&app, &format!("  Store: {}", request.store));
+        emit(&app, "  Filter: Selectable Excluding Ghosts");
+
+        use crate::category_finder;
+        match category_finder::find_categories(
+            &app,
+            &genre_description,
+            &request.store,
+            "Selectable Excluding Ghosts",
+            &request.api_key,
+            &request.model,
+        ) {
+            Err(e) => err(&e),
+            Ok(results) => {
+                let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
+                let mut lines = vec![
+                    "# Category Finder Results".to_string(),
+                    format!("Generated: {}", now),
+                    format!("Store: {}", request.store),
+                    "Filter: Selectable Excluding Ghosts".to_string(),
+                    String::new(),
+                ];
+
+                let high: Vec<_> = results.iter().filter(|r| r.confidence >= 80).collect();
+                let low:  Vec<_> = results.iter().filter(|r| r.confidence <  80).collect();
+
+                if !high.is_empty() {
+                    lines.push("## Matched Categories".to_string());
+                    lines.push(String::new());
+                    for r in &high {
+                        lines.push(format!("### {} ({}% match)", r.path, r.confidence));
+                        lines.push(String::new());
+                        if !r.stats.is_empty() {
+                            lines.push(format!("- Sales needed to reach #1: **{}**", r.stats.sales_to_one));
+                            lines.push(format!("- Sales needed to reach #10: **{}**", r.stats.sales_to_ten));
+                            lines.push(format!("- Publisher books: **{}**", r.stats.publisher_pct));
+                            lines.push(format!("- KU books: **{}**", r.stats.ku_pct));
+                            lines.push(String::new());
+                        }
+                        if !r.keywords.is_empty() {
+                            lines.push("**Keywords**".to_string());
+                            lines.push(String::new());
+                            lines.push(r.keywords.clone());
+                            lines.push(String::new());
+                        } else {
+                            lines.push("*⚠️ Keywords could not be scraped for this category.*".to_string());
+                            lines.push(String::new());
+                        }
+                        lines.push("---".to_string());
+                        lines.push(String::new());
+                    }
+                } else {
+                    lines.push("## No High-Confidence Match Found".to_string());
+                    lines.push(String::new());
+                    lines.push("Use one of these paths in the Category Analyzer to inspect manually.".to_string());
+                    lines.push(String::new());
+                }
+
+                if !low.is_empty() {
+                    lines.push("## Also Considered (below 80%)".to_string());
+                    lines.push(String::new());
+                    for (i, r) in low.iter().enumerate() {
+                        lines.push(format!("{}. {} — **{}%**", i + 1, r.path, r.confidence));
+                    }
+                    lines.push(String::new());
+                }
+
+                let report = lines.join("\n");
+                let _ = fs::write(analysis_dir.join("category-finder.md"), &report);
+                emit(&app, &format!("✓ category-finder.md saved — {} matched, {} also considered.", high.len(), low.len()));
+
+                GenreResult { success: true, report, error: String::new() }
+            }
         }
     }).await.unwrap()
 }

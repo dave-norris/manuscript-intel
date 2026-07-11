@@ -30,6 +30,7 @@ pub fn run() {
             genre_analyzer::optimize_keywords,
             genre_analyzer::generate_pr_keywords,
             genre_analyzer::check_analysis_state,
+            genre_analyzer::find_categories_for_story,
             competition_analyzer::analyze_competition,
             cancel::cancel_operation,
             stories::list_stories,

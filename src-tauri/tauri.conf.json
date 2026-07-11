@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "/bin/bash -l -c 'npm --prefix /Users/norris/Developer/pub-rocket-reader/ui run dev'",
-    "beforeBuildCommand": "/bin/bash -l -c 'npm --prefix /Users/norris/Developer/pub-rocket-reader/ui run build'"
+    "beforeDevCommand": "npm --prefix ui run dev",
+    "beforeBuildCommand": "npm --prefix ui run build"
   },
   "app": {
     "windows": [

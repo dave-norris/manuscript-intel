@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Publisher Rocket Reader</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
-    <script type="module" crossorigin src="/assets/index-Dtol9Zlz.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-DtYcxzlC.css">
+    <script type="module" crossorigin src="/assets/index-DRzlyCFT.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BywBahNV.css">
   </head>
   <body>
     <div id="app">
@@ -60,6 +60,7 @@
             <div class="analyzer-primary">
               <button class="btn btn-action-primary" id="btn-run-everything" disabled>&#9654; Run Analysis</button>
               <button class="btn btn-action-comp" id="btn-analyze-competition" disabled>&#9654; Analyze Competition</button>
+              <button class="btn btn-action-cat" id="btn-find-categories" disabled>&#9654; Find Categories</button>
               <button class="btn btn-action-stop" id="btn-stop" style="display:none">&#x23F9; Stop</button>
             </div>
             <div class="analyzer-steps">
@@ -78,6 +79,15 @@
               <label class="store-option"><input type="radio" name="comp-store" value="Kindle" checked /> Kindle</label>
               <label class="store-option"><input type="radio" name="comp-store" value="Books" /> Books</label>
             </div>
+          </div>
+
+          <div class="store-selector" id="category-store-row">
+            <label class="store-label">Category Search Store</label>
+            <div class="store-options">
+              <label class="store-option"><input type="radio" name="cat-store" value="Kindle" checked /> Kindle</label>
+              <label class="store-option"><input type="radio" name="cat-store" value="Books" /> Books</label>
+            </div>
+            <p class="panel-desc" style="margin:4px 0 0;font-size:11px">Filter is always "Selectable Excluding Ghosts."</p>
           </div>
 
           <div class="output-area">

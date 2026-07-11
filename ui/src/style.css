@@ -286,6 +286,16 @@ html, body {
 }
 .btn-action-comp:hover { background: #421f61; }
 .btn-action-comp:disabled { background: var(--surface2); color: var(--text-muted); }
+.btn-action-cat {
+  flex: 1;
+  background: #1e4a6a;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 9px 14px;
+  text-align: left;
+}
+.btn-action-cat:hover { background: #163652; }
+.btn-action-cat:disabled { background: var(--surface2); color: var(--text-muted); }
 .btn-action-stop {
   background: var(--danger);
   color: white;

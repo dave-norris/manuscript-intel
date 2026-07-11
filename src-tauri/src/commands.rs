@@ -189,6 +189,10 @@ fn run_category_analyzer(app: &AppHandle, paths: Vec<String>, store: String, fil
             .to_string();
         let top_cat_json = serde_json::to_string(top_cat).unwrap();
         let search_json  = serde_json::to_string(&search_term).unwrap();
+
+        // PR sometimes hides the search input behind an icon until it's clicked.
+        click_search_icon_if_present(&mut session);
+
         // Clear the field first, then type each character to trigger React's
         // synthetic onChange — direct .value assignment is not reliable in Electron.
         let type_js = format!(r#"
@@ -498,6 +502,52 @@ fn click_back(session: &mut cdp::Session) {
         if let Ok(v) = serde_json::from_str::<Value>(&s) {
             if let (Some(x), Some(y)) = (v["x"].as_f64(), v["y"].as_f64()) {
                 let _ = session.click(x, y);
+            }
+        }
+    }
+}
+
+/// PR sometimes hides the category search input behind a small icon button
+/// until it's clicked. No-op if a text input is already visible.
+fn click_search_icon_if_present(session: &mut cdp::Session) {
+    let already_visible_js = r#"
+        const input = document.querySelector(
+            'input[type="text"],input[type="search"],input:not([type="radio"]):not([type="checkbox"])'
+        );
+        return JSON.stringify(!!(input && input.offsetParent !== null));
+    "#;
+    if let Ok(s) = session.eval(already_visible_js, 5) {
+        if s.trim() == "true" { return; }
+    }
+
+    let find_icon_js = r#"
+        const btn = Array.from(document.querySelectorAll('button,span,a,div'))
+          .find(e => {
+            const txt = e.textContent.trim();
+            const cls = (e.className || '').toLowerCase();
+            const w = e.getBoundingClientRect().width;
+            return txt === '' && (
+              cls.includes('search') || cls.includes('magnif') ||
+              e.querySelector('svg,img') !== null
+            ) && w < 60 && w > 0;
+          });
+        if (btn) {
+          btn.scrollIntoView({block:'center'});
+          const r = btn.getBoundingClientRect();
+          return JSON.stringify({x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)});
+        }
+        const aria = document.querySelector('[aria-label*="search" i]');
+        if (aria) {
+          const r = aria.getBoundingClientRect();
+          return JSON.stringify({x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)});
+        }
+        return JSON.stringify(null);
+    "#;
+    if let Ok(s) = session.eval(find_icon_js, 8) {
+        if let Ok(v) = serde_json::from_str::<Value>(&s) {
+            if let (Some(x), Some(y)) = (v["x"].as_f64(), v["y"].as_f64()) {
+                let _ = session.click(x, y);
+                std::thread::sleep(Duration::from_millis(500));
             }
         }
     }

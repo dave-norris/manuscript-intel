@@ -168,48 +168,56 @@ pub fn find_categories(
             emit(app, &format!("  Row {}: {}", i + 1, row));
         }
 
-        emit(app, "  Asking AI to pick best subcategory by index...");
-        match ai_match_subcategory(genre_description, &top.category, &rows, api_key, models::HAIKU) {
+        emit(app, "  Asking AI to pick best subcategories by index (up to 3)...");
+        match ai_match_subcategories(genre_description, &top.category, &rows, api_key, models::HAIKU) {
             Err(e) => {
                 emit(app, &format!("  ⚠ AI match failed: {}", e));
                 click_back(&mut session);
                 std::thread::sleep(Duration::from_secs(2));
                 continue;
             }
-            Ok(m) => {
-                // Clamp index to valid range
-                let row_index = if m.index == 0 { 1 } else { m.index }.min(rows.len());
-                let display_path = rows.get(row_index - 1)
-                    .cloned()
-                    .unwrap_or_else(|| m.path.clone());
+            Ok(matches) => {
+                // De-dupe by row index within this single top-level branch —
+                // the AI can occasionally repeat an index across list items.
+                let mut seen_indices = std::collections::HashSet::new();
 
-                emit(app, &format!("  {}% — row {} '{}': {}", m.confidence, row_index, display_path, m.reason));
+                for m in matches {
+                    // Clamp index to valid range
+                    let row_index = if m.index == 0 { 1 } else { m.index }.min(rows.len());
+                    if !seen_indices.insert(row_index) { continue; }
 
-                if m.confidence >= 80 {
-                    emit(app, &format!("  ✓ Scraping stats + keywords for row {}...", row_index));
+                    let display_path = rows.get(row_index - 1)
+                        .cloned()
+                        .unwrap_or_else(|| m.path.clone());
 
-                    // Use the 0-based DOM index to find the row — no string matching
-                    let (stats, keywords) = scrape_by_row_index(&mut session, row_index - 1);
+                    emit(app, &format!("  {}% — row {} '{}': {}", m.confidence, row_index, display_path, m.reason));
 
-                    emit(app, &format!(
-                        "  Stats: #1={} #10={} Publisher={}% KU={}%",
-                        stats.sales_to_one, stats.sales_to_ten,
-                        stats.publisher_pct, stats.ku_pct
-                    ));
-                    emit(app, &format!("  Keywords: {} chars", keywords.len()));
+                    if m.confidence >= 80 {
+                        emit(app, &format!("  ✓ Scraping stats + keywords for row {}...", row_index));
 
-                    results.push(ScoredCategory {
-                        path: display_path,
-                        confidence: m.confidence,
-                        stats,
-                        keywords,
-                    });
-                } else {
-                    emit(app, "  Below 80% — adding to candidates.");
-                    all_candidates.push(ScoredCategory {
-                        path: display_path, confidence: m.confidence,
-                        stats: CategoryStats::empty(), keywords: String::new(),
-                    });
+                        // Use the 0-based DOM index to find the row — no string matching
+                        let (stats, keywords) = scrape_by_row_index(&mut session, row_index - 1);
+
+                        emit(app, &format!(
+                            "  Stats: #1={} #10={} Publisher={}% KU={}%",
+                            stats.sales_to_one, stats.sales_to_ten,
+                            stats.publisher_pct, stats.ku_pct
+                        ));
+                        emit(app, &format!("  Keywords: {} chars", keywords.len()));
+
+                        results.push(ScoredCategory {
+                            path: display_path,
+                            confidence: m.confidence,
+                            stats,
+                            keywords,
+                        });
+                    } else {
+                        emit(app, "  Below 80% — adding to candidates.");
+                        all_candidates.push(ScoredCategory {
+                            path: display_path, confidence: m.confidence,
+                            stats: CategoryStats::empty(), keywords: String::new(),
+                        });
+                    }
                 }
 
                 click_back(&mut session);
@@ -230,10 +238,25 @@ pub fn find_categories(
         all_candidates.sort_by(|a, b| b.confidence.cmp(&a.confidence));
         Ok(all_candidates)
     } else {
+        // De-dupe across top-level branches — the same subcategory can surface
+        // under more than one top-level search (e.g. a Christian Fiction row
+        // appearing under both "Religion & Spirituality" and "Mystery, Thriller
+        // & Suspense"). Keep the highest-confidence copy of each path.
+        let mut by_path: std::collections::HashMap<String, ScoredCategory> = std::collections::HashMap::new();
+        for r in results {
+            let key = r.path.to_lowercase();
+            match by_path.get(&key) {
+                Some(existing) if existing.confidence >= r.confidence => {}
+                _ => { by_path.insert(key, r); }
+            }
+        }
+        let mut deduped: Vec<ScoredCategory> = by_path.into_values().collect();
+        deduped.sort_by(|a, b| b.confidence.cmp(&a.confidence));
+
         // Merge in any below-threshold candidates too
-        results.extend(all_candidates);
-        emit(app, &format!("✓ Done — {} result(s).", results.len()));
-        Ok(results)
+        deduped.extend(all_candidates);
+        emit(app, &format!("✓ Done — {} result(s) after de-duplication.", deduped.len()));
+        Ok(deduped)
     }
 }
 
@@ -263,36 +286,37 @@ Only include items with confidence > 20. Sort descending by confidence."#;
         .map_err(|e| format!("Parse error (top-level): {} | got: {}", e, &clean[..clean.len().min(300)]))
 }
 
-fn ai_match_subcategory(
+fn ai_match_subcategories(
     genre: &str,
     top_category: &str,
     rows: &[String],
     api_key: &str,
     model: &str,
-) -> Result<SubcategoryMatch, String> {
+) -> Result<Vec<SubcategoryMatch>, String> {
     let numbered = rows.iter()
         .enumerate()
         .map(|(i, r)| format!("{}. {}", i + 1, r))
         .collect::<Vec<_>>()
         .join("\n");
 
-    let system = r#"You are an Amazon Kindle publishing expert. Pick the single best subcategory for the genre.
+    let system = r#"You are an Amazon Kindle publishing expert. This book is cross-genre — pick EVERY subcategory in this list that is a genuinely strong, distinct fit, not just the single closest match.
 
-Return ONLY a JSON object, no markdown, no preamble.
-Fields: { "index": <1-based row number>, "path": "<copied verbatim>", "confidence": <0-100>, "reason": "<one sentence>" }
-The index must match the number at the start of the row you choose."#;
+Return ONLY a JSON array, no markdown, no preamble.
+Return 1 to 3 items. Only return more than one if they are meaningfully different fits — e.g. one subcategory serving the book's mystery/suspense thread and a separate one serving its historical or literary thread. Do not pad the list with near-duplicates of your top pick.
+Each item: { "index": <1-based row number>, "path": "<copied verbatim>", "confidence": <0-100>, "reason": "<one sentence>" }
+The index must match the number at the start of the row you choose. Sort descending by confidence."#;
 
     let user = format!(
         "Genre: {}\nTop-level category: {}\n\nSubcategory rows:\n{}",
         genre, top_category, numbered
     );
 
-    let raw = call_anthropic(api_key, model, system, &user, 300)?;
+    let raw = call_anthropic(api_key, model, system, &user, 500)?;
     let clean = raw.trim()
         .trim_start_matches("```json").trim_start_matches("```")
         .trim_end_matches("```").trim();
 
-    serde_json::from_str::<SubcategoryMatch>(clean)
+    serde_json::from_str::<Vec<SubcategoryMatch>>(clean)
         .map_err(|e| format!("Parse error (subcategory): {} | got: {}", e, &clean[..clean.len().min(300)]))
 }
 
@@ -357,11 +381,60 @@ fn click_button_by_text(session: &mut cdp::Session, text: &str) {
     }
 }
 
+/// PR sometimes hides the category search input behind a small icon button
+/// until it's clicked. No-op if a text input is already visible.
+fn click_search_icon_if_present(session: &mut cdp::Session) {
+    let already_visible_js = r#"
+        const input = document.querySelector(
+            'input[type="text"],input[type="search"],input:not([type="radio"]):not([type="checkbox"])'
+        );
+        return JSON.stringify(!!(input && input.offsetParent !== null));
+    "#;
+    if let Ok(s) = session.eval(already_visible_js, 5) {
+        if s.trim() == "true" { return; }
+    }
+
+    let find_icon_js = r#"
+        const btn = Array.from(document.querySelectorAll('button,span,a,div'))
+          .find(e => {
+            const txt = e.textContent.trim();
+            const cls = (e.className || '').toLowerCase();
+            const w = e.getBoundingClientRect().width;
+            return txt === '' && (
+              cls.includes('search') || cls.includes('magnif') ||
+              e.querySelector('svg,img') !== null
+            ) && w < 60 && w > 0;
+          });
+        if (btn) {
+          btn.scrollIntoView({block:'center'});
+          const r = btn.getBoundingClientRect();
+          return JSON.stringify({x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)});
+        }
+        const aria = document.querySelector('[aria-label*="search" i]');
+        if (aria) {
+          const r = aria.getBoundingClientRect();
+          return JSON.stringify({x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)});
+        }
+        return JSON.stringify(null);
+    "#;
+    if let Ok(s) = session.eval(find_icon_js, 8) {
+        if let Ok(v) = serde_json::from_str::<Value>(&s) {
+            if let (Some(x), Some(y)) = (v["x"].as_f64(), v["y"].as_f64()) {
+                let _ = session.click(x, y);
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    }
+}
+
 fn click_check_it_out(session: &mut cdp::Session, category: &str) -> bool {
     let search_term = category.split(|c| c == '&' || c == ',')
         .next().unwrap_or(category).trim().to_string();
     let sj = serde_json::to_string(&search_term).unwrap();
     let cj = serde_json::to_string(category).unwrap();
+
+    // PR sometimes hides the search input behind an icon until it's clicked.
+    click_search_icon_if_present(session);
 
     let type_js = format!(r#"
         const input = document.querySelector(

@@ -277,7 +277,7 @@ document.querySelectorAll('[data-tab="genre-log"],[data-tab="genre-preview"],[da
 function disableAllButtons() {
   ['btn-run-everything','btn-analyze-competition','btn-gen-summaries',
    'btn-run-genre','btn-full-analysis','btn-optimize-keywords',
-   'btn-gen-pr-keywords'].forEach(id => {
+   'btn-gen-pr-keywords','btn-find-categories'].forEach(id => {
     const el = document.getElementById(id); if (el) el.disabled = true;
   });
   updateStepLabels(null);
@@ -286,7 +286,7 @@ function disableAllButtons() {
 function disableGenreButtons(disabled) {
   ['btn-run-everything','btn-analyze-competition','btn-gen-summaries',
    'btn-run-genre','btn-full-analysis','btn-optimize-keywords',
-   'btn-gen-pr-keywords'].forEach(id => {
+   'btn-gen-pr-keywords','btn-find-categories'].forEach(id => {
     const el = document.getElementById(id); if (el) el.disabled = disabled;
   });
   document.getElementById('btn-stop').style.display = disabled ? 'flex' : 'none';
@@ -304,6 +304,7 @@ async function refreshAnalysisState(folder) {
     const s = await invoke('check_analysis_state', { folder });
     document.getElementById('btn-run-everything').disabled      = s.summary_count === 0;
     document.getElementById('btn-analyze-competition').disabled = !s.has_pr_keywords;
+    document.getElementById('btn-find-categories').disabled     = !s.has_genre_data;
     document.getElementById('btn-gen-summaries').disabled       = false;
     document.getElementById('btn-run-genre').disabled           = s.summary_count === 0;
     document.getElementById('btn-full-analysis').disabled       = !s.has_genre_data;
@@ -327,7 +328,9 @@ function updateStepLabels(state) {
   });
   const rAll  = document.getElementById('btn-run-everything');
   const rComp = document.getElementById('btn-analyze-competition');
+  const rCat  = document.getElementById('btn-find-categories');
   if (rAll)  rAll.textContent  = '\u25b6 Run Analysis'        + (state?.has_pr_keywords ? ' \u2713' : '');
+  if (rCat)  rCat.textContent  = '▶ Find Categories'      + (state?.has_categories  ? ' ✓' : '');
   if (rComp) rComp.textContent = '\u25b6 Analyze Competition' + (state?.has_competition ? ' \u2713' : '');
 }
 
@@ -417,6 +420,23 @@ document.getElementById('btn-analyze-competition').addEventListener('click', asy
   finally { disableGenreButtons(false); }
 });
 
+document.getElementById('btn-find-categories').addEventListener('click', async () => {
+  const folder = getActiveFolder();
+  if (!folder) { appendGenreLog('No story selected.'); return; }
+  const { apiKey, model } = getSettings();
+  if (!apiKey) { appendGenreLog('No API key set. Go to Settings.'); return; }
+  const store = document.querySelector('input[name="cat-store"]:checked')?.value || 'Kindle';
+  appendGenreLog('Finding categories [' + store + ', Selectable Excluding Ghosts] via Publisher Rocket...');
+  appendGenreLog('This may take several minutes.');
+  disableGenreButtons(true);
+  try {
+    const result = await invoke('find_categories_for_story', { request: { folder, api_key: apiKey, model, store } });
+    if (result.success) { setGenreReport(result.report); appendGenreLog('Category Finder complete.'); }
+    else { appendGenreLog('Error: ' + result.error); }
+  } catch (e) { appendGenreLog('Error: ' + String(e)); }
+  finally { disableGenreButtons(false); }
+});
+
 document.getElementById('btn-copy-genre').addEventListener('click', async () => {
   if (!currentGenreMarkdown) return;
   await writeText(currentGenreMarkdown);
@@ -437,6 +457,7 @@ const REPORT_LABELS = {
   'full-report.md':       { label: 'Full Report',          order: 2 },
   'kdp-keywords.md':      { label: 'KDP Keywords',         order: 3 },
   'competition-report.md':{ label: 'Competition Analysis', order: 4 },
+  'category-finder.md':   { label: 'Category Finder',      order: 5 },
 };
 
 async function loadReportsList() {

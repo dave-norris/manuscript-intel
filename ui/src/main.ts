@@ -429,3 +429,263 @@ function disableGenreButtons(disabled: boolean): void {
     if ($('reports-panel').classList.contains('visible')) loadReportsList();
   }
 }
+
+async function refreshAnalysisState(folder: string): Promise<void> {
+  if (!folder) { disableAllButtons(); return; }
+  try {
+    const s = await invoke<AnalysisState>('check_analysis_state', { folder });
+    $btn('btn-run-everything').disabled = s.summary_count === 0;
+    $btn('btn-analyze-competition').disabled = !s.has_pr_keywords;
+    $btn('btn-find-categories').disabled = !s.has_genre_data;
+    $btn('btn-gen-summaries').disabled = false;
+    $btn('btn-run-genre').disabled = s.summary_count === 0;
+    $btn('btn-full-analysis').disabled = !s.has_genre_data;
+    $btn('btn-optimize-keywords').disabled = !s.has_full_report;
+    $btn('btn-gen-pr-keywords').disabled = !s.has_full_report;
+    updateStepLabels(s);
+  } catch (e) { console.error('check_analysis_state:', e); }
+}
+
+function updateStepLabels(state: AnalysisState | null): void {
+  const steps: [string, string, string][] = [
+    ['btn-gen-summaries', 'Summaries', state && state.summary_count > 0 ? ` (${state.summary_count})\u2713` : ''],
+    ['btn-run-genre', 'Analyze', state?.has_genre_data ? ' \u2713' : ''],
+    ['btn-full-analysis', 'Full Analysis', state?.has_full_report ? ' \u2713' : ''],
+    ['btn-optimize-keywords', 'KDP Keywords', state?.has_keywords ? ' \u2713' : ''],
+    ['btn-gen-pr-keywords', 'PR Keywords', state?.has_pr_keywords ? ' \u2713' : ''],
+  ];
+  steps.forEach(([id, base, suffix]) => {
+    const btn = document.getElementById(id);
+    if (btn) btn.textContent = base + suffix;
+  });
+  const rAll = document.getElementById('btn-run-everything');
+  const rComp = document.getElementById('btn-analyze-competition');
+  const rCat = document.getElementById('btn-find-categories');
+  if (rAll) rAll.textContent = '\u25b6 Run Analysis' + (state?.has_pr_keywords ? ' \u2713' : '');
+  if (rCat) rCat.textContent = '\u25b6 Find Categories' + (state?.has_categories ? ' \u2713' : '');
+  if (rComp) rComp.textContent = '\u25b6 Analyze Competition' + (state?.has_competition ? ' \u2713' : '');
+}
+
+// ── Analyzer buttons ──────────────────────────────────────────────────────────
+
+function setGenreReport(markdown: string): void {
+  currentGenreMarkdown = markdown;
+  $('genre-raw-output').textContent = markdown;
+  $('genre-preview-content').innerHTML =
+    typeof marked !== 'undefined' ? marked.parse(markdown) : '<pre>' + markdown + '</pre>';
+  document.querySelectorAll<HTMLButtonElement>('[data-tab="genre-log"],[data-tab="genre-preview"],[data-tab="genre-raw"]')
+    .forEach(t => t.classList.toggle('active', t.dataset.tab === 'genre-preview'));
+  $('genre-log-pane').classList.add('hidden');
+  $('genre-preview-pane').classList.remove('hidden');
+  $('genre-raw-pane').classList.add('hidden');
+}
+
+function appendGenreLog(msg: string): void {
+  const el = $('genre-log-output');
+  el.textContent += (el.textContent ? '\n' : '') + msg;
+  el.scrollTop = el.scrollHeight;
+  document.querySelectorAll<HTMLButtonElement>('[data-tab="genre-log"],[data-tab="genre-preview"],[data-tab="genre-raw"]')
+    .forEach(t => t.classList.toggle('active', t.dataset.tab === 'genre-log'));
+  $('genre-log-pane').classList.remove('hidden');
+  $('genre-preview-pane').classList.add('hidden');
+  $('genre-raw-pane').classList.add('hidden');
+}
+
+async function runGenreCommand(cmdName: string, logMsg: string, successMsg: string): Promise<void> {
+  const folder = getActiveFolder();
+  if (!folder) { appendGenreLog('\u2717 No story selected.'); return; }
+  const { provider, apiKey, model } = getSettings();
+  if (!apiKey) { appendGenreLog('\u2717 No API key set. Go to Settings.'); return; }
+  if (!model) { appendGenreLog('\u2717 No model selected. Go to Settings and fetch models.'); return; }
+  appendGenreLog(`${logMsg} [${provider}: ${model}]`);
+  disableGenreButtons(true);
+  try {
+    const result = await invoke<GenreResult>(cmdName, { request: { folder, api_key: apiKey, model, provider } });
+    if (result.success) { setGenreReport(result.report); appendGenreLog(successMsg); }
+    else { appendGenreLog('\u2717 ' + result.error); }
+  } catch (e) { appendGenreLog('\u2717 ' + String(e)); }
+  finally { disableGenreButtons(false); }
+}
+
+$btn('btn-run-everything').addEventListener('click', () =>
+  runGenreCommand('run_everything', 'Running full analysis...', '\u2713 Analysis complete. Run \u25b6 Analyze Competition next.'));
+
+$btn('btn-gen-summaries').addEventListener('click', () =>
+  runGenreCommand('generate_summaries', 'Generating chapter summaries...', '\u2713 Summaries complete.'));
+
+$btn('btn-run-genre').addEventListener('click', () =>
+  runGenreCommand('analyze_genre', 'Running genre analysis...', '\u2713 Genre analysis complete.'));
+
+$btn('btn-full-analysis').addEventListener('click', () =>
+  runGenreCommand('run_full_analysis', 'Running full analysis...', '\u2713 Full analysis complete.'));
+
+$btn('btn-optimize-keywords').addEventListener('click', () =>
+  runGenreCommand('optimize_keywords', 'Optimizing KDP keywords...', '\u2713 KDP keywords complete.'));
+
+$btn('btn-gen-pr-keywords').addEventListener('click', () =>
+  runGenreCommand('generate_pr_keywords', 'Generating PR search terms...', '\u2713 PR keywords generated.'));
+
+$btn('btn-stop').addEventListener('click', async () => {
+  appendGenreLog('Stopping after current step...');
+  await invoke('cancel_operation');
+});
+
+// ── Analyze Competition ───────────────────────────────────────────────────────
+
+$btn('btn-analyze-competition').addEventListener('mouseenter', () => {
+  ($('competition-store-row') as HTMLElement).style.display = 'flex';
+});
+
+$btn('btn-analyze-competition').addEventListener('click', async () => {
+  const folder = getActiveFolder();
+  if (!folder) { appendGenreLog('\u2717 No story selected.'); return; }
+  const { provider, apiKey, model } = getSettings();
+  if (!apiKey) { appendGenreLog('\u2717 No API key set. Go to Settings.'); return; }
+  if (!model) { appendGenreLog('\u2717 No model selected. Go to Settings.'); return; }
+  const store = (document.querySelector('input[name="comp-store"]:checked') as HTMLInputElement)?.value || 'Kindle';
+  appendGenreLog(`Analyzing competition [${store}] via Publisher Rocket... [${provider}: ${model}]`);
+  appendGenreLog('This may take several minutes.');
+  disableGenreButtons(true);
+  try {
+    const result = await invoke<GenreResult>('analyze_competition', { request: { folder, api_key: apiKey, model, store, provider } });
+    if (result.success) { setGenreReport(result.report); appendGenreLog('\u2713 Competition analysis complete.'); }
+    else { appendGenreLog('\u2717 ' + result.error); }
+  } catch (e) { appendGenreLog('\u2717 ' + String(e)); }
+  finally { disableGenreButtons(false); }
+});
+
+$btn('btn-find-categories').addEventListener('click', async () => {
+  const folder = getActiveFolder();
+  if (!folder) { appendGenreLog('No story selected.'); return; }
+  const { provider, apiKey, model } = getSettings();
+  if (!apiKey) { appendGenreLog('No API key set. Go to Settings.'); return; }
+  if (!model) { appendGenreLog('No model selected. Go to Settings.'); return; }
+  const store = (document.querySelector('input[name="cat-store"]:checked') as HTMLInputElement)?.value || 'Kindle';
+  appendGenreLog(`Finding categories [${store}, Selectable Excluding Ghosts] [${provider}: ${model}]`);
+  appendGenreLog('This may take several minutes.');
+  disableGenreButtons(true);
+  try {
+    const result = await invoke<GenreResult>('find_categories_for_story', { request: { folder, api_key: apiKey, model, store, provider } });
+    if (result.success) { setGenreReport(result.report); appendGenreLog('Category Finder complete.'); }
+    else { appendGenreLog('Error: ' + result.error); }
+  } catch (e) { appendGenreLog('Error: ' + String(e)); }
+  finally { disableGenreButtons(false); }
+});
+
+$btn('btn-copy-genre').addEventListener('click', async () => {
+  if (!currentGenreMarkdown) return;
+  await writeText(currentGenreMarkdown);
+  const btn = $btn('btn-copy-genre');
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = 'Copy markdown'; }, 1500);
+});
+
+$btn('btn-clear-genre-log').addEventListener('click', () => {
+  $('genre-log-output').textContent = '';
+});
+
+listen<string>('genre:log', (event) => { appendGenreLog(event.payload); });
+
+// ── Reports ───────────────────────────────────────────────────────────────────
+
+const REPORT_LABELS: Record<string, { label: string; order: number }> = {
+  'genre-analysis.md':     { label: 'Genre Analysis', order: 1 },
+  'full-report.md':        { label: 'Full Report', order: 2 },
+  'kdp-keywords.md':       { label: 'KDP Keywords', order: 3 },
+  'competition-report.md': { label: 'Competition Analysis', order: 4 },
+  'category-finder.md':    { label: 'Category Finder', order: 5 },
+};
+
+async function loadReportsList(): Promise<void> {
+  const folder = getActiveFolder();
+  const note = $('reports-folder-note');
+  const list = $('reports-list');
+  list.innerHTML = '';
+  showReportsList();
+
+  if (!folder) {
+    note.textContent = 'Select a story to see its reports.';
+    note.style.display = 'block';
+    return;
+  }
+
+  const story = getActiveStory();
+  note.textContent = story ? `Reports for: ${story.name}` : '';
+  note.style.display = story ? 'block' : 'none';
+
+  try {
+    const entries = await readDir(folder + '/_analysis');
+    const mdFiles = entries
+      .filter(e => e.name?.endsWith('.md'))
+      .map(e => e.name!)
+      .sort((a, b) => (REPORT_LABELS[a]?.order ?? 99) - (REPORT_LABELS[b]?.order ?? 99));
+
+    if (mdFiles.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'panel-desc';
+      empty.textContent = 'No reports yet. Run the Analyzer to generate reports.';
+      list.appendChild(empty);
+      return;
+    }
+
+    mdFiles.forEach(filename => {
+      const label = REPORT_LABELS[filename]?.label ??
+        filename.replace('.md', '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      const item = document.createElement('div');
+      item.className = 'report-item';
+      item.innerHTML = `
+        <div>
+          <div class="report-item-name">${label}</div>
+          <div class="report-item-meta">${filename}</div>
+        </div>
+        <span class="report-item-arrow">\u203A</span>
+      `;
+      item.addEventListener('click', () => openReport(folder + '/_analysis/' + filename, label));
+      list.appendChild(item);
+    });
+  } catch {
+    const p = document.createElement('p');
+    p.className = 'panel-desc';
+    p.textContent = 'No reports folder found. Run the Analyzer first.';
+    list.appendChild(p);
+  }
+}
+
+async function openReport(path: string, label: string): Promise<void> {
+  try {
+    const content = await readTextFile(path);
+    $('reports-viewer-title').textContent = label;
+    $('reports-viewer-content').innerHTML =
+      typeof marked !== 'undefined' ? marked.parse(content) : '<pre>' + content + '</pre>';
+    ($('reports-viewer') as HTMLElement).dataset.content = content;
+    showReportsViewer();
+  } catch (e) { alert('Could not read report: ' + String(e)); }
+}
+
+function showReportsList(): void {
+  $('reports-list').classList.remove('hidden');
+  $('reports-folder-note').classList.remove('hidden');
+  $('reports-viewer').classList.add('hidden');
+}
+
+function showReportsViewer(): void {
+  $('reports-list').classList.add('hidden');
+  $('reports-folder-note').classList.add('hidden');
+  $('reports-viewer').classList.remove('hidden');
+}
+
+$btn('btn-reports-back').addEventListener('click', showReportsList);
+
+$btn('btn-reports-copy').addEventListener('click', async () => {
+  const content = ($('reports-viewer') as HTMLElement).dataset.content || '';
+  if (!content) return;
+  await writeText(content);
+  const btn = $btn('btn-reports-copy');
+  btn.textContent = 'Copied!';
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+});
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+loadSettings();
+loadStoriesFromDisk();

@@ -62,6 +62,7 @@ pub struct ScoredCategory {
     pub confidence: u8,
     pub stats:      CategoryStats,
     pub keywords:   String,
+    pub note:       Option<String>,  // set when this entry is a failed search, not a real match
 }
 
 #[derive(Debug, Deserialize)]
@@ -112,7 +113,7 @@ pub fn find_categories(
         for r in &top_rankings {
             all_candidates.push(ScoredCategory {
                 path: r.category.clone(), confidence: r.confidence,
-                stats: CategoryStats::empty(), keywords: String::new(),
+                stats: CategoryStats::empty(), keywords: String::new(), note: None,
             });
         }
         all_candidates.sort_by(|a, b| b.confidence.cmp(&a.confidence));
@@ -141,8 +142,9 @@ pub fn find_categories(
         if !click_check_it_out(&mut session, &top.category) {
             emit(app, &format!("  ⚠ '{}' not found in Publisher Rocket — skipping.", top.category));
             all_candidates.push(ScoredCategory {
-                path: top.category.clone(), confidence: top.confidence,
+                path: top.category.clone(), confidence: 0,
                 stats: CategoryStats::empty(), keywords: String::new(),
+                note: Some(format!("Publisher Rocket search for \"{}\" found no matching row — check this category manually in Category Search.", top.category)),
             });
             continue;
         }
@@ -154,11 +156,32 @@ pub fn find_categories(
 
         if rows.is_empty() {
             emit(app, "  ⚠ No subcategory rows found.");
+
+            // Diagnostic dump — helps pinpoint WHY without needing to watch the
+            // screen live. Common causes: virtualized/lazy-rendered row lists
+            // (only visible rows exist in the DOM until scrolled), or the page
+            // landed somewhere other than the subcategory table.
+            let diag_js = r#"
+                const trs = document.querySelectorAll('tr').length;
+                const scrollEl = document.scrollingElement;
+                const bodyText = document.body.innerText.replace(/\s+/g,' ').trim().slice(0, 400);
+                return JSON.stringify({
+                    trCount: trs,
+                    scrollHeight: scrollEl ? scrollEl.scrollHeight : 0,
+                    clientHeight: scrollEl ? scrollEl.clientHeight : 0,
+                    bodyPreview: bodyText,
+                });
+            "#;
+            if let Ok(diag) = session.eval(diag_js, 8) {
+                emit(app, &format!("  DIAG: {}", diag));
+            }
+
             click_back(&mut session);
             std::thread::sleep(Duration::from_secs(2));
             all_candidates.push(ScoredCategory {
-                path: top.category.clone(), confidence: top.confidence,
+                path: top.category.clone(), confidence: 0,
                 stats: CategoryStats::empty(), keywords: String::new(),
+                note: Some(format!("\"{}\" matched in Publisher Rocket but returned no subcategory rows (filter may be too narrow) — check manually.", top.category)),
             });
             continue;
         }
@@ -210,12 +233,13 @@ pub fn find_categories(
                             confidence: m.confidence,
                             stats,
                             keywords,
+                            note: None,
                         });
                     } else {
                         emit(app, "  Below 80% — adding to candidates.");
                         all_candidates.push(ScoredCategory {
                             path: display_path, confidence: m.confidence,
-                            stats: CategoryStats::empty(), keywords: String::new(),
+                            stats: CategoryStats::empty(), keywords: String::new(), note: None,
                         });
                     }
                 }
@@ -229,7 +253,7 @@ pub fn find_categories(
     for r in top_rankings.iter().filter(|r| r.confidence < 80) {
         all_candidates.push(ScoredCategory {
             path: r.category.clone(), confidence: r.confidence,
-            stats: CategoryStats::empty(), keywords: String::new(),
+            stats: CategoryStats::empty(), keywords: String::new(), note: None,
         });
     }
 

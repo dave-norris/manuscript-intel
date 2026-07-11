@@ -1,7 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-import { readDir, readTextFile } from '@tauri-apps/plugin-fs';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -58,6 +57,8 @@ interface AnalysisState {
   has_pr_keywords: boolean;
   has_competition: boolean;
   has_categories: boolean;
+  has_genre_ranking: boolean;
+  has_mapped_verified: boolean;
 }
 
 interface Settings {
@@ -408,7 +409,7 @@ document.querySelectorAll<HTMLButtonElement>('[data-tab="genre-log"],[data-tab="
 function disableAllButtons(): void {
   ['btn-run-everything','btn-analyze-competition','btn-gen-summaries',
    'btn-run-genre','btn-full-analysis','btn-optimize-keywords',
-   'btn-gen-pr-keywords','btn-find-categories'].forEach(id => {
+   'btn-gen-pr-keywords','btn-find-categories','btn-rank-genres','btn-verify-mapped'].forEach(id => {
     const el = document.getElementById(id) as HTMLButtonElement | null;
     if (el) el.disabled = true;
   });
@@ -418,7 +419,7 @@ function disableAllButtons(): void {
 function disableGenreButtons(disabled: boolean): void {
   ['btn-run-everything','btn-analyze-competition','btn-gen-summaries',
    'btn-run-genre','btn-full-analysis','btn-optimize-keywords',
-   'btn-gen-pr-keywords','btn-find-categories'].forEach(id => {
+   'btn-gen-pr-keywords','btn-find-categories','btn-rank-genres','btn-verify-mapped'].forEach(id => {
     const el = document.getElementById(id) as HTMLButtonElement | null;
     if (el) el.disabled = disabled;
   });
@@ -437,6 +438,8 @@ async function refreshAnalysisState(folder: string): Promise<void> {
     $btn('btn-run-everything').disabled = s.summary_count === 0;
     $btn('btn-analyze-competition').disabled = !s.has_pr_keywords;
     $btn('btn-find-categories').disabled = !s.has_genre_data;
+    $btn('btn-rank-genres').disabled = !s.has_genre_data;
+    $btn('btn-verify-mapped').disabled = !s.has_genre_ranking;
     $btn('btn-gen-summaries').disabled = false;
     $btn('btn-run-genre').disabled = s.summary_count === 0;
     $btn('btn-full-analysis').disabled = !s.has_genre_data;
@@ -453,6 +456,8 @@ function updateStepLabels(state: AnalysisState | null): void {
     ['btn-full-analysis', 'Full Analysis', state?.has_full_report ? ' \u2713' : ''],
     ['btn-optimize-keywords', 'KDP Keywords', state?.has_keywords ? ' \u2713' : ''],
     ['btn-gen-pr-keywords', 'PR Keywords', state?.has_pr_keywords ? ' \u2713' : ''],
+    ['btn-rank-genres', 'Rank Genres', state?.has_genre_ranking ? ' ✓' : ''],
+    ['btn-verify-mapped', 'Verify Mapped Categories', state?.has_mapped_verified ? ' ✓' : ''],
   ];
   steps.forEach(([id, base, suffix]) => {
     const btn = document.getElementById(id);
@@ -572,6 +577,23 @@ $btn('btn-find-categories').addEventListener('click', async () => {
   finally { disableGenreButtons(false); }
 });
 
+$btn('btn-rank-genres').addEventListener('click', () =>
+  runGenreCommand('rank_genres_for_story', 'Ranking against master genre list...', 'Genre ranking complete.'));
+
+$btn('btn-verify-mapped').addEventListener('click', async () => {
+  const folder = getActiveFolder();
+  if (!folder) { appendGenreLog('No story selected.'); return; }
+  const store = (document.querySelector('input[name="cat-store"]:checked') as HTMLInputElement)?.value || 'Kindle';
+  appendGenreLog(`Verifying mapped KDP categories [${store}] via Publisher Rocket...`);
+  disableGenreButtons(true);
+  try {
+    const result = await invoke<GenreResult>('verify_mapped_categories', { request: { folder, store } });
+    if (result.success) { setGenreReport(result.report); appendGenreLog('Mapped category verification complete.'); }
+    else { appendGenreLog('Error: ' + result.error); }
+  } catch (e) { appendGenreLog('Error: ' + String(e)); }
+  finally { disableGenreButtons(false); }
+});
+
 $btn('btn-copy-genre').addEventListener('click', async () => {
   if (!currentGenreMarkdown) return;
   await writeText(currentGenreMarkdown);
@@ -588,13 +610,11 @@ listen<string>('genre:log', (event) => { appendGenreLog(event.payload); });
 
 // ── Reports ───────────────────────────────────────────────────────────────────
 
-const REPORT_LABELS: Record<string, { label: string; order: number }> = {
-  'genre-analysis.md':     { label: 'Genre Analysis', order: 1 },
-  'full-report.md':        { label: 'Full Report', order: 2 },
-  'kdp-keywords.md':       { label: 'KDP Keywords', order: 3 },
-  'competition-report.md': { label: 'Competition Analysis', order: 4 },
-  'category-finder.md':    { label: 'Category Finder', order: 5 },
-};
+interface DocMeta {
+  doc_type: string;
+  label: string;
+  generated_at: string;
+}
 
 async function loadReportsList(): Promise<void> {
   const folder = getActiveFolder();
@@ -614,13 +634,9 @@ async function loadReportsList(): Promise<void> {
   note.style.display = story ? 'block' : 'none';
 
   try {
-    const entries = await readDir(folder + '/_analysis');
-    const mdFiles = entries
-      .filter(e => e.name?.endsWith('.md'))
-      .map(e => e.name!)
-      .sort((a, b) => (REPORT_LABELS[a]?.order ?? 99) - (REPORT_LABELS[b]?.order ?? 99));
+    const docs = await invoke<DocMeta[]>('list_reports_cmd', { folder });
 
-    if (mdFiles.length === 0) {
+    if (docs.length === 0) {
       const empty = document.createElement('p');
       empty.className = 'panel-desc';
       empty.textContent = 'No reports yet. Run the Analyzer to generate reports.';
@@ -628,32 +644,31 @@ async function loadReportsList(): Promise<void> {
       return;
     }
 
-    mdFiles.forEach(filename => {
-      const label = REPORT_LABELS[filename]?.label ??
-        filename.replace('.md', '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    docs.forEach(doc => {
       const item = document.createElement('div');
       item.className = 'report-item';
+      const when = new Date(doc.generated_at).toLocaleString();
       item.innerHTML = `
         <div>
-          <div class="report-item-name">${label}</div>
-          <div class="report-item-meta">${filename}</div>
+          <div class="report-item-name">${doc.label}</div>
+          <div class="report-item-meta">${when}</div>
         </div>
         <span class="report-item-arrow">\u203A</span>
       `;
-      item.addEventListener('click', () => openReport(folder + '/_analysis/' + filename, label));
+      item.addEventListener('click', () => openReport(folder, doc.doc_type, doc.label));
       list.appendChild(item);
     });
-  } catch {
+  } catch (e) {
     const p = document.createElement('p');
     p.className = 'panel-desc';
-    p.textContent = 'No reports folder found. Run the Analyzer first.';
+    p.textContent = 'Could not load reports: ' + String(e);
     list.appendChild(p);
   }
 }
 
-async function openReport(path: string, label: string): Promise<void> {
+async function openReport(folder: string, docType: string, label: string): Promise<void> {
   try {
-    const content = await readTextFile(path);
+    const content = await invoke<string>('get_report_cmd', { folder, docType });
     $('reports-viewer-title').textContent = label;
     $('reports-viewer-content').innerHTML =
       typeof marked !== 'undefined' ? marked.parse(content) : '<pre>' + content + '</pre>';

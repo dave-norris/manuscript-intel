@@ -1,48 +1,27 @@
 // genre_analyzer.rs — Full manuscript analysis pipeline
 //
 // Three commands:
-//   generate_summaries  — Phase 1 only: chapter by chapter, saves JSON per chapter
-//   analyze_genre       — Phase 2 only: reads summaries, produces genre-analysis.md
-//                         + genre-data.json; auto-generates summaries if missing
+//   generate_summaries  — Phase 1 only: chapter by chapter, saves to chapter_summaries table
+//   analyze_genre       — Phase 2 only: reads summaries, produces genre_data row + rendered doc
 //   run_full_analysis   — Phase 1 + 2: summaries + genre report
 //                         PR competition data is handled separately by Analyze Competition
+//
+// Everything the pipeline produces (chapter summaries, genre classification,
+// KDP keywords, PR search terms, category rankings/results) lives in SQLite
+// (see db.rs). The .md reports shown in the Reports panel are rendered fresh
+// from that data on every request via db::get_report_cmd — nothing is cached
+// as a loose file that can go stale.
 
 use std::path::{Path, PathBuf};
 use std::fs;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::call_llm;
+use crate::db;
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ChapterSummary {
-    pub file:       String,
-    pub title:      String,
-    pub signals:    String,
-    pub word_count: usize,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct GenreData {
-    pub generated: String,
-    pub industry:  IndustryGenre,
-    pub kdp:       KdpCategories,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct IndustryGenre {
-    pub ebook: String,
-    pub print: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct KdpCategories {
-    pub ebook: Vec<String>,
-    pub print: Vec<String>,
-}
+// ── Shared result / request types ───────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct GenreResult {
@@ -59,7 +38,7 @@ pub struct FolderRequest {
     pub provider: String,
 }
 
-// ── Commands ──────────────────────────────────────────────────────────────────
+// ── Folder picker ────────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn pick_manuscript_folder(app: AppHandle) -> Result<String, String> {
@@ -76,16 +55,13 @@ pub async fn pick_manuscript_folder(app: AppHandle) -> Result<String, String> {
     }
 }
 
+// ── Phase 1: chapter summaries ───────────────────────────────────────────────
+
 #[tauri::command]
 pub async fn generate_summaries(app: AppHandle, request: FolderRequest) -> GenreResult {
     tokio::task::spawn_blocking(move || {
         let folder = PathBuf::from(&request.folder);
         if !folder.exists() { return err("Folder does not exist."); }
-
-        let summaries_dir = folder.join("_analysis").join("summaries");
-        if let Err(e) = fs::create_dir_all(&summaries_dir) {
-            return err(&format!("Cannot create _analysis/summaries: {}", e));
-        }
 
         crate::reset_cancel();
         let chapters = collect_chapters(&folder);
@@ -93,7 +69,8 @@ pub async fn generate_summaries(app: AppHandle, request: FolderRequest) -> Genre
 
         emit(&app, &format!("Found {} chapter file(s). Starting summaries...", chapters.len()));
 
-        let (done, skipped) = phase1_summaries(&app, &chapters, &summaries_dir, &request.provider, &request.api_key, &request.model);
+        let database = app.state::<db::Db>();
+        let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder, &request.provider, &request.api_key, &request.model);
 
         GenreResult {
             success: true,
@@ -106,57 +83,48 @@ pub async fn generate_summaries(app: AppHandle, request: FolderRequest) -> Genre
 #[tauri::command]
 pub async fn analyze_genre(app: AppHandle, request: FolderRequest) -> GenreResult {
     tokio::task::spawn_blocking(move || {
-        let folder        = PathBuf::from(&request.folder);
+        let folder = PathBuf::from(&request.folder);
         if !folder.exists() { return err("Folder does not exist."); }
 
-        let analysis_dir  = folder.join("_analysis");
-        let summaries_dir = analysis_dir.join("summaries");
-        if let Err(e) = fs::create_dir_all(&summaries_dir) {
-            return err(&format!("Cannot create _analysis/summaries: {}", e));
-        }
-
-        let mut summaries = load_summaries(&summaries_dir);
+        let database = app.state::<db::Db>();
+        let mut summaries = { let conn = database.0.lock().unwrap(); db::load_chapter_summaries(&conn, &request.folder) };
 
         if summaries.is_empty() {
             emit(&app, "No summaries found — running Phase 1 first...");
             let chapters = collect_chapters(&folder);
             if chapters.is_empty() { return err("No .md files found."); }
-            phase1_summaries(&app, &chapters, &summaries_dir, &request.provider, &request.api_key, &request.model);
-            summaries = load_summaries(&summaries_dir);
+            phase1_summaries(&app, &database, &chapters, &request.folder, &request.provider, &request.api_key, &request.model);
+            let conn = database.0.lock().unwrap();
+            summaries = db::load_chapter_summaries(&conn, &request.folder);
         }
 
         if summaries.is_empty() { return err("Could not produce any chapter summaries."); }
 
         emit(&app, &format!("Phase 2: Analyzing {} chapter summaries...", summaries.len()));
-        phase2_analyze(&app, &analysis_dir, &summaries, &request.provider, &request.api_key, &request.model)
+        phase2_analyze(&app, &database, &request.folder, &summaries, &request.provider, &request.api_key, &request.model)
     }).await.unwrap()
 }
-
 
 /// Run everything except folder selection and chapter summaries:
 /// Analyze Genre → Full Analysis → Optimize Keywords → Generate PR Keywords
 #[tauri::command]
 pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResult {
     tokio::task::spawn_blocking(move || {
-        let folder        = PathBuf::from(&request.folder);
+        let folder = PathBuf::from(&request.folder);
         if !folder.exists() { return err("Folder does not exist."); }
 
-        let analysis_dir  = folder.join("_analysis");
-        let summaries_dir = analysis_dir.join("summaries");
-        if let Err(e) = fs::create_dir_all(&summaries_dir) {
-            return err(&format!("Cannot create _analysis/summaries: {}", e));
-        }
-
         crate::reset_cancel();
+        let database = app.state::<db::Db>();
 
         // ── Step 1: Ensure summaries exist ────────────────────────────────────
-        let mut summaries = load_summaries(&summaries_dir);
+        let mut summaries = { let conn = database.0.lock().unwrap(); db::load_chapter_summaries(&conn, &request.folder) };
         if summaries.is_empty() {
             emit(&app, "Step 1: No summaries found — generating now...");
             let chapters = collect_chapters(&folder);
             if chapters.is_empty() { return err("No .md chapter files found."); }
-            phase1_summaries(&app, &chapters, &summaries_dir, &request.provider, &request.api_key, &request.model);
-            summaries = load_summaries(&summaries_dir);
+            phase1_summaries(&app, &database, &chapters, &request.folder, &request.provider, &request.api_key, &request.model);
+            let conn = database.0.lock().unwrap();
+            summaries = db::load_chapter_summaries(&conn, &request.folder);
             if summaries.is_empty() { return err("Could not produce chapter summaries."); }
         } else {
             emit(&app, &format!("Step 1: {} summaries found — skipping.", summaries.len()));
@@ -164,41 +132,32 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
         if crate::is_cancelled() { return err("Cancelled."); }
 
         // ── Step 2: Genre analysis ─────────────────────────────────────────────
-        let data_path = analysis_dir.join("genre-data.json");
         emit(&app, "Step 2: Running genre analysis...");
-        let genre_result = phase2_analyze(&app, &analysis_dir, &summaries, &request.provider, &request.api_key, &request.model);
+        let genre_result = phase2_analyze(&app, &database, &request.folder, &summaries, &request.provider, &request.api_key, &request.model);
         if !genre_result.success { return genre_result; }
         if crate::is_cancelled() { return err("Cancelled."); }
 
         // ── Step 3: Full report ────────────────────────────────────────────────
         emit(&app, "Step 3: Building full report...");
-        let genre_data = match load_genre_data(&data_path) {
+        let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
+        let genre_data = match genre_data {
             Some(d) => d,
-            None    => return err("genre-data.json missing after analysis."),
+            None    => return err("genre_data missing after analysis."),
         };
-        let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
-        let genre_report = fs::read_to_string(analysis_dir.join("genre-analysis.md")).unwrap_or_default();
-        let full_report = vec![
-            "# Full Genre & Market Analysis".to_string(),
-            format!("Generated: {}", now),
-            String::new(), "---".to_string(), String::new(),
-            genre_report,
-            String::new(), "---".to_string(), String::new(),
-            "> Run **Analyze Competition** to add Publisher Rocket market data.".to_string(),
-            String::new(),
-        ].join("\n");
-        let _ = fs::write(analysis_dir.join("full-report.md"), &full_report);
-        emit(&app, "  ✓ full-report.md saved.");
+        let full_report = render_full_report(&genre_data, false);
+        { let conn = database.0.lock().unwrap(); let _ = db::save_document(&conn, &request.folder, "full_report", &full_report); }
+        emit(&app, "  ✓ Full report saved to database.");
         if crate::is_cancelled() { return err("Cancelled."); }
 
         // ── Step 4: Optimize KDP keywords ─────────────────────────────────────
         emit(&app, "Step 4: Optimizing KDP keywords...");
-        let keywords_context = fs::read_to_string(analysis_dir.join("genre-analysis.md")).unwrap_or_default();
-        match call_keyword_optimizer(&request.provider, &request.api_key, &request.model, &genre_data, &keywords_context) {
-            Ok(kw_md) => {
-                let final_md = format!("*(Generated from genre analysis.)*\n\n{}", kw_md);
-                let _ = fs::write(analysis_dir.join("kdp-keywords.md"), &final_md);
-                emit(&app, "  ✓ kdp-keywords.md saved.");
+        match call_keyword_optimizer(&request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals) {
+            Ok((entries, strategy)) => {
+                let conn = database.0.lock().unwrap();
+                let _ = db::save_kdp_keywords(&conn, &request.folder, &entries, &strategy, "*(Generated from genre analysis.)*");
+                let rendered = render_kdp_keywords(&entries, &strategy, "*(Generated from genre analysis.)*");
+                let _ = db::save_document(&conn, &request.folder, "kdp_keywords", &rendered);
+                emit(&app, "  ✓ KDP keywords saved to database.");
             }
             Err(e) => emit(&app, &format!("  ⚠ Keyword optimization failed: {}", e)),
         }
@@ -219,24 +178,23 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
 
         let pr_user = format!(
             "Book genre: {}\nKDP categories: {}\nGenre signals:\n{}",
-            genre_data.industry.ebook,
-            genre_data.kdp.ebook.iter()
+            genre_data.industry_ebook,
+            genre_data.kdp_ebook.iter()
                 .map(|p| p.split('>').last().unwrap_or(p).trim().to_string())
                 .collect::<Vec<_>>().join(", "),
-            fs::read_to_string(analysis_dir.join("genre-analysis.md"))
-                .map(|s| s[..s.len().min(500)].to_string())
-                .unwrap_or_default()
+            &genre_data.genre_signals[..genre_data.genre_signals.len().min(500)]
         );
 
         match call_llm(&request.provider, &request.api_key, &request.model, pr_system, &pr_user, 300) {
             Ok(raw) => {
                 if let Some(clean) = extract_json_object(&raw) {
                     if let Ok(keywords) = serde_json::from_str::<Vec<String>>(&clean) {
-                        if let Ok(json) = serde_json::to_string_pretty(&keywords) {
-                            let _ = fs::write(analysis_dir.join("pr-keywords.json"), &json);
-                            emit(&app, &format!("  ✓ pr-keywords.json saved ({} terms).", keywords.len()));
-                            for kw in &keywords { emit(&app, &format!("    • {}", kw)); }
-                        }
+                        let conn = database.0.lock().unwrap();
+                        let _ = db::save_pr_keywords(&conn, &request.folder, &keywords);
+                        let rendered = render_pr_keywords(&keywords);
+                        let _ = db::save_document(&conn, &request.folder, "pr_keywords", &rendered);
+                        emit(&app, &format!("  ✓ {} PR search terms saved to database.", keywords.len()));
+                        for kw in &keywords { emit(&app, &format!("    • {}", kw)); }
                     }
                 } else {
                     emit(&app, "  ⚠ Could not parse PR keywords response.");
@@ -247,7 +205,6 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
 
         emit(&app, "✓ Analysis complete. Run Analyze Competition next.");
 
-        // Return the genre analysis report for preview
         GenreResult { success: true, report: full_report, error: String::new() }
     }).await.unwrap()
 }
@@ -255,89 +212,49 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
 #[tauri::command]
 pub async fn run_full_analysis(app: AppHandle, request: FolderRequest) -> GenreResult {
     tokio::task::spawn_blocking(move || {
-        let folder        = PathBuf::from(&request.folder);
+        let folder = PathBuf::from(&request.folder);
         if !folder.exists() { return err("Folder does not exist."); }
 
-        let analysis_dir  = folder.join("_analysis");
-        let summaries_dir = analysis_dir.join("summaries");
-        if let Err(e) = fs::create_dir_all(&summaries_dir) {
-            return err(&format!("Cannot create _analysis/summaries: {}", e));
-        }
+        let database = app.state::<db::Db>();
 
         // ── Phase 1 ──────────────────────────────────────────────────────────
-        let mut summaries = load_summaries(&summaries_dir);
+        let mut summaries = { let conn = database.0.lock().unwrap(); db::load_chapter_summaries(&conn, &request.folder) };
         if summaries.is_empty() {
             emit(&app, "Phase 1: Generating chapter summaries...");
             let chapters = collect_chapters(&folder);
             if chapters.is_empty() { return err("No .md files found."); }
-            phase1_summaries(&app, &chapters, &summaries_dir, &request.provider, &request.api_key, &request.model);
-            summaries = load_summaries(&summaries_dir);
+            phase1_summaries(&app, &database, &chapters, &request.folder, &request.provider, &request.api_key, &request.model);
+            let conn = database.0.lock().unwrap();
+            summaries = db::load_chapter_summaries(&conn, &request.folder);
         } else {
             emit(&app, &format!("Phase 1: {} summaries already exist — skipping.", summaries.len()));
         }
-
         if summaries.is_empty() { return err("No chapter summaries available."); }
 
         // ── Phase 2 ──────────────────────────────────────────────────────────
-        let data_path  = analysis_dir.join("genre-data.json");
-        let genre_data = if data_path.exists() {
-            emit(&app, "Phase 2: genre-data.json exists — loading...");
-            match fs::read_to_string(&data_path).ok()
-                .and_then(|s| serde_json::from_str::<GenreData>(&s).ok())
-            {
-                Some(d) => d,
-                None => {
-                    emit(&app, "  Could not parse genre-data.json — re-running Phase 2...");
-                    match phase2_analyze(&app, &analysis_dir, &summaries, &request.provider, &request.api_key, &request.model) {
-                        r if r.success => match load_genre_data(&data_path) {
-                            Some(d) => d,
-                            None    => return err("Phase 2 produced no genre-data.json"),
-                        },
-                        r => return r,
-                    }
-                }
-            }
+        let existing = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
+        let genre_data = if let Some(d) = existing {
+            emit(&app, "Phase 2: genre data exists in database — loading...");
+            d
         } else {
             emit(&app, "Phase 2: Running genre analysis...");
-            match phase2_analyze(&app, &analysis_dir, &summaries, &request.provider, &request.api_key, &request.model) {
-                r if r.success => match load_genre_data(&data_path) {
-                    Some(d) => d,
-                    None    => return err("Phase 2 produced no genre-data.json"),
-                },
-                r => return r,
+            let r = phase2_analyze(&app, &database, &request.folder, &summaries, &request.provider, &request.api_key, &request.model);
+            if !r.success { return r; }
+            let conn = database.0.lock().unwrap();
+            match db::load_genre_data(&conn, &request.folder) {
+                Some(d) => d,
+                None    => return err("Phase 2 produced no genre data."),
             }
         };
 
-        emit(&app, &format!("  KDP ebook paths: {}", genre_data.kdp.ebook.join(", ")));
-        emit(&app, &format!("  KDP print paths: {}", genre_data.kdp.print.join(", ")));
+        emit(&app, &format!("  KDP ebook paths: {}", genre_data.kdp_ebook.join(", ")));
+        emit(&app, &format!("  KDP print paths: {}", genre_data.kdp_print.join(", ")));
 
         // ── Build full report ─────────────────────────────────────────────────
-        // PR competition data is added by Analyze Competition (uses CSV exports).
         emit(&app, "Building full report...");
-        let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
-
-        let genre_report = fs::read_to_string(analysis_dir.join("genre-analysis.md"))
-            .unwrap_or_default();
-
-        let lines = vec![
-            "# Full Genre & Market Analysis".to_string(),
-            format!("Generated: {}", now),
-            String::new(),
-            "---".to_string(),
-            String::new(),
-            genre_report,
-            String::new(),
-            "---".to_string(),
-            String::new(),
-            "> Run **Analyze Competition** to add Publisher Rocket market data, category stats,".to_string(),
-            "> competitor pricing, and cover analysis to this report.".to_string(),
-            String::new(),
-        ];
-
-        let full_report = lines.join("\n");
-        let report_path = analysis_dir.join("full-report.md");
-        let _ = fs::write(&report_path, &full_report);
-        emit(&app, &format!("✓ Full report saved to {}", report_path.display()));
+        let full_report = render_full_report(&genre_data, true);
+        { let conn = database.0.lock().unwrap(); let _ = db::save_document(&conn, &request.folder, "full_report", &full_report); }
+        emit(&app, "✓ Full report saved to database.");
 
         GenreResult { success: true, report: full_report, error: String::new() }
     }).await.unwrap()
@@ -347,45 +264,41 @@ pub async fn run_full_analysis(app: AppHandle, request: FolderRequest) -> GenreR
 
 #[derive(serde::Serialize)]
 pub struct AnalysisState {
-    pub has_folder:      bool,
-    pub summary_count:   usize,
-    pub has_genre_data:  bool,
-    pub has_full_report: bool,
-    pub has_keywords:    bool,
-    pub has_pr_keywords: bool,
-    pub has_competition: bool,
-    pub has_categories:  bool,
+    pub has_folder:          bool,
+    pub summary_count:       usize,
+    pub has_genre_data:      bool,
+    pub has_full_report:     bool,
+    pub has_keywords:        bool,
+    pub has_pr_keywords:     bool,
+    pub has_competition:     bool,
+    pub has_categories:      bool,
+    pub has_genre_ranking:   bool,
+    pub has_mapped_verified: bool,
 }
 
 #[tauri::command]
-pub async fn check_analysis_state(folder: String) -> AnalysisState {
+pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisState {
     tokio::task::spawn_blocking(move || {
-        let folder_path   = PathBuf::from(&folder);
-        let analysis_dir  = folder_path.join("_analysis");
-        let summaries_dir = analysis_dir.join("summaries");
-
-        let summary_count = if summaries_dir.exists() {
-            fs::read_dir(&summaries_dir)
-                .map(|d| d.flatten()
-                    .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
-                    .count())
-                .unwrap_or(0)
-        } else { 0 };
+        let folder_path = PathBuf::from(&folder);
+        let database    = app.state::<db::Db>();
+        let conn        = database.0.lock().unwrap();
 
         AnalysisState {
-            has_folder:      folder_path.exists(),
-            summary_count,
-            has_genre_data:  analysis_dir.join("genre-data.json").exists(),
-            has_full_report: analysis_dir.join("full-report.md").exists(),
-            has_keywords:    analysis_dir.join("kdp-keywords.md").exists(),
-            has_pr_keywords: analysis_dir.join("pr-keywords.json").exists(),
-            has_competition: analysis_dir.join("competition-report.md").exists(),
-            has_categories:  analysis_dir.join("category-finder.md").exists(),
+            has_folder:          folder_path.exists(),
+            summary_count:       db::chapter_summary_count(&conn, &folder) as usize,
+            has_genre_data:      db::load_genre_data(&conn, &folder).is_some(),
+            has_full_report:     db::get_document(&conn, &folder, "full_report").is_some(),
+            has_keywords:        db::load_kdp_keywords(&conn, &folder).is_some(),
+            has_pr_keywords:     !db::load_pr_keywords(&conn, &folder).is_empty(),
+            has_competition:     db::get_document(&conn, &folder, "competition_report").is_some(),
+            has_categories:      db::has_category_results(&conn, &folder),
+            has_genre_ranking:   db::has_genre_rankings(&conn, &folder),
+            has_mapped_verified: db::get_document(&conn, &folder, "mapped_categories").is_some(),
         }
     }).await.unwrap()
 }
 
-// ── Category Finder (wired to Analyzer panel) ─────────────────────────────────────────────
+// ── Category Finder (wired to Analyzer panel) ─────────────────────────────────
 //
 // Runs Publisher Rocket's Category Search against the book's genre data.
 // The store (Kindle vs Books) is the only thing the user chooses here — the
@@ -404,32 +317,19 @@ pub struct FindCategoriesRequest {
 #[tauri::command]
 pub async fn find_categories_for_story(app: AppHandle, request: FindCategoriesRequest) -> GenreResult {
     tokio::task::spawn_blocking(move || {
-        let folder       = PathBuf::from(&request.folder);
-        let analysis_dir = folder.join("_analysis");
+        let database = app.state::<db::Db>();
 
-        if !analysis_dir.exists() { return err("No _analysis folder. Run Analyze first."); }
-
-        let genre_data = match load_genre_data(&analysis_dir.join("genre-data.json")) {
+        let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
+        let genre_data = match genre_data {
             Some(d) => d,
-            None    => return err("genre-data.json not found. Run Analyze first."),
+            None    => return err("No genre data found. Run Analyze first."),
         };
-
-        // Pull the genre signals paragraph out of genre-analysis.md, if present,
-        // to give the AI richer cross-genre context than the one-line industry tag alone.
-        let signals = fs::read_to_string(analysis_dir.join("genre-analysis.md"))
-            .ok()
-            .and_then(|s| {
-                s.split("## 3. Genre Signals Summary").nth(1)
-                    .and_then(|rest| rest.split("---").next())
-                    .map(|s| s.trim().to_string())
-            })
-            .unwrap_or_default();
 
         let genre_description = format!(
             "{}\n\nKDP category paths already identified from manuscript analysis: {}\n\n{}",
-            genre_data.industry.ebook,
-            genre_data.kdp.ebook.join("; "),
-            signals
+            genre_data.industry_ebook,
+            genre_data.kdp_ebook.join("; "),
+            genre_data.genre_signals
         );
 
         emit(&app, "Running Category Finder on Publisher Rocket...");
@@ -457,8 +357,9 @@ pub async fn find_categories_for_story(app: AppHandle, request: FindCategoriesRe
                     String::new(),
                 ];
 
-                let high: Vec<_> = results.iter().filter(|r| r.confidence >= 80).collect();
-                let low:  Vec<_> = results.iter().filter(|r| r.confidence <  80).collect();
+                let high: Vec<_> = results.iter().filter(|r| r.note.is_none() && r.confidence >= 80).collect();
+                let low:  Vec<_> = results.iter().filter(|r| r.note.is_none() && r.confidence <  80).collect();
+                let failed: Vec<_> = results.iter().filter(|r| r.note.is_some()).collect();
 
                 if !high.is_empty() {
                     lines.push("## Matched Categories".to_string());
@@ -501,9 +402,146 @@ pub async fn find_categories_for_story(app: AppHandle, request: FindCategoriesRe
                     lines.push(String::new());
                 }
 
+                if !failed.is_empty() {
+                    lines.push("## Search Failed — Check Manually".to_string());
+                    lines.push(String::new());
+                    lines.push("Publisher Rocket didn't return usable data for these — not a confidence judgment, just a scrape that didn't land. Check them by hand in Category Search.".to_string());
+                    lines.push(String::new());
+                    for r in &failed {
+                        lines.push(format!("- **{}** — {}", r.path, r.note.as_deref().unwrap_or("")));
+                    }
+                    lines.push(String::new());
+                }
+
+                {
+                    let conn = database.0.lock().unwrap();
+                    let top_genre_hint: Option<String> = db::get_genre_rankings(&conn, &request.folder, &request.store)
+                        .ok()
+                        .and_then(|rows| rows.into_iter().next())
+                        .map(|r| r.genre);
+
+                    let rows: Vec<(String, u8, String, String, String, String, String, String, Option<String>)> = results.iter()
+                        .map(|r| {
+                            let status = if r.note.is_some() { "failed" }
+                                else if r.confidence >= 80 { "matched" }
+                                else { "considered" };
+                            (
+                                r.path.clone(), r.confidence,
+                                r.stats.sales_to_one.clone(), r.stats.sales_to_ten.clone(),
+                                r.stats.publisher_pct.clone(), r.stats.ku_pct.clone(),
+                                r.keywords.clone(), status.to_string(), r.note.clone(),
+                            )
+                        })
+                        .collect();
+
+                    if let Err(e) = db::replace_category_results(&conn, &request.folder, &request.store, top_genre_hint.as_deref(), &rows) {
+                        emit(&app, &format!("  ⚠ Could not save results to database: {}", e));
+                    }
+
+                    let report = lines.join("\n");
+                    let _ = db::save_document(&conn, &request.folder, "category_finder", &report);
+                    emit(&app, &format!("✓ Results stored in database — {} matched, {} also considered, {} search failure(s).", high.len(), low.len(), failed.len()));
+
+                    return GenreResult { success: true, report, error: String::new() };
+                }
+            }
+        }
+    }).await.unwrap()
+}
+
+// ── Genre Ranking (independent-scored, persisted) ────────────────────────────
+//
+// Scores the manuscript against the master genre list in the database.
+// Scores are independent, not normalized to sum to 100 — a cross-genre book
+// can legitimately score high on several genres at once.
+
+#[derive(Deserialize)]
+struct AiGenreRank {
+    genre:      String,
+    confidence: u8,
+    reason:     String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RankedGenre {
+    pub genre:      String,
+    pub confidence: u8,
+    pub reason:     String,
+    pub kdp_paths:  Vec<String>,
+}
+
+#[tauri::command]
+pub async fn rank_genres_for_story(app: AppHandle, request: FolderRequest) -> GenreResult {
+    tokio::task::spawn_blocking(move || {
+        let database = app.state::<db::Db>();
+
+        let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
+        let genre_data = match genre_data {
+            Some(d) => d,
+            None    => return err("No genre data found. Run Analyze first."),
+        };
+
+        let description = format!(
+            "{}\n\nKDP paths already identified from manuscript analysis: {}\n\n{}",
+            genre_data.industry_ebook, genre_data.kdp_ebook.join("; "), genre_data.genre_signals
+        );
+
+        emit(&app, "Ranking manuscript against master genre list...");
+        let master_list = match crate::genre_taxonomy::master_genre_list(&database) {
+            Ok(l) => l,
+            Err(e) => return err(&format!("Could not load genre list from database: {}", e)),
+        };
+        emit(&app, &format!("  Scoring against {} known genres.", master_list.len()));
+
+        match ai_rank_genres(&request.provider, &request.api_key, &request.model, &description, &master_list) {
+            Err(e) => err(&e),
+            Ok(ai_ranked) => {
+                let mut ranked: Vec<RankedGenre> = ai_ranked.into_iter().map(|r| {
+                    let kdp_paths = crate::genre_taxonomy::kdp_paths_for_genre(&database, &r.genre, "Kindle")
+                        .unwrap_or_default();
+                    RankedGenre { genre: r.genre, confidence: r.confidence, reason: r.reason, kdp_paths }
+                }).collect();
+                ranked.sort_by(|a, b| b.confidence.cmp(&a.confidence));
+
+                for r in &ranked {
+                    emit(&app, &format!("  {}% — {}{}", r.confidence, r.genre,
+                        if r.kdp_paths.is_empty() { " (no mapped KDP path yet)".to_string() } else { String::new() }));
+                }
+
+                let now_disp = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
+                let mut lines = vec![
+                    "# Genre Ranking".to_string(),
+                    format!("Generated: {}", now_disp),
+                    String::new(),
+                    "Each genre is scored independently against the manuscript — percentages do NOT sum to 100. A cross-genre book can score high on several genres at once; a lower score means a weaker but still real fit.".to_string(),
+                    String::new(),
+                ];
+                for r in &ranked {
+                    lines.push(format!("## {} — {}%", r.genre, r.confidence));
+                    lines.push(String::new());
+                    lines.push(r.reason.clone());
+                    lines.push(String::new());
+                    if !r.kdp_paths.is_empty() {
+                        lines.push("**Known KDP category path(s):**".to_string());
+                        for p in &r.kdp_paths { lines.push(format!("- `{}`", p)); }
+                    } else {
+                        lines.push("*No mapped KDP path yet for this genre. Run Category Finder to discover one — it will be saved to the database automatically.*".to_string());
+                    }
+                    lines.push(String::new());
+                    lines.push("---".to_string());
+                    lines.push(String::new());
+                }
                 let report = lines.join("\n");
-                let _ = fs::write(analysis_dir.join("category-finder.md"), &report);
-                emit(&app, &format!("✓ category-finder.md saved — {} matched, {} also considered.", high.len(), low.len()));
+
+                let conn = database.0.lock().unwrap();
+                let rows: Vec<(String, u8, String)> = ranked.iter()
+                    .map(|r| (r.genre.clone(), r.confidence, r.reason.clone()))
+                    .collect();
+                if let Err(e) = db::replace_genre_rankings(&conn, &request.folder, &rows) {
+                    emit(&app, &format!("  ⚠ Could not save ranking to database: {}", e));
+                }
+                let _ = db::save_document(&conn, &request.folder, "genre_ranking", &report);
+                emit(&app, &format!("✓ Ranking saved to database — {} genre(s) ranked.", ranked.len()));
 
                 GenreResult { success: true, report, error: String::new() }
             }
@@ -511,9 +549,106 @@ pub async fn find_categories_for_story(app: AppHandle, request: FindCategoriesRe
     }).await.unwrap()
 }
 
-// ── Keyword types ─────────────────────────────────────────────────────────────
+fn ai_rank_genres(provider: &str, api_key: &str, model: &str, description: &str, master_list: &[db::GenreRow])
+    -> Result<Vec<AiGenreRank>, String>
+{
+    let listing = master_list.iter()
+        .map(|g| format!("- {}: {}", g.name, g.description))
+        .collect::<Vec<_>>()
+        .join("\n");
 
-#[derive(serde::Deserialize)]
+    let system = format!(
+        r#"You are a publishing genre classification expert. Score this book INDEPENDENTLY against EACH genre in the list below. Do not normalize or force scores to sum to 100 — a genuinely cross-genre book can score high (even 80%+) on more than one genre at once, and that is correct, not an error.
+
+Return ONLY a JSON array, no markdown, no preamble.
+Include only genres scoring above 15.
+Each item: {{ "genre": "<exact name from list>", "confidence": <0-100>, "reason": "<one sentence>" }}
+Sort descending by confidence.
+
+Genre list:
+{}"#,
+        listing
+    );
+
+    let raw = call_llm(provider, api_key, model, &system, description, 1200)?;
+    let clean = raw.trim()
+        .trim_start_matches("```json").trim_start_matches("```")
+        .trim_end_matches("```").trim();
+
+    serde_json::from_str::<Vec<AiGenreRank>>(clean)
+        .map_err(|e| format!("Parse error (genre ranking): {} | got: {}", e, &clean[..clean.len().min(300)]))
+}
+
+// ── Verify Mapped Categories ──────────────────────────────────────────────────
+//
+// Takes the genres already ranked for this story, collects every known KDP
+// path, and runs them through the Category Analyzer (exact-path verification
+// against live Publisher Rocket data) — no AI call needed, paths are known.
+
+#[derive(Deserialize)]
+pub struct VerifyMappedRequest {
+    pub folder: String,
+    pub store:  String,
+}
+
+#[tauri::command]
+pub async fn verify_mapped_categories(app: AppHandle, db: tauri::State<'_, db::Db>, request: VerifyMappedRequest) -> GenreResult {
+    let rankings = {
+        let conn = db.0.lock().unwrap();
+        match db::get_genre_rankings(&conn, &request.folder, &request.store) {
+            Ok(r) => r,
+            Err(e) => return err(&format!("Could not read rankings from database: {}", e)),
+        }
+    };
+
+    if rankings.is_empty() {
+        return err("No genre rankings found for this story. Run Rank Genres first.");
+    }
+
+    let mut paths: Vec<String> = Vec::new();
+    for g in &rankings {
+        for p in &g.kdp_paths {
+            if !paths.contains(p) { paths.push(p.clone()); }
+        }
+    }
+
+    if paths.is_empty() {
+        return err("None of this story's ranked genres have a mapped KDP path yet. Run Category Finder to discover paths — they'll be saved to the database automatically.");
+    }
+
+    emit(&app, &format!("Verifying {} mapped KDP path(s) in Publisher Rocket...", paths.len()));
+
+    let result = crate::commands::analyze_categories(
+        app.clone(),
+        crate::commands::CategoryRequest {
+            paths,
+            store:  request.store.clone(),
+            filter: "Selectable Excluding Ghosts".to_string(),
+        },
+    ).await;
+
+    if !result.success {
+        return err(&result.error);
+    }
+
+    {
+        let conn = db.0.lock().unwrap();
+        let _ = db::save_document(&conn, &request.folder, "mapped_categories", &result.markdown);
+        for g in &rankings {
+            for p in &g.kdp_paths {
+                let _ = db::upsert_kdp_path(&conn, &g.genre, p, &request.store, "category_analyzer", true);
+            }
+        }
+    }
+
+    emit(&app, "✓ Verified paths saved to database.");
+
+    GenreResult { success: true, report: result.markdown, error: String::new() }
+}
+
+// ── Keyword Optimizer ─────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
 pub struct KeywordRequest {
     pub folder:   String,
     pub api_key:  String,
@@ -521,23 +656,18 @@ pub struct KeywordRequest {
     pub provider: String,
 }
 
-// ── PR Keyword Generator ──────────────────────────────────────────────────────
-
 #[tauri::command]
 pub async fn generate_pr_keywords(app: AppHandle, request: KeywordRequest) -> GenreResult {
     tokio::task::spawn_blocking(move || {
-        let folder       = PathBuf::from(&request.folder);
-        let analysis_dir = folder.join("_analysis");
-
-        if !analysis_dir.exists() { return err("No _analysis folder. Run Analyze first."); }
-
-        let genre_data = match load_genre_data(&analysis_dir.join("genre-data.json")) {
+        let database = app.state::<db::Db>();
+        let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
+        let genre_data = match genre_data {
             Some(d) => d,
-            None    => return err("genre-data.json not found. Run Analyze first."),
+            None    => return err("No genre data found. Run Analyze first."),
         };
 
         emit(&app, "Generating PR Competition Analyzer search terms...");
-        emit(&app, &format!("  Genre: {}", genre_data.industry.ebook));
+        emit(&app, &format!("  Genre: {}", genre_data.industry_ebook));
 
         let system = r#"You are a Publisher Rocket expert. Generate short search phrases for the Competition Analyzer tool.
 
@@ -555,13 +685,11 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
 
         let user = format!(
             "Book genre: {}\nKDP categories: {}\nGenre signals:\n{}",
-            genre_data.industry.ebook,
-            genre_data.kdp.ebook.iter()
+            genre_data.industry_ebook,
+            genre_data.kdp_ebook.iter()
                 .map(|p| p.split('>').last().unwrap_or(p).trim().to_string())
                 .collect::<Vec<_>>().join(", "),
-            fs::read_to_string(analysis_dir.join("genre-analysis.md"))
-                .map(|s| s[..s.len().min(500)].to_string())
-                .unwrap_or_default()
+            &genre_data.genre_signals[..genre_data.genre_signals.len().min(500)]
         );
 
         match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 300) {
@@ -574,26 +702,15 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
                 match serde_json::from_str::<Vec<String>>(clean) {
                     Err(e) => err(&format!("Parse error: {} | got: {}", e, &clean[..clean.len().min(200)])),
                     Ok(keywords) => {
-                        let out_path = analysis_dir.join("pr-keywords.json");
-                        if let Ok(json) = serde_json::to_string_pretty(&keywords) {
-                            let _ = fs::write(&out_path, &json);
-                        }
                         emit(&app, &format!("  ✓ {} PR search terms generated:", keywords.len()));
                         for kw in &keywords { emit(&app, &format!("    • {}", kw)); }
 
-                        let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
-                        let mut md = vec![
-                            "# PR Competition Analyzer Keywords".to_string(),
-                            format!("Generated: {}", now),
-                            String::new(),
-                            "> These short phrases are for Publisher Rocket's Competition Analyzer.".to_string(),
-                            "> They are NOT the same as your KDP keyword strings.".to_string(),
-                            String::new(),
-                        ];
-                        for kw in &keywords { md.push(format!("- `{}`", kw)); }
-                        md.push(String::new());
+                        let rendered = render_pr_keywords(&keywords);
+                        let conn = database.0.lock().unwrap();
+                        let _ = db::save_pr_keywords(&conn, &request.folder, &keywords);
+                        let _ = db::save_document(&conn, &request.folder, "pr_keywords", &rendered);
 
-                        GenreResult { success: true, report: md.join("\n"), error: String::new() }
+                        GenreResult { success: true, report: rendered, error: String::new() }
                     }
                 }
             }
@@ -601,80 +718,41 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
     }).await.unwrap()
 }
 
-// ── Keyword Optimizer ─────────────────────────────────────────────────────────
-
 #[tauri::command]
 pub async fn optimize_keywords(app: AppHandle, request: KeywordRequest) -> GenreResult {
     tokio::task::spawn_blocking(move || {
-        let folder       = PathBuf::from(&request.folder);
-        let analysis_dir = folder.join("_analysis");
-
-        if !analysis_dir.exists() { return err("No _analysis folder. Run Full Analysis first."); }
-
-        let genre_data = match load_genre_data(&analysis_dir.join("genre-data.json")) {
+        let database = app.state::<db::Db>();
+        let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
+        let genre_data = match genre_data {
             Some(d) => d,
-            None    => return err("genre-data.json not found. Run Full Analysis first."),
+            None    => return err("No genre data found. Run Full Analysis first."),
         };
 
-        let full_report = match fs::read_to_string(analysis_dir.join("full-report.md")) {
-            Ok(s) => s,
-            Err(_) => match fs::read_to_string(analysis_dir.join("genre-analysis.md")) {
-                Ok(s) => s,
-                Err(_) => return err("No report found. Run Analyze or Full Analysis first."),
-            },
-        };
-
-        emit(&app, "Extracting keywords from report...");
-        let keywords_text = extract_keyword_sections(&full_report);
-        emit(&app, &format!("  Extracted {} chars of keyword material.", keywords_text.len()));
-
-        let (keywords_context, source_note) = if keywords_text.is_empty() {
-            emit(&app, "  No PR keyword sections — using genre signals.");
-            let genre_signals = fs::read_to_string(analysis_dir.join("genre-analysis.md"))
-                .unwrap_or_default();
-            (genre_signals, "*(Generated from genre analysis. Run Analyze Competition for PR-sourced keywords.)*")
+        emit(&app, "Extracting keyword material...");
+        let source_note = if !genre_data.genre_signals.is_empty() {
+            "*(Generated from genre analysis.)*"
         } else {
-            (keywords_text, "*(Generated from Publisher Rocket keyword data.)*")
+            "*(Generated from genre analysis. Run Analyze Competition for PR-sourced keywords.)*"
         };
 
         emit(&app, &format!("Asking {} to optimize keywords...", &request.model));
 
-        match call_keyword_optimizer(&request.provider, &request.api_key, &request.model, &genre_data, &keywords_context) {
+        match call_keyword_optimizer(&request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals) {
             Err(e) => err(&format!("AI error: {}", e)),
-            Ok(result_md) => {
-                let final_md = format!("{}\n\n{}", source_note, result_md);
-                let out_path = analysis_dir.join("kdp-keywords.md");
-                let _ = fs::write(&out_path, &final_md);
-                emit(&app, &format!("✓ Saved to {}", out_path.display()));
-                GenreResult { success: true, report: final_md, error: String::new() }
+            Ok((entries, strategy)) => {
+                let rendered = render_kdp_keywords(&entries, &strategy, source_note);
+                let conn = database.0.lock().unwrap();
+                let _ = db::save_kdp_keywords(&conn, &request.folder, &entries, &strategy, source_note);
+                let _ = db::save_document(&conn, &request.folder, "kdp_keywords", &rendered);
+                emit(&app, "✓ KDP keywords saved to database.");
+                GenreResult { success: true, report: rendered, error: String::new() }
             }
         }
     }).await.unwrap()
 }
 
-fn extract_keyword_sections(report: &str) -> String {
-    let mut out = Vec::new();
-    let mut capturing = false;
-    for line in report.lines() {
-        let trimmed = line.trim();
-        if trimmed == "**Keywords**" || trimmed == "### Keywords" {
-            capturing = true;
-            continue;
-        }
-        if capturing {
-            if trimmed == "---" || trimmed.starts_with("### ") {
-                capturing = false;
-                out.push(String::new());
-            } else if !trimmed.is_empty() {
-                out.push(line.to_string());
-            }
-        }
-    }
-    out.join("\n")
-}
-
-fn call_keyword_optimizer(provider: &str, api_key: &str, model: &str, genre_data: &GenreData, keywords_text: &str)
-    -> Result<String, String>
+fn call_keyword_optimizer(provider: &str, api_key: &str, model: &str, genre_data: &db::GenreDataRow, keywords_text: &str)
+    -> Result<(Vec<db::KdpKeywordEntry>, String), String>
 {
     let system = r#"You are an Amazon KDP keyword strategist helping an indie author maximize book discoverability.
 
@@ -700,15 +778,12 @@ Return ONLY a JSON object:
 
     let user = format!(
         "Genre (ebook): {}\nGenre (print): {}\nKDP ebook categories: {}\nKDP print categories: {}\n\nKeyword material:\n\n{}",
-        genre_data.industry.ebook,
-        genre_data.industry.print,
-        genre_data.kdp.ebook.join(", "),
-        genre_data.kdp.print.join(", "),
+        genre_data.industry_ebook, genre_data.industry_print,
+        genre_data.kdp_ebook.join(", "), genre_data.kdp_print.join(", "),
         keywords_text
     );
 
     let raw = call_llm(provider, api_key, model, system, &user, 1000)?;
-    // Extract just the JSON object — ignore any trailing text or markdown fences
     let clean = extract_json_object(&raw)
         .ok_or_else(|| format!("No JSON object found in response: {}", &raw[..raw.len().min(200)]))?;
 
@@ -718,8 +793,103 @@ Return ONLY a JSON object:
     let keywords = v["keywords"].as_array().ok_or("Missing keywords array")?;
     let strategy = v["strategy"].as_str().unwrap_or("").to_string();
 
+    let entries: Vec<db::KdpKeywordEntry> = keywords.iter().map(|kw| {
+        let s = kw["string"].as_str().unwrap_or("").to_string();
+        let chars = kw["chars"].as_i64().unwrap_or(s.len() as i64);
+        db::KdpKeywordEntry {
+            chars: chars.max(s.len() as i64),
+            string: s,
+            rationale: kw["rationale"].as_str().unwrap_or("").to_string(),
+        }
+    }).collect();
+
+    Ok((entries, strategy))
+}
+
+// ── Rendering (structured DB data → markdown, always fresh, never cached-stale) ─
+
+fn render_genre_analysis_md(g: &db::GenreDataRow) -> String {
     let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
     let mut md = vec![
+        "# Genre Analysis Report".to_string(),
+        format!("Generated: {}", now),
+        String::new(),
+        "> **Note:** Classifications are based on AI training data. Verify KDP paths in Publisher Rocket.".to_string(),
+        String::new(),
+        "---".to_string(),
+        String::new(),
+        "## 1. Industry Genre Classification".to_string(),
+        String::new(),
+        "### Ebook".to_string(),
+        format!("**{}**", g.industry_ebook),
+        String::new(),
+    ];
+    if !g.comps_ebook.is_empty() {
+        md.push("**Comparable titles:**".to_string());
+        for c in &g.comps_ebook { md.push(format!("- {}", c)); }
+        md.push(String::new());
+    }
+    md.push(format!("**Reader demographic:** {}", g.reader_demographic));
+    md.push(String::new());
+    md.push("### Print".to_string());
+    md.push(format!("**{}**", g.industry_print));
+    md.push(String::new());
+    md.push(format!("**Bookstore shelving:** {}", g.bookstore_shelving));
+    md.push(String::new());
+    if !g.comps_print.is_empty() {
+        md.push("**Comparable titles:**".to_string());
+        for c in &g.comps_print { md.push(format!("- {}", c)); }
+        md.push(String::new());
+    }
+    md.push("---".to_string());
+    md.push(String::new());
+    md.push("## 2. KDP Category Recommendations".to_string());
+    md.push(String::new());
+    md.push("### Kindle Ebook".to_string());
+    for p in &g.kdp_ebook { md.push(format!("- `{}`", p)); }
+    md.push(String::new());
+    md.push("### KDP Print".to_string());
+    for p in &g.kdp_print { md.push(format!("- `{}`", p)); }
+    md.push(String::new());
+    md.push("---".to_string());
+    md.push(String::new());
+    md.push("## 3. Genre Signals Summary".to_string());
+    md.push(String::new());
+    md.push(g.genre_signals.clone());
+    md.push(String::new());
+    md.push("---".to_string());
+    md.push(String::new());
+    md.push("## 4. Marketing Notes".to_string());
+    md.push(String::new());
+    for note in &g.marketing_notes { md.push(format!("- {}", note)); }
+    md.push(String::new());
+    md.join("\n")
+}
+
+fn render_full_report(g: &db::GenreDataRow, competition_done: bool) -> String {
+    let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
+    let genre_report = render_genre_analysis_md(g);
+    let footer = if competition_done {
+        "> Run **Analyze Competition** to refresh Publisher Rocket market data, category stats,\n> competitor pricing, and cover analysis in this report."
+    } else {
+        "> Run **Analyze Competition** to add Publisher Rocket market data."
+    };
+    vec![
+        "# Full Genre & Market Analysis".to_string(),
+        format!("Generated: {}", now),
+        String::new(), "---".to_string(), String::new(),
+        genre_report,
+        String::new(), "---".to_string(), String::new(),
+        footer.to_string(),
+        String::new(),
+    ].join("\n")
+}
+
+fn render_kdp_keywords(entries: &[db::KdpKeywordEntry], strategy: &str, source_note: &str) -> String {
+    let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
+    let mut md = vec![
+        source_note.to_string(),
+        String::new(),
         "# KDP Keyword Strings".to_string(),
         format!("Generated: {}", now),
         String::new(),
@@ -731,23 +901,18 @@ Return ONLY a JSON object:
         "## Your 7 KDP Keyword Strings".to_string(),
         String::new(),
     ];
-
-    for (i, kw) in keywords.iter().enumerate() {
-        let s      = kw["string"].as_str().unwrap_or("");
-        let chars  = kw["chars"].as_u64().unwrap_or(s.len() as u64);
-        let why    = kw["rationale"].as_str().unwrap_or("");
-        let actual = s.len();
-        let flag   = if actual > 50 { " ⚠️ OVER 50 CHARS — shorten before using" } else { "" };
-        md.push(format!("**{}. `{}`**{}", i + 1, s, flag));
-        md.push(format!("*{} characters — {}*", chars.max(actual as u64), why));
+    for (i, kw) in entries.iter().enumerate() {
+        let actual = kw.string.len() as i64;
+        let flag = if actual > 50 { " ⚠️ OVER 50 CHARS — shorten before using" } else { "" };
+        md.push(format!("**{}. `{}`**{}", i + 1, kw.string, flag));
+        md.push(format!("*{} characters — {}*", kw.chars.max(actual), kw.rationale));
         md.push(String::new());
     }
-
     md.push("---".to_string());
     md.push(String::new());
     md.push("## Strategy".to_string());
     md.push(String::new());
-    md.push(strategy);
+    md.push(strategy.to_string());
     md.push(String::new());
     md.push("---".to_string());
     md.push(String::new());
@@ -759,13 +924,27 @@ Return ONLY a JSON object:
     md.push("4. Do NOT use commas inside a field".to_string());
     md.push("5. Do NOT repeat words already in your title, subtitle, or categories".to_string());
     md.push(String::new());
+    md.join("\n")
+}
 
-    Ok(md.join("\n"))
+fn render_pr_keywords(keywords: &[String]) -> String {
+    let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
+    let mut md = vec![
+        "# PR Competition Analyzer Keywords".to_string(),
+        format!("Generated: {}", now),
+        String::new(),
+        "> These short phrases are for Publisher Rocket's Competition Analyzer.".to_string(),
+        "> They are NOT the same as your KDP keyword strings.".to_string(),
+        String::new(),
+    ];
+    for kw in keywords { md.push(format!("- `{}`", kw)); }
+    md.push(String::new());
+    md.join("\n")
 }
 
 // ── Phase implementations ─────────────────────────────────────────────────────
 
-fn phase1_summaries(app: &AppHandle, chapters: &[PathBuf], summaries_dir: &Path, provider: &str, api_key: &str, model: &str)
+fn phase1_summaries(app: &AppHandle, database: &db::Db, chapters: &[PathBuf], story_folder: &str, provider: &str, api_key: &str, model: &str)
     -> (usize, usize)
 {
     let mut done = 0usize;
@@ -773,9 +952,9 @@ fn phase1_summaries(app: &AppHandle, chapters: &[PathBuf], summaries_dir: &Path,
 
     for (i, chapter_path) in chapters.iter().enumerate() {
         let fname = chapter_path.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let summary_path = summaries_dir.join(format!("{:03}-{}.json", i + 1, sanitize(&fname)));
 
-        if summary_path.exists() {
+        let already_done = { let conn = database.0.lock().unwrap(); db::chapter_summary_exists(&conn, story_folder, &fname) };
+        if already_done {
             emit(app, &format!("  [{}/{}] SKIP: {}", i + 1, chapters.len(), fname));
             skipped += 1;
             continue;
@@ -794,16 +973,10 @@ fn phase1_summaries(app: &AppHandle, chapters: &[PathBuf], summaries_dir: &Path,
 
         match summarize_chapter(provider, api_key, model, &fname, &truncate_words(&content, 8000)) {
             Ok(signals) => {
-                let summary = ChapterSummary {
-                    file: fname.clone(),
-                    title: extract_title(&content).unwrap_or_else(|| fname.clone()),
-                    signals,
-                    word_count,
-                };
-                if let Ok(json) = serde_json::to_string_pretty(&summary) {
-                    let _ = fs::write(&summary_path, json);
-                }
-                emit(app, &format!("    ✓ Done ({} signal chars)", summary.signals.len()));
+                let title = extract_title(&content).unwrap_or_else(|| fname.clone());
+                let conn = database.0.lock().unwrap();
+                let _ = db::save_chapter_summary(&conn, story_folder, &fname, &title, &signals, word_count as i64);
+                emit(app, &format!("    ✓ Done ({} signal chars)", signals.len()));
                 done += 1;
             }
             Err(e) => emit(app, &format!("    ⚠ AI error: {}", e)),
@@ -816,7 +989,7 @@ fn phase1_summaries(app: &AppHandle, chapters: &[PathBuf], summaries_dir: &Path,
     (done, skipped)
 }
 
-fn phase2_analyze(app: &AppHandle, analysis_dir: &Path, summaries: &[ChapterSummary], provider: &str, api_key: &str, model: &str)
+fn phase2_analyze(app: &AppHandle, database: &db::Db, story_folder: &str, summaries: &[db::ChapterSummaryRow], provider: &str, api_key: &str, model: &str)
     -> GenreResult
 {
     let combined = build_combined_context(summaries);
@@ -828,14 +1001,18 @@ fn phase2_analyze(app: &AppHandle, analysis_dir: &Path, summaries: &[ChapterSumm
 
     match call_ai_genre_analysis(provider, api_key, model, &combined) {
         Err(e) => err(&format!("Phase 2 AI error: {}", e)),
-        Ok((report_md, genre_data)) => {
-            let _ = fs::write(analysis_dir.join("genre-analysis.md"), &report_md);
-            emit(app, "  ✓ genre-analysis.md saved");
-            if let Ok(json) = serde_json::to_string_pretty(&genre_data) {
-                let _ = fs::write(analysis_dir.join("genre-data.json"), json);
-                emit(app, "  ✓ genre-data.json saved");
-            }
-            GenreResult { success: true, report: report_md, error: String::new() }
+        Ok(g) => {
+            let conn = database.0.lock().unwrap();
+            let _ = db::save_genre_data(
+                &conn, story_folder,
+                &g.industry_ebook, &g.industry_print, &g.genre_signals,
+                &g.reader_demographic, &g.bookstore_shelving,
+                &g.kdp_ebook, &g.kdp_print, &g.comps_ebook, &g.comps_print, &g.marketing_notes,
+            );
+            emit(app, "  ✓ Genre data saved to database.");
+            let rendered = render_genre_analysis_md(&g);
+            let _ = db::save_document(&conn, story_folder, "genre_analysis", &rendered);
+            GenreResult { success: true, report: rendered, error: String::new() }
         }
     }
 }
@@ -868,7 +1045,7 @@ Write 2-3 dense paragraphs. Be specific."#;
 }
 
 fn call_ai_genre_analysis(provider: &str, api_key: &str, model: &str, combined: &str)
-    -> Result<(String, GenreData), String>
+    -> Result<db::GenreDataRow, String>
 {
     let system = r#"You are a senior publishing consultant specializing in Amazon KDP and the broader ebook/print marketplace.
 
@@ -907,90 +1084,30 @@ Rules:
               .unwrap_or_default()
     };
 
-    let genre_data = GenreData {
-        generated: chrono::Utc::now().to_rfc3339(),
-        industry:  IndustryGenre { ebook: str_field("industry_ebook"), print: str_field("industry_print") },
-        kdp:       KdpCategories {
-            ebook: strip_kdp_paths(str_arr("kdp_ebook")),
-            print: strip_kdp_paths(str_arr("kdp_print")),
-        },
-    };
-
-    let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
-    let mut md = vec![
-        "# Genre Analysis Report".to_string(),
-        format!("Generated: {}", now),
-        String::new(),
-        "> **Note:** Classifications are based on AI training data. Verify KDP paths in Publisher Rocket.".to_string(),
-        String::new(),
-        "---".to_string(),
-        String::new(),
-        "## 1. Industry Genre Classification".to_string(),
-        String::new(),
-        "### Ebook".to_string(),
-        format!("**{}**", str_field("industry_ebook")),
-        String::new(),
-    ];
-
-    let comps_e = str_arr("comps_ebook");
-    if !comps_e.is_empty() {
-        md.push("**Comparable titles:**".to_string());
-        for c in &comps_e { md.push(format!("- {}", c)); }
-        md.push(String::new());
-    }
-    md.push(format!("**Reader demographic:** {}", str_field("reader_demographic")));
-    md.push(String::new());
-    md.push("### Print".to_string());
-    md.push(format!("**{}**", str_field("industry_print")));
-    md.push(String::new());
-    md.push(format!("**Bookstore shelving:** {}", str_field("bookstore_shelving")));
-    md.push(String::new());
-
-    let comps_p = str_arr("comps_print");
-    if !comps_p.is_empty() {
-        md.push("**Comparable titles:**".to_string());
-        for c in &comps_p { md.push(format!("- {}", c)); }
-        md.push(String::new());
-    }
-
-    md.push("---".to_string());
-    md.push(String::new());
-    md.push("## 2. KDP Category Recommendations".to_string());
-    md.push(String::new());
-    md.push("### Kindle Ebook".to_string());
-    for p in &genre_data.kdp.ebook { md.push(format!("- `{}`", p)); }
-    md.push(String::new());
-    md.push("### KDP Print".to_string());
-    for p in &genre_data.kdp.print { md.push(format!("- `{}`", p)); }
-    md.push(String::new());
-    md.push("---".to_string());
-    md.push(String::new());
-    md.push("## 3. Genre Signals Summary".to_string());
-    md.push(String::new());
-    md.push(str_field("genre_signals"));
-    md.push(String::new());
-    md.push("---".to_string());
-    md.push(String::new());
-    md.push("## 4. Marketing Notes".to_string());
-    md.push(String::new());
-    for note in str_arr("marketing_notes") { md.push(format!("- {}", note)); }
-    md.push(String::new());
-
-    Ok((md.join("\n"), genre_data))
+    Ok(db::GenreDataRow {
+        generated_at:       chrono::Utc::now().to_rfc3339(),
+        industry_ebook:     str_field("industry_ebook"),
+        industry_print:     str_field("industry_print"),
+        genre_signals:      str_field("genre_signals"),
+        reader_demographic: str_field("reader_demographic"),
+        bookstore_shelving: str_field("bookstore_shelving"),
+        kdp_ebook:          strip_kdp_paths(str_arr("kdp_ebook")),
+        kdp_print:          strip_kdp_paths(str_arr("kdp_print")),
+        comps_ebook:        str_arr("comps_ebook"),
+        comps_print:        str_arr("comps_print"),
+        marketing_notes:    str_arr("marketing_notes"),
+    })
 }
-
 
 /// Extract the first complete JSON object from a string.
 /// Handles cases where the AI returns extra text before or after the JSON.
 fn extract_json_object(text: &str) -> Option<String> {
-    // Try the full text first (stripped of fences)
     let stripped = text.trim()
         .trim_start_matches("```json").trim_start_matches("```")
         .trim_end_matches("```").trim();
     if serde_json::from_str::<serde_json::Value>(stripped).is_ok() {
         return Some(stripped.to_string());
     }
-    // Find first { and match to its closing }
     let start = text.find('{')?;
     let bytes = text.as_bytes();
     let mut depth = 0i32;
@@ -1016,7 +1133,6 @@ fn extract_json_object(text: &str) -> Option<String> {
     }
     None
 }
-
 
 /// Strip store-level prefixes from a KDP category path.
 /// "Kindle Store > Kindle eBooks > Romance > Contemporary" → "Romance > Contemporary"
@@ -1045,24 +1161,7 @@ fn strip_kdp_paths(paths: Vec<String>) -> Vec<String> {
     paths.into_iter().map(|p| strip_kdp_prefix(&p)).collect()
 }
 
-// ── File helpers ──────────────────────────────────────────────────────────────
-
-fn load_summaries(summaries_dir: &Path) -> Vec<ChapterSummary> {
-    if !summaries_dir.exists() { return Vec::new(); }
-    let mut entries: Vec<_> = fs::read_dir(summaries_dir)
-        .map(|r| r.flatten().collect()).unwrap_or_default();
-    entries.sort_by_key(|e| e.file_name());
-    entries.iter().filter_map(|entry| {
-        let path = entry.path();
-        if !path.extension().map(|e| e == "json").unwrap_or(false) { return None; }
-        fs::read_to_string(&path).ok()
-            .and_then(|raw| serde_json::from_str::<ChapterSummary>(&raw).ok())
-    }).collect()
-}
-
-fn load_genre_data(path: &Path) -> Option<GenreData> {
-    fs::read_to_string(path).ok().and_then(|s| serde_json::from_str::<GenreData>(&s).ok())
-}
+// ── File helpers (manuscript source files only — these stay on disk) ──────────
 
 fn collect_chapters(folder: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
@@ -1111,14 +1210,10 @@ fn truncate_words(text: &str, max: usize) -> String {
     words[..max].join(" ") + "\n\n[Truncated]"
 }
 
-fn build_combined_context(summaries: &[ChapterSummary]) -> String {
+fn build_combined_context(summaries: &[db::ChapterSummaryRow]) -> String {
     summaries.iter().enumerate().map(|(i, s)| {
         format!("--- Chapter {} ({}, ~{} words) ---\n{}\n\n", i + 1, s.title, s.word_count, s.signals)
     }).collect()
-}
-
-fn sanitize(name: &str) -> String {
-    name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
 fn emit(app: &AppHandle, msg: &str) { let _ = app.emit("genre:log", msg); }

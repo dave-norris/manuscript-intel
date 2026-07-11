@@ -16,6 +16,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::cdp;
 use crate::commands::call_llm;
+use crate::db;
+use tauri::Manager;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -80,7 +82,8 @@ pub async fn analyze_competition(
     request: CompetitionRequest,
 ) -> CompetitionResult {
     tokio::task::spawn_blocking(move || {
-        run_competition_analysis(&app, &request)
+        let database = app.state::<db::Db>();
+        run_competition_analysis(&app, &database, &request)
     }).await.unwrap()
 }
 
@@ -88,17 +91,17 @@ pub async fn analyze_competition(
 
 fn emit(app: &AppHandle, msg: &str) { let _ = app.emit("genre:log", msg); }
 
-fn run_competition_analysis(app: &AppHandle, req: &CompetitionRequest) -> CompetitionResult {
+fn run_competition_analysis(app: &AppHandle, database: &db::Db, req: &CompetitionRequest) -> CompetitionResult {
     let folder       = PathBuf::from(&req.folder);
     let analysis_dir = folder.join("_analysis");
 
-    if !analysis_dir.exists() {
-        return err("No _analysis folder. Run Full Analysis and PR Keywords first.");
+    if let Err(e) = fs::create_dir_all(&analysis_dir) {
+        return err(&format!("Cannot create _analysis folder: {}", e));
     }
 
-    let keywords = load_pr_keywords(&analysis_dir);
+    let keywords = { let conn = database.0.lock().unwrap(); db::load_pr_keywords(&conn, &req.folder) };
     if keywords.is_empty() {
-        return err("No PR search terms found. Run 'PR Keywords' first.");
+        return err("No PR search terms found in the database. Run 'PR Keywords' first.");
     }
     emit(app, &format!("Loaded {} PR keyword(s).", keywords.len()));
     emit(app, &format!("Store: {}", req.store));
@@ -239,8 +242,10 @@ fn run_competition_analysis(app: &AppHandle, req: &CompetitionRequest) -> Compet
     let analysis_model = &req.model;
     emit(app, &format!("  Using {}", analysis_model));
 
-    let genre_context = fs::read_to_string(analysis_dir.join("genre-analysis.md"))
-        .unwrap_or_default();
+    let genre_context = {
+        let conn = database.0.lock().unwrap();
+        db::load_genre_data(&conn, &req.folder).map(|g| g.genre_signals).unwrap_or_default()
+    };
 
     match call_competition_ai(
         &req.provider, &req.api_key, analysis_model,
@@ -249,8 +254,9 @@ fn run_competition_analysis(app: &AppHandle, req: &CompetitionRequest) -> Compet
     ) {
         Err(e) => err(&format!("AI error: {}", e)),
         Ok(report) => {
-            let _ = fs::write(analysis_dir.join("competition-report.md"), &report);
-            emit(app, "✓ competition-report.md saved.");
+            let conn = database.0.lock().unwrap();
+            let _ = db::save_document(&conn, &req.folder, "competition_report", &report);
+            emit(app, "✓ Competition report saved to database.");
             CompetitionResult { success: true, report, error: String::new() }
         }
     }
@@ -826,16 +832,6 @@ fn build_report(raw: &str, books: &[CompetitorBook], categories: &[CategoryRow],
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-fn load_pr_keywords(analysis_dir: &Path) -> Vec<String> {
-    if let Ok(text) = fs::read_to_string(analysis_dir.join("pr-keywords.json")) {
-        if let Ok(kws) = serde_json::from_str::<Vec<String>>(&text) {
-            if !kws.is_empty() { return kws; }
-        }
-    }
-    Vec::new()
-}
 
 fn extract_asin(url: &str) -> Option<String> {
     let re = regex::Regex::new(r"/(?:dp|product)/([A-Z0-9]{10})").ok()?;

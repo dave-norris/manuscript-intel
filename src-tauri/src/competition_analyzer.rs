@@ -101,6 +101,7 @@ fn run_competition_analysis(app: &AppHandle, req: &CompetitionRequest) -> Compet
         return err("No PR search terms found. Run 'PR Keywords' first.");
     }
     emit(app, &format!("Loaded {} PR keyword(s).", keywords.len()));
+    emit(app, &format!("Store: {}", req.store));
 
     let csvs_dir = analysis_dir.join("competition-csvs");
     if let Err(e) = fs::create_dir_all(&csvs_dir) {
@@ -417,8 +418,23 @@ fn type_keyword(session: &mut cdp::Session, keyword: &str) -> Result<(), String>
 
 fn set_store_dropdown(session: &mut cdp::Session, store: &str) {
     let sj = serde_json::to_string(store).unwrap();
+    // Find a <select> that contains an option matching the store label,
+    // then select that option by matching text content.
     let js = format!(r#"
-        const sel = document.querySelector('select');
+        const wanted = {s}.toLowerCase();
+        const selects = Array.from(document.querySelectorAll('select'));
+        for (const sel of selects) {{
+            const opts = Array.from(sel.options);
+            const match = opts.find(o => o.textContent.trim().toLowerCase().includes(wanted));
+            if (match) {{
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype,'value').set;
+                setter.call(sel, match.value);
+                sel.dispatchEvent(new Event('change',{{bubbles:true}}));
+                return sel.value;
+            }}
+        }}
+        // Fallback: try the first select and set value directly
+        const sel = selects[0];
         if (!sel) return 'no select';
         const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype,'value').set;
         setter.call(sel, {s});

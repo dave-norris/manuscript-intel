@@ -10,21 +10,15 @@ document.addEventListener('contextmenu', (e) => {
   }
 });
 
-// ── State ─────────────────────────────────────────────────────────────────────
-let currentMarkdown      = '';
-let currentCsvMarkdown   = '';
+// ── App State ─────────────────────────────────────────────────────────────────
 let currentGenreMarkdown = '';
-let csvContent = '';
-let csvKeyword = '';
+let activeStoryId        = localStorage.getItem('activeStoryId') || null;
+let allStories           = [];
 
-// ── DOM ───────────────────────────────────────────────────────────────────────
+// ── DOM refs ──────────────────────────────────────────────────────────────────
 const statusDot   = document.getElementById('status-dot');
 const statusLabel = document.getElementById('status-label');
 const btnLaunch   = document.getElementById('btn-launch');
-const logOutput   = document.getElementById('log-output');
-const mdOutput    = document.getElementById('markdown-output');
-const csvLogOut   = document.getElementById('csv-log-output');
-const csvMdOut    = document.getElementById('csv-markdown-output');
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 function loadSettings() {
@@ -37,7 +31,10 @@ document.getElementById('btn-save-settings').addEventListener('click', () => {
   localStorage.setItem('model',  document.getElementById('model-select').value);
   const saved = document.getElementById('settings-saved');
   saved.textContent = '✓ Saved';
-  setTimeout(() => { saved.textContent = ''; }, 2000);
+  setTimeout(() => { saved.textContent = ''; }, 1500);
+  // Close settings — return to previous panel
+  const prevPanel = localStorage.getItem('prevPanel') || 'analyzer';
+  showPanel(prevPanel);
 });
 
 function getSettings() {
@@ -46,6 +43,189 @@ function getSettings() {
     model:  localStorage.getItem('model')  || 'claude-sonnet-4-6',
   };
 }
+
+// ── Active story ──────────────────────────────────────────────────────────────
+function getActiveStory() {
+  return allStories.find(s => s.id === activeStoryId) || null;
+}
+
+function getActiveFolder() {
+  return getActiveStory()?.folder || '';
+}
+
+function setActiveStory(id) {
+  activeStoryId = id;
+  localStorage.setItem('activeStoryId', id || '');
+  renderStoriesList();
+  updateAnalyzerDesc();
+  if (id) {
+    refreshAnalysisState(getActiveFolder());
+  } else {
+    disableAllButtons();
+  }
+  // Refresh reports if that panel is visible
+  const reportsVisible = document.getElementById('reports-panel').classList.contains('visible');
+  if (reportsVisible) loadReportsList();
+}
+
+function updateAnalyzerDesc() {
+  const story = getActiveStory();
+  const desc  = document.getElementById('analyzer-desc');
+  if (story) {
+    desc.textContent = `Story: ${story.name}`;
+  } else {
+    desc.textContent = 'Select or create a story to begin.';
+  }
+}
+
+// ── Stories ───────────────────────────────────────────────────────────────────
+async function loadStoriesFromDisk() {
+  const result = await invoke('list_stories');
+  allStories = result.success ? result.stories : [];
+  renderStoriesList();
+  updateAnalyzerDesc();
+  // If saved active story still exists, refresh its state
+  if (activeStoryId && allStories.find(s => s.id === activeStoryId)) {
+    refreshAnalysisState(getActiveFolder());
+  } else if (activeStoryId) {
+    // Story was deleted — clear selection
+    setActiveStory(null);
+  } else {
+    disableAllButtons();
+  }
+}
+
+function renderStoriesList() {
+  const list = document.getElementById('stories-list');
+  list.innerHTML = '';
+
+  if (allStories.length === 0) {
+    list.innerHTML = '<div style="padding:8px 10px;font-size:11px;color:var(--text-muted)">No stories yet. Click + to add one.</div>';
+    return;
+  }
+
+  allStories.forEach(story => {
+    const item = document.createElement('div');
+    item.className = 'story-item' + (story.id === activeStoryId ? ' active' : '');
+    item.title = story.folder;
+    item.innerHTML = `
+      <span class="story-item-name">${story.name}</span>
+      <button class="story-item-edit" data-id="${story.id}" title="Edit story">✎</button>
+    `;
+    item.addEventListener('click', (e) => {
+      if (e.target.classList.contains('story-item-edit')) return;
+      setActiveStory(story.id);
+      showPanel('analyzer');
+    });
+    item.querySelector('.story-item-edit').addEventListener('click', (e) => {
+      e.stopPropagation();
+      openStoryForm(story);
+    });
+    list.appendChild(item);
+  });
+}
+
+// ── Story form ────────────────────────────────────────────────────────────────
+function openStoryForm(story = null) {
+  document.getElementById('story-form-id').value      = story?.id    || '';
+  document.getElementById('story-name').value         = story?.name  || '';
+  document.getElementById('story-folder').value       = story?.folder|| '';
+  document.getElementById('story-form-title').textContent = story ? 'Edit Story' : 'New Story';
+  document.getElementById('btn-story-delete').style.display = story ? 'block' : 'none';
+  document.getElementById('story-form-error').textContent = '';
+  showPanel('story-form');
+}
+
+document.getElementById('btn-new-story').addEventListener('click', () => openStoryForm());
+
+document.getElementById('btn-story-pick-folder').addEventListener('click', async () => {
+  try {
+    const path = await invoke('pick_manuscript_folder');
+    if (path) document.getElementById('story-folder').value = path;
+  } catch (e) {
+    if (!String(e).includes('No folder')) {
+      document.getElementById('story-form-error').textContent = String(e);
+    }
+  }
+});
+
+document.getElementById('btn-story-save').addEventListener('click', async () => {
+  const id     = document.getElementById('story-form-id').value;
+  const name   = document.getElementById('story-name').value.trim();
+  const folder = document.getElementById('story-folder').value.trim();
+  const errEl  = document.getElementById('story-form-error');
+
+  if (!name)   { errEl.textContent = 'Please enter a story name.'; return; }
+  if (!folder) { errEl.textContent = 'Please select a folder.'; return; }
+
+  errEl.textContent = '';
+
+  let result;
+  if (id) {
+    result = await invoke('update_story', { request: { id, name, folder } });
+  } else {
+    result = await invoke('add_story', { request: { name, folder } });
+  }
+
+  if (!result.success) {
+    errEl.textContent = result.error;
+    return;
+  }
+
+  allStories = result.stories;
+  // Select the new/updated story
+  const saved = result.stories.find(s => s.name === name && s.folder === folder);
+  if (saved) setActiveStory(saved.id);
+
+  renderStoriesList();
+  showPanel('analyzer');
+});
+
+document.getElementById('btn-story-cancel').addEventListener('click', () => {
+  showPanel(activeStoryId ? 'analyzer' : 'analyzer');
+});
+
+document.getElementById('btn-story-delete').addEventListener('click', async () => {
+  const id = document.getElementById('story-form-id').value;
+  if (!id) return;
+  if (!confirm('Remove this story from the list? (The folder and files will not be deleted.)')) return;
+
+  const result = await invoke('delete_story', { id });
+  if (result.success) {
+    allStories = result.stories;
+    if (activeStoryId === id) setActiveStory(null);
+    renderStoriesList();
+    showPanel('analyzer');
+  } else {
+    document.getElementById('story-form-error').textContent = result.error;
+  }
+});
+
+// ── Panel navigation ──────────────────────────────────────────────────────────
+function showPanel(name) {
+  const currentlyVisible = document.querySelector('.panel.visible')?.id?.replace('-panel', '');
+  // Settings and Reports are toggles
+  if ((name === 'settings' || name === 'reports') && currentlyVisible === name) {
+    const prev = localStorage.getItem('prevPanel') || 'analyzer';
+    showPanel(prev);
+    return;
+  }
+  // Remember where we came from before opening settings or reports
+  if ((name === 'settings' || name === 'reports') && currentlyVisible && currentlyVisible !== name) {
+    localStorage.setItem('prevPanel', currentlyVisible);
+  }
+  document.querySelectorAll('.panel').forEach(p => {
+    p.classList.toggle('visible', p.id === name + '-panel');
+  });
+  document.querySelectorAll('.nav-item').forEach(b => {
+    b.classList.toggle('active', b.dataset.panel === name);
+  });
+  if (name === 'reports') loadReportsList();
+}
+
+document.querySelectorAll('.nav-item').forEach(btn => {
+  btn.addEventListener('click', () => showPanel(btn.dataset.panel));
+});
 
 // ── Rocket status ─────────────────────────────────────────────────────────────
 async function refreshStatus() {
@@ -71,94 +251,55 @@ async function refreshStatus() {
 }
 
 btnLaunch.addEventListener('click', async () => {
-  btnLaunch.disabled = true;
-  btnLaunch.textContent = 'Launching…';
-  appendLog('Launching Publisher Rocket...');
+  btnLaunch.disabled = true; btnLaunch.textContent = 'Launching…';
   const result = await invoke('launch_rocket');
-  if (result.success) { appendLog('✓ Publisher Rocket is ready.'); refreshStatus(); }
-  else { appendLog('✗ ' + result.error); btnLaunch.disabled = false; btnLaunch.textContent = 'Retry'; }
+  if (result.success) { refreshStatus(); }
+  else { btnLaunch.disabled = false; btnLaunch.textContent = 'Retry'; }
 });
 
 setInterval(refreshStatus, 5000);
 refreshStatus();
 
-// ── Navigation ────────────────────────────────────────────────────────────────
-document.querySelectorAll('.nav-item').forEach(btn => {
-  btn.addEventListener('click', () => {
-    const target = btn.dataset.panel;
-    document.querySelectorAll('.nav-item').forEach(b => b.classList.toggle('active', b === btn));
-    document.querySelectorAll('.panel').forEach(p => { p.classList.toggle('visible', p.id === target + '-panel'); });
-  });
-});
-
 // ── Tab switching ─────────────────────────────────────────────────────────────
-function setupTabs(tabSelector, paneMap) {
-  document.querySelectorAll(tabSelector).forEach(tab => {
+document.querySelectorAll('[data-tab="genre-log"],[data-tab="genre-preview"],[data-tab="genre-raw"]')
+  .forEach(tab => {
     tab.addEventListener('click', () => {
-      document.querySelectorAll(tabSelector).forEach(t => t.classList.toggle('active', t === tab));
-      const target = tab.dataset.tab;
-      for (const [key, paneId] of Object.entries(paneMap)) {
-        document.getElementById(paneId).classList.toggle('hidden', key !== target);
-      }
+      document.querySelectorAll('[data-tab="genre-log"],[data-tab="genre-preview"],[data-tab="genre-raw"]')
+        .forEach(t => t.classList.toggle('active', t === tab));
+      const name = tab.dataset.tab;
+      document.getElementById('genre-log-pane').classList.toggle('hidden',     name !== 'genre-log');
+      document.getElementById('genre-preview-pane').classList.toggle('hidden', name !== 'genre-preview');
+      document.getElementById('genre-raw-pane').classList.toggle('hidden',     name !== 'genre-raw');
     });
   });
-}
 
-setupTabs('[data-tab="log"],[data-tab="markdown"]',                                  { log: 'log-pane', markdown: 'markdown-pane' });
-setupTabs('[data-tab="csv-log"],[data-tab="csv-markdown"]',                          { 'csv-log': 'csv-log-pane', 'csv-markdown': 'csv-markdown-pane' });
-setupTabs('[data-tab="genre-log"],[data-tab="genre-preview"],[data-tab="genre-raw"]',{ 'genre-log': 'genre-log-pane', 'genre-preview': 'genre-preview-pane', 'genre-raw': 'genre-raw-pane' });
-setupTabs('[data-tab="finder-log"],[data-tab="finder-markdown"]',                    { 'finder-log': 'finder-log-pane', 'finder-markdown': 'finder-markdown-pane' });
-
-// ── Genre Analyzer ─────────────────────────────────────────────────────────
-const savedFolder = localStorage.getItem('manuscriptFolder');
-if (savedFolder) document.getElementById('manuscript-folder').value = savedFolder;
-
-document.getElementById('manuscript-folder').addEventListener('change', (e) => {
-  const folder = e.target.value.trim();
-  localStorage.setItem('manuscriptFolder', folder);
-  refreshAnalysisState(folder);
-});
-
-document.getElementById('btn-pick-folder').addEventListener('click', async () => {
-  try {
-    const path = await invoke('pick_manuscript_folder');
-    if (path) {
-      document.getElementById('manuscript-folder').value = path;
-      localStorage.setItem('manuscriptFolder', path);
-      refreshAnalysisState(path);
-    }
-  } catch (e) { if (!String(e).includes('No folder')) appendGenreLog('✗ ' + String(e)); }
-});
-
-function getGenreFolder() { return document.getElementById('manuscript-folder').value.trim(); }
-
-function setGenreReport(markdown) {
-  currentGenreMarkdown = markdown;
-  document.getElementById('genre-raw-output').textContent = markdown;
-  document.getElementById('genre-preview-content').innerHTML =
-    typeof marked !== 'undefined' ? marked.parse(markdown) : '<pre>' + markdown + '</pre>';
-  showGenreTab('genre-preview');
+// ── Button state ──────────────────────────────────────────────────────────────
+function disableAllButtons() {
+  ['btn-run-everything','btn-analyze-competition','btn-gen-summaries',
+   'btn-run-genre','btn-full-analysis','btn-optimize-keywords',
+   'btn-gen-pr-keywords'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.disabled = true;
+  });
+  updateStepLabels(null);
 }
 
 function disableGenreButtons(disabled) {
-  ['btn-run-everything','btn-gen-summaries','btn-run-genre','btn-full-analysis',
-   'btn-optimize-keywords','btn-gen-pr-keywords','btn-analyze-competition'].forEach(id => {
+  ['btn-run-everything','btn-analyze-competition','btn-gen-summaries',
+   'btn-run-genre','btn-full-analysis','btn-optimize-keywords',
+   'btn-gen-pr-keywords'].forEach(id => {
     const el = document.getElementById(id); if (el) el.disabled = disabled;
   });
-  document.getElementById('btn-stop').style.display = disabled ? 'block' : 'none';
-  if (!disabled) { const f = getGenreFolder(); if (f) refreshAnalysisState(f); }
+  document.getElementById('btn-stop').style.display = disabled ? 'flex' : 'none';
+  if (!disabled) {
+    const f = getActiveFolder();
+    if (f) refreshAnalysisState(f);
+    // Refresh reports if visible
+    if (document.getElementById('reports-panel').classList.contains('visible')) loadReportsList();
+  }
 }
 
 async function refreshAnalysisState(folder) {
-  if (!folder) {
-    ['btn-run-everything','btn-run-genre','btn-full-analysis',
-     'btn-optimize-keywords','btn-gen-pr-keywords','btn-analyze-competition'].forEach(id => {
-      const el = document.getElementById(id); if (el) el.disabled = true;
-    });
-    document.getElementById('btn-gen-summaries').disabled = false;
-    updateButtonLabels(null);
-    return;
-  }
+  if (!folder) { disableAllButtons(); return; }
   try {
     const s = await invoke('check_analysis_state', { folder });
     document.getElementById('btn-run-everything').disabled      = s.summary_count === 0;
@@ -168,150 +309,105 @@ async function refreshAnalysisState(folder) {
     document.getElementById('btn-full-analysis').disabled       = !s.has_genre_data;
     document.getElementById('btn-optimize-keywords').disabled   = !s.has_full_report;
     document.getElementById('btn-gen-pr-keywords').disabled     = !s.has_full_report;
-    updateButtonLabels(s);
+    updateStepLabels(s);
   } catch (e) { console.error('check_analysis_state:', e); }
 }
 
-function updateButtonLabels(state) {
-  [
-    ['btn-run-everything',     '\u25b6 Run Analysis',         state?.has_pr_keywords  ? ' \u2713' : ''],
-    ['btn-gen-summaries',      'Summaries',                   state?.summary_count > 0 ? ` (${state?.summary_count})` : ''],
-    ['btn-run-genre',          'Analyze',                     state?.has_genre_data   ? ' \u2713' : ''],
-    ['btn-full-analysis',      'Full Analysis',               state?.has_full_report  ? ' \u2713' : ''],
-    ['btn-optimize-keywords',  'KDP Keywords',                state?.has_keywords     ? ' \u2713' : ''],
-    ['btn-gen-pr-keywords',    'PR Keywords',                 state?.has_pr_keywords  ? ' \u2713' : ''],
-    ['btn-analyze-competition','\u25b6 Analyze Competition',  state?.has_competition  ? ' \u2713' : ''],
-  ].forEach(([id, base, suffix]) => {
+function updateStepLabels(state) {
+  const steps = [
+    ['btn-gen-summaries',      'Summaries',     state?.summary_count > 0 ? ` (${state.summary_count})\u2713` : ''],
+    ['btn-run-genre',          'Analyze',       state?.has_genre_data   ? ' \u2713' : ''],
+    ['btn-full-analysis',      'Full Analysis', state?.has_full_report  ? ' \u2713' : ''],
+    ['btn-optimize-keywords',  'KDP Keywords',  state?.has_keywords     ? ' \u2713' : ''],
+    ['btn-gen-pr-keywords',    'PR Keywords',   state?.has_pr_keywords  ? ' \u2713' : ''],
+  ];
+  steps.forEach(([id, base, suffix]) => {
     const btn = document.getElementById(id);
     if (btn) btn.textContent = base + suffix;
   });
+  const rAll  = document.getElementById('btn-run-everything');
+  const rComp = document.getElementById('btn-analyze-competition');
+  if (rAll)  rAll.textContent  = '\u25b6 Run Analysis'        + (state?.has_pr_keywords ? ' \u2713' : '');
+  if (rComp) rComp.textContent = '\u25b6 Analyze Competition' + (state?.has_competition ? ' \u2713' : '');
 }
 
-// ► Run Analysis — chains everything except folder pick and chapter summaries
-document.getElementById('btn-run-everything').addEventListener('click', async () => {
-  const folder = getGenreFolder();
-  if (!folder) { appendGenreLog('✗ Please select a manuscript folder first.'); return; }
-  const { apiKey, model } = getSettings();
-  if (!apiKey) { appendGenreLog('✗ No API key set. Go to Settings.'); return; }
-  appendGenreLog(`Running full analysis for: ${folder}`);
-  appendGenreLog('Genre → KDP keywords → PR search terms...');
-  showGenreTab('genre-log');
-  disableGenreButtons(true);
-  try {
-    const result = await invoke('run_everything', { request: { folder, api_key: apiKey, model } });
-    if (result.success) {
-      setGenreReport(result.report);
-      appendGenreLog('✓ Analysis complete. Run ► Analyze Competition next.');
-    } else { appendGenreLog('✗ ' + result.error); }
-  } catch (e) { appendGenreLog('✗ ' + String(e)); }
-  finally { disableGenreButtons(false); }
-});
+// ── Analyzer buttons ──────────────────────────────────────────────────────────
+function setGenreReport(markdown) {
+  currentGenreMarkdown = markdown;
+  document.getElementById('genre-raw-output').textContent = markdown;
+  document.getElementById('genre-preview-content').innerHTML =
+    typeof marked !== 'undefined' ? marked.parse(markdown) : '<pre>' + markdown + '</pre>';
+  // Switch to preview tab
+  document.querySelectorAll('[data-tab="genre-log"],[data-tab="genre-preview"],[data-tab="genre-raw"]')
+    .forEach(t => t.classList.toggle('active', t.dataset.tab === 'genre-preview'));
+  document.getElementById('genre-log-pane').classList.add('hidden');
+  document.getElementById('genre-preview-pane').classList.remove('hidden');
+  document.getElementById('genre-raw-pane').classList.add('hidden');
+}
 
-// Generate Summaries only
-document.getElementById('btn-gen-summaries').addEventListener('click', async () => {
-  const folder = getGenreFolder();
-  if (!folder) { appendGenreLog('✗ Please select a manuscript folder first.'); return; }
-  const { apiKey, model } = getSettings();
-  if (!apiKey) { appendGenreLog('✗ No API key set. Go to Settings.'); return; }
-  appendGenreLog(`Generating summaries for: ${folder}`);
-  showGenreTab('genre-log');
-  disableGenreButtons(true);
-  try {
-    const result = await invoke('generate_summaries', { request: { folder, api_key: apiKey, model } });
-    appendGenreLog(result.success ? '✓ ' + result.report : '✗ ' + result.error);
-  } catch (e) { appendGenreLog('✗ ' + String(e)); }
-  finally { disableGenreButtons(false); }
-});
+function appendGenreLog(msg) {
+  const el = document.getElementById('genre-log-output');
+  el.textContent += (el.textContent ? '\n' : '') + msg;
+  el.scrollTop = el.scrollHeight;
+  // Switch to log tab
+  document.querySelectorAll('[data-tab="genre-log"],[data-tab="genre-preview"],[data-tab="genre-raw"]')
+    .forEach(t => t.classList.toggle('active', t.dataset.tab === 'genre-log'));
+  document.getElementById('genre-log-pane').classList.remove('hidden');
+  document.getElementById('genre-preview-pane').classList.add('hidden');
+  document.getElementById('genre-raw-pane').classList.add('hidden');
+}
 
-// Analyze — genre + KDP, no PR
-document.getElementById('btn-run-genre').addEventListener('click', async () => {
-  const folder = getGenreFolder();
-  if (!folder) { appendGenreLog('✗ Please select a manuscript folder first.'); return; }
+async function runGenreCommand(cmdName, logMsg, successMsg) {
+  const folder = getActiveFolder();
+  if (!folder) { appendGenreLog('✗ No story selected.'); return; }
   const { apiKey, model } = getSettings();
   if (!apiKey) { appendGenreLog('✗ No API key set. Go to Settings.'); return; }
-  appendGenreLog(`Running genre analysis for: ${folder}`);
-  showGenreTab('genre-log');
+  appendGenreLog(logMsg);
   disableGenreButtons(true);
   try {
-    const result = await invoke('analyze_genre', { request: { folder, api_key: apiKey, model } });
-    if (result.success) { setGenreReport(result.report); appendGenreLog('✓ Genre analysis complete.'); }
+    const result = await invoke(cmdName, { request: { folder, api_key: apiKey, model } });
+    if (result.success) { setGenreReport(result.report); appendGenreLog(successMsg); }
     else { appendGenreLog('✗ ' + result.error); }
   } catch (e) { appendGenreLog('✗ ' + String(e)); }
   finally { disableGenreButtons(false); }
-});
+}
 
-// Full Analysis — summaries + genre + PR Category Search
-document.getElementById('btn-full-analysis').addEventListener('click', async () => {
-  const folder = getGenreFolder();
-  if (!folder) { appendGenreLog('✗ Please select a manuscript folder first.'); return; }
-  const { apiKey, model } = getSettings();
-  if (!apiKey) { appendGenreLog('✗ No API key set. Go to Settings.'); return; }
-  appendGenreLog(`Full analysis for: ${folder}`);
-  showGenreTab('genre-log');
-  disableGenreButtons(true);
-  try {
-    const result = await invoke('run_full_analysis', { request: { folder, api_key: apiKey, model } });
-    if (result.success) { setGenreReport(result.report); appendGenreLog('✓ Full analysis complete.'); }
-    else { appendGenreLog('✗ ' + result.error); }
-  } catch (e) { appendGenreLog('✗ ' + String(e)); }
-  finally { disableGenreButtons(false); }
-});
+document.getElementById('btn-run-everything').addEventListener('click', () =>
+  runGenreCommand('run_everything', 'Running full analysis...', '✓ Analysis complete. Run ▶ Analyze Competition next.'));
 
-// Optimize KDP Keywords
-document.getElementById('btn-optimize-keywords').addEventListener('click', async () => {
-  const folder = getGenreFolder();
-  if (!folder) { appendGenreLog('✗ Please select a manuscript folder first.'); return; }
-  const { apiKey, model } = getSettings();
-  if (!apiKey) { appendGenreLog('✗ No API key set. Go to Settings.'); return; }
-  appendGenreLog('Optimizing KDP keywords...');
-  showGenreTab('genre-log');
-  disableGenreButtons(true);
-  try {
-    const result = await invoke('optimize_keywords', { request: { folder, api_key: apiKey, model } });
-    if (result.success) { setGenreReport(result.report); appendGenreLog('✓ KDP keywords complete.'); }
-    else { appendGenreLog('✗ ' + result.error); }
-  } catch (e) { appendGenreLog('✗ ' + String(e)); }
-  finally { disableGenreButtons(false); }
-});
+document.getElementById('btn-gen-summaries').addEventListener('click', () =>
+  runGenreCommand('generate_summaries', 'Generating chapter summaries...', '✓ Summaries complete.'));
 
-// Generate PR Keywords
-document.getElementById('btn-gen-pr-keywords').addEventListener('click', async () => {
-  const folder = getGenreFolder();
-  if (!folder) { appendGenreLog('✗ Please select a manuscript folder first.'); return; }
-  const { apiKey, model } = getSettings();
-  if (!apiKey) { appendGenreLog('✗ No API key set. Go to Settings.'); return; }
-  appendGenreLog('Generating PR search terms...');
-  showGenreTab('genre-log');
-  disableGenreButtons(true);
-  try {
-    const result = await invoke('generate_pr_keywords', { request: { folder, api_key: apiKey, model } });
-    if (result.success) { setGenreReport(result.report); appendGenreLog('✓ PR keywords generated.'); }
-    else { appendGenreLog('✗ ' + result.error); }
-  } catch (e) { appendGenreLog('✗ ' + String(e)); }
-  finally { disableGenreButtons(false); }
-});
+document.getElementById('btn-run-genre').addEventListener('click', () =>
+  runGenreCommand('analyze_genre', 'Running genre analysis...', '✓ Genre analysis complete.'));
 
-// Stop
+document.getElementById('btn-full-analysis').addEventListener('click', () =>
+  runGenreCommand('run_full_analysis', 'Running full analysis...', '✓ Full analysis complete.'));
+
+document.getElementById('btn-optimize-keywords').addEventListener('click', () =>
+  runGenreCommand('optimize_keywords', 'Optimizing KDP keywords...', '✓ KDP keywords complete.'));
+
+document.getElementById('btn-gen-pr-keywords').addEventListener('click', () =>
+  runGenreCommand('generate_pr_keywords', 'Generating PR search terms...', '✓ PR keywords generated.'));
+
 document.getElementById('btn-stop').addEventListener('click', async () => {
   appendGenreLog('Stopping after current step...');
   await invoke('cancel_operation');
 });
 
-// Show store selector on hover for competition button
+// ── Analyze Competition ───────────────────────────────────────────────────────
 document.getElementById('btn-analyze-competition').addEventListener('mouseenter', () => {
   document.getElementById('competition-store-row').style.display = 'flex';
 });
 
-// ► Analyze Competition
 document.getElementById('btn-analyze-competition').addEventListener('click', async () => {
-  const folder = getGenreFolder();
-  if (!folder) { appendGenreLog('✗ Please select a manuscript folder first.'); return; }
+  const folder = getActiveFolder();
+  if (!folder) { appendGenreLog('✗ No story selected.'); return; }
   const { apiKey, model } = getSettings();
   if (!apiKey) { appendGenreLog('✗ No API key set. Go to Settings.'); return; }
   const store = document.querySelector('input[name="comp-store"]:checked')?.value || 'Kindle';
-  appendGenreLog(`Analyzing competition [${store}] via Publisher Rocket CSV exports...`);
+  appendGenreLog(`Analyzing competition [${store}] via Publisher Rocket...`);
   appendGenreLog('This may take several minutes.');
-  showGenreTab('genre-log');
   disableGenreButtons(true);
   try {
     const result = await invoke('analyze_competition', { request: { folder, api_key: apiKey, model, store } });
@@ -321,7 +417,6 @@ document.getElementById('btn-analyze-competition').addEventListener('click', asy
   finally { disableGenreButtons(false); }
 });
 
-// Copy genre report
 document.getElementById('btn-copy-genre').addEventListener('click', async () => {
   if (!currentGenreMarkdown) return;
   await writeText(currentGenreMarkdown);
@@ -330,219 +425,55 @@ document.getElementById('btn-copy-genre').addEventListener('click', async () => 
   setTimeout(() => { btn.textContent = 'Copy markdown'; }, 1500);
 });
 
+document.getElementById('btn-clear-genre-log').addEventListener('click', () => {
+  document.getElementById('genre-log-output').textContent = '';
+});
+
 listen('genre:log', (event) => { appendGenreLog(event.payload); });
 
-function appendGenreLog(msg) {
-  const el = document.getElementById('genre-log-output');
-  el.textContent += (el.textContent ? '\n' : '') + msg;
-  el.scrollTop = el.scrollHeight;
-}
-
-function showGenreTab(name) {
-  document.querySelectorAll('[data-tab="genre-log"],[data-tab="genre-preview"],[data-tab="genre-raw"]')
-    .forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  document.getElementById('genre-log-pane').classList.toggle('hidden',     name !== 'genre-log');
-  document.getElementById('genre-preview-pane').classList.toggle('hidden', name !== 'genre-preview');
-  document.getElementById('genre-raw-pane').classList.toggle('hidden',     name !== 'genre-raw');
-}
-
-// ── Category Finder ───────────────────────────────────────────────────────────
-let currentFinderMarkdown = '';
-
-document.getElementById('btn-run-finder').addEventListener('click', async () => {
-  const genre  = document.getElementById('genre-description').value.trim();
-  if (!genre) return;
-  const store  = document.querySelector('input[name="finder-store"]:checked')?.value  || 'Kindle';
-  const filter = document.querySelector('input[name="finder-filter"]:checked')?.value || 'Selectable Excluding Ghosts';
-  const { apiKey, model } = getSettings();
-  if (!apiKey) { appendFinderLog('✗ No API key set.'); showFinderTab('finder-log'); return; }
-  appendFinderLog(`Finding categories for: "${genre}"`);
-  showFinderTab('finder-log');
-  const btn = document.getElementById('btn-run-finder');
-  btn.disabled = true;
-  try {
-    const result = await invoke('find_categories', { request: { genre, store, filter, api_key: apiKey, model } });
-    if (result.success) {
-      currentFinderMarkdown = result.markdown;
-      document.getElementById('finder-markdown-output').textContent = currentFinderMarkdown;
-      showFinderTab('finder-markdown');
-    } else { appendFinderLog('✗ ' + result.error); }
-  } catch (e) { appendFinderLog('✗ ' + String(e)); }
-  finally { btn.disabled = false; }
-});
-
-document.getElementById('btn-copy-finder').addEventListener('click', async () => {
-  if (!currentFinderMarkdown) return;
-  await writeText(currentFinderMarkdown);
-  const btn = document.getElementById('btn-copy-finder');
-  btn.textContent = 'Copied!';
-  setTimeout(() => { btn.textContent = 'Copy results'; }, 1500);
-});
-
-listen('cdp:log', (event) => {
-  const finderVisible = document.getElementById('finder-panel').classList.contains('visible');
-  if (finderVisible) appendFinderLog(event.payload);
-  appendLog(event.payload);
-  appendCsvLog(event.payload);
-});
-
-function appendFinderLog(msg) {
-  const el = document.getElementById('finder-log-output');
-  el.textContent += (el.textContent ? '\n' : '') + msg;
-  el.scrollTop = el.scrollHeight;
-}
-
-function showFinderTab(name) {
-  document.querySelectorAll('[data-tab="finder-log"],[data-tab="finder-markdown"]')
-    .forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  document.getElementById('finder-log-pane').classList.toggle('hidden', name !== 'finder-log');
-  document.getElementById('finder-markdown-pane').classList.toggle('hidden', name !== 'finder-markdown');
-}
-
-// ── Category Analyzer ─────────────────────────────────────────────────────────
-document.getElementById('btn-run-category').addEventListener('click', async () => {
-  const raw   = document.getElementById('category-paths').value.trim();
-  if (!raw) return;
-  const paths = raw.split('\n').map(l => l.trim()).filter(Boolean);
-  const store  = document.querySelector('input[name="store"]:checked')?.value  || 'Kindle';
-  const filter = document.querySelector('input[name="filter"]:checked')?.value || 'Selectable Excluding Ghosts';
-  appendLog(`Running Category Analyzer for ${paths.length} path(s) [${store}]...`);
-  showTab('log');
-  const btn = document.getElementById('btn-run-category');
-  btn.disabled = true;
-  try {
-    const result = await invoke('analyze_categories', { request: { paths, store, filter } });
-    if (result.success) { currentMarkdown = result.markdown; mdOutput.textContent = currentMarkdown; showTab('markdown'); }
-    else { appendLog('✗ ' + result.error); }
-  } catch (e) { appendLog('✗ ' + String(e)); }
-  finally { btn.disabled = false; }
-});
-
-// ── CSV Analyzer ──────────────────────────────────────────────────────────────
-const csvDrop     = document.getElementById('csv-drop');
-const csvFilename = document.getElementById('csv-filename');
-
-csvDrop.addEventListener('dragover',  e => { e.preventDefault(); csvDrop.classList.add('drag-over'); });
-csvDrop.addEventListener('dragleave', () => csvDrop.classList.remove('drag-over'));
-csvDrop.addEventListener('drop', e => { e.preventDefault(); csvDrop.classList.remove('drag-over'); const file = e.dataTransfer.files[0]; if (file) loadCsvFile(file); });
-csvDrop.addEventListener('click', () => { const input = document.createElement('input'); input.type = 'file'; input.accept = '.csv'; input.onchange = () => { if (input.files[0]) loadCsvFile(input.files[0]); }; input.click(); });
-
-function loadCsvFile(file) {
-  const reader = new FileReader();
-  reader.onload = e => {
-    csvContent = e.target.result;
-    const m = file.name.match(/^COMPETITION ANALYZER - EBOOK (.+?) \d{4}/i);
-    csvKeyword = m ? titleCase(m[1]) : file.name.replace(/\.csv$/i, '');
-    csvFilename.textContent = `Loaded: ${file.name}`;
-    csvFilename.style.display = 'block';
-    csvDrop.textContent = 'Drop a different CSV or click to browse';
-  };
-  reader.readAsText(file);
-}
-
-document.getElementById('btn-run-csv').addEventListener('click', async () => {
-  if (!csvContent) { appendCsvLog('No CSV loaded.'); return; }
-  const { apiKey, model } = getSettings();
-  if (!apiKey) { appendCsvLog('✗ No API key set.'); showCsvTab('csv-log'); return; }
-  appendCsvLog(`Running CSV Analyzer for: ${csvKeyword}...`);
-  showCsvTab('csv-log');
-  const btn = document.getElementById('btn-run-csv');
-  btn.disabled = true;
-  try {
-    const result = await invoke('analyze_csv', { request: { keyword: csvKeyword, csv_content: csvContent, api_key: apiKey, model } });
-    if (result.success) { currentCsvMarkdown = result.markdown; csvMdOut.textContent = currentCsvMarkdown; showCsvTab('csv-markdown'); }
-    else { appendCsvLog('✗ ' + result.error); }
-  } catch (e) { appendCsvLog('✗ ' + String(e)); }
-  finally { btn.disabled = false; }
-});
-
-// ── Copy buttons ──────────────────────────────────────────────────────────────
-document.getElementById('btn-copy').addEventListener('click', async () => {
-  if (!currentMarkdown) return;
-  await writeText(currentMarkdown);
-  const btn = document.getElementById('btn-copy'); btn.textContent = 'Copied!';
-  setTimeout(() => { btn.textContent = 'Copy markdown'; }, 1500);
-});
-
-document.getElementById('btn-copy-csv').addEventListener('click', async () => {
-  if (!currentCsvMarkdown) return;
-  await writeText(currentCsvMarkdown);
-  const btn = document.getElementById('btn-copy-csv'); btn.textContent = 'Copied!';
-  setTimeout(() => { btn.textContent = 'Copy markdown'; }, 1500);
-});
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function appendLog(msg) { logOutput.textContent += (logOutput.textContent ? '\n' : '') + msg; logOutput.scrollTop = logOutput.scrollHeight; }
-function appendCsvLog(msg) { csvLogOut.textContent += (csvLogOut.textContent ? '\n' : '') + msg; csvLogOut.scrollTop = csvLogOut.scrollHeight; }
-
-function showTab(name) {
-  document.querySelectorAll('[data-tab="log"],[data-tab="markdown"]').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  document.getElementById('log-pane').classList.toggle('hidden',      name !== 'log');
-  document.getElementById('markdown-pane').classList.toggle('hidden', name !== 'markdown');
-}
-
-function showCsvTab(name) {
-  document.querySelectorAll('[data-tab="csv-log"],[data-tab="csv-markdown"]').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  document.getElementById('csv-log-pane').classList.toggle('hidden',      name !== 'csv-log');
-  document.getElementById('csv-markdown-pane').classList.toggle('hidden', name !== 'csv-markdown');
-}
-
-function titleCase(str) { return str.toLowerCase().split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '); }
-
-// ── Clear log buttons ─────────────────────────────────────────────────────────
-[['btn-clear-genre-log','genre-log-output'],['btn-clear-log','log-output'],
- ['btn-clear-csv-log','csv-log-output'],['btn-clear-finder-log','finder-log-output'],
-].forEach(([btnId, outputId]) => {
-  document.getElementById(btnId).addEventListener('click', () => { document.getElementById(outputId).textContent = ''; });
-});
-
-// ── Reports ──────────────────────────────────────────────────────────────────
-
+// ── Reports ───────────────────────────────────────────────────────────────────
 const REPORT_LABELS = {
-  'genre-analysis.md':    { label: 'Genre Analysis',       order: 1 },
-  'full-report.md':       { label: 'Full Report',           order: 2 },
-  'kdp-keywords.md':      { label: 'KDP Keywords',          order: 3 },
-  'competition-report.md':{ label: 'Competition Analysis',  order: 4 },
+  'genre-analysis.md':    { label: 'Genre Analysis',      order: 1 },
+  'full-report.md':       { label: 'Full Report',          order: 2 },
+  'kdp-keywords.md':      { label: 'KDP Keywords',         order: 3 },
+  'competition-report.md':{ label: 'Competition Analysis', order: 4 },
 };
 
 async function loadReportsList() {
-  const folder = getGenreFolder();
+  const folder = getActiveFolder();
   const note   = document.getElementById('reports-folder-note');
   const list   = document.getElementById('reports-list');
-
   list.innerHTML = '';
   showReportsList();
 
   if (!folder) {
-    note.textContent = 'No manuscript folder selected. Go to Analyzer and pick a folder.';
+    note.textContent = 'Select a story to see its reports.';
     note.style.display = 'block';
     return;
   }
 
-  const analysisPath = folder + '/_analysis';
-  note.style.display = 'none';
+  const story = getActiveStory();
+  note.textContent = story ? `Reports for: ${story.name}` : '';
+  note.style.display = story ? 'block' : 'none';
 
   try {
-    const entries = await readDir(analysisPath);
+    const entries = await readDir(folder + '/_analysis');
     const mdFiles = entries
-      .filter(e => e.name && e.name.endsWith('.md'))
+      .filter(e => e.name?.endsWith('.md'))
       .map(e => e.name)
-      .sort((a, b) => {
-        const oa = REPORT_LABELS[a]?.order ?? 99;
-        const ob = REPORT_LABELS[b]?.order ?? 99;
-        return oa - ob;
-      });
+      .sort((a, b) => (REPORT_LABELS[a]?.order ?? 99) - (REPORT_LABELS[b]?.order ?? 99));
 
     if (mdFiles.length === 0) {
-      note.textContent = 'No reports yet. Run the Analyzer to generate reports.';
-      note.style.display = 'block';
+      const empty = document.createElement('p');
+      empty.className = 'panel-desc';
+      empty.textContent = 'No reports yet. Run the Analyzer to generate reports.';
+      list.appendChild(empty);
       return;
     }
 
     mdFiles.forEach(filename => {
-      const info  = REPORT_LABELS[filename];
-      const label = info?.label ?? filename.replace('.md', '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-
+      const label = REPORT_LABELS[filename]?.label ??
+        filename.replace('.md', '').replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
       const item = document.createElement('div');
       item.className = 'report-item';
       item.innerHTML = `
@@ -552,13 +483,14 @@ async function loadReportsList() {
         </div>
         <span class="report-item-arrow">›</span>
       `;
-      item.addEventListener('click', () => openReport(analysisPath + '/' + filename, label));
+      item.addEventListener('click', () => openReport(folder + '/_analysis/' + filename, label));
       list.appendChild(item);
     });
-
-  } catch (e) {
-    note.textContent = 'No reports folder found. Run the Analyzer first.';
-    note.style.display = 'block';
+  } catch {
+    const p = document.createElement('p');
+    p.className = 'panel-desc';
+    p.textContent = 'No reports folder found. Run the Analyzer first.';
+    list.appendChild(p);
   }
 }
 
@@ -570,9 +502,7 @@ async function openReport(path, label) {
       typeof marked !== 'undefined' ? marked.parse(content) : '<pre>' + content + '</pre>';
     document.getElementById('reports-viewer').dataset.content = content;
     showReportsViewer();
-  } catch (e) {
-    alert('Could not read report: ' + String(e));
-  }
+  } catch (e) { alert('Could not read report: ' + String(e)); }
 }
 
 function showReportsList() {
@@ -598,27 +528,6 @@ document.getElementById('btn-reports-copy').addEventListener('click', async () =
   setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
 });
 
-// Reload reports list whenever Reports panel becomes active
-const _origNavHandler = document.querySelectorAll('.nav-item');
-document.querySelectorAll('.nav-item').forEach(btn => {
-  if (btn.dataset.panel === 'reports') {
-    btn.addEventListener('click', loadReportsList);
-  }
-});
-
-// Also reload after any analysis completes
-const _origDisable = disableGenreButtons;
-function disableGenreButtonsWrapped(disabled) {
-  _origDisable(disabled);
-  if (!disabled) {
-    // Refresh reports list in background if reports panel is active
-    const reportsVisible = document.getElementById('reports-panel').classList.contains('visible');
-    if (reportsVisible) loadReportsList();
-  }
-}
-
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadSettings();
-const _initFolder = getGenreFolder();
-if (_initFolder) refreshAnalysisState(_initFolder);
-else refreshAnalysisState('');
+loadStoriesFromDisk();

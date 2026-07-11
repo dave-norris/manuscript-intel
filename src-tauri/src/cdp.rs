@@ -332,4 +332,22 @@ impl Session {
         let _ = self.send("Input.dispatchKeyEvent",
             json!({"type":"keyUp","key":"Backspace","code":"Backspace"}));
     }
+
+    /// Tell Electron/Chrome to save downloads silently to a specific path.
+    /// Must be called before clicking any export button.
+    pub fn set_download_path(&mut self, path: &str) {
+        // Browser.setDownloadBehavior works at browser context level
+        let _ = self.send("Browser.setDownloadBehavior", json!({
+            "behavior": "allow",
+            "downloadPath": path,
+            "eventsEnabled": true
+        }));
+        std::thread::sleep(Duration::from_millis(200));
+        // Also set via Page (belt-and-suspenders)
+        let _ = self.send("Page.setDownloadBehavior", json!({
+            "behavior": "allow",
+            "downloadPath": path
+        }));
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }

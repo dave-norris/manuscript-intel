@@ -5,6 +5,7 @@ mod category_finder;
 mod competition_analyzer;
 mod genre_analyzer;
 mod models;
+mod stories;
 
 pub use cancel::{is_cancelled, reset as reset_cancel};
 
@@ -31,6 +32,10 @@ pub fn run() {
             genre_analyzer::check_analysis_state,
             competition_analyzer::analyze_competition,
             cancel::cancel_operation,
+            stories::list_stories,
+            stories::add_story,
+            stories::update_story,
+            stories::delete_story,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

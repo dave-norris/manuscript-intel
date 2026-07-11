@@ -784,7 +784,10 @@ Rules:
     let genre_data = GenreData {
         generated: chrono::Utc::now().to_rfc3339(),
         industry:  IndustryGenre { ebook: str_field("industry_ebook"), print: str_field("industry_print") },
-        kdp:       KdpCategories { ebook: str_arr("kdp_ebook"), print: str_arr("kdp_print") },
+        kdp:       KdpCategories {
+            ebook: strip_kdp_paths(str_arr("kdp_ebook")),
+            print: strip_kdp_paths(str_arr("kdp_print")),
+        },
     };
 
     let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
@@ -886,6 +889,34 @@ fn extract_json_object(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+
+/// Strip store-level prefixes from a KDP category path.
+/// "Kindle Store > Kindle eBooks > Romance > Contemporary" → "Romance > Contemporary"
+/// "Books > Literature & Fiction > Women's Fiction" → "Literature & Fiction > Women's Fiction"
+fn strip_kdp_prefix(path: &str) -> String {
+    let store_prefixes = [
+        "kindle store > kindle ebooks > ",
+        "kindle store > kindle books > ",
+        "kindle store > ",
+        "kindle ebooks > ",
+        "kindle books > ",
+        "books > ",
+        "audible books & originals > ",
+        "audible > ",
+    ];
+    let lower = path.to_lowercase();
+    for prefix in &store_prefixes {
+        if lower.starts_with(prefix) {
+            return path[prefix.len()..].to_string();
+        }
+    }
+    path.to_string()
+}
+
+fn strip_kdp_paths(paths: Vec<String>) -> Vec<String> {
+    paths.into_iter().map(|p| strip_kdp_prefix(&p)).collect()
 }
 
 // ── File helpers ──────────────────────────────────────────────────────────────

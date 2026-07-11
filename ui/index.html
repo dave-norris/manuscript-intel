@@ -20,46 +20,55 @@
       </div>
 
       <nav id="sidebar">
+
+        <!-- Nav items -->
         <div class="nav-section">
-          <div class="nav-label">Tools</div>
-          <button class="nav-item active" data-panel="genre">Analyzer</button>
+          <button class="nav-item active" data-panel="analyzer">Analyzer</button>
           <button class="nav-item" data-panel="reports">Reports</button>
         </div>
-        <div class="nav-section settings-section">
-          <div class="nav-label">Settings</div>
-          <button class="nav-item" data-panel="settings">API Settings</button>
+
+        <!-- Stories list -->
+        <div class="nav-section stories-section">
+          <div class="nav-label-row">
+            <span class="nav-label">Stories</span>
+            <button class="btn-new-story" id="btn-new-story" title="Add story">+</button>
+          </div>
+          <div id="stories-list"></div>
         </div>
+
+        <!-- Settings at bottom -->
+        <div class="nav-section settings-section">
+          <button class="nav-item" data-panel="settings">Settings</button>
+        </div>
+
       </nav>
 
       <main id="main">
 
-        <!-- Genre Analyzer -->
-        <div id="genre-panel" class="panel visible">
-          <div class="panel-title">Analyzer</div>
-          <p class="panel-desc">
-            Select your manuscript folder. The app will read each chapter, build genre-signal summaries, then produce a full genre and KDP category report.
-          </p>
-
-          <div class="folder-selector">
-            <label class="store-label">Manuscript Folder</label>
-            <div class="folder-row">
-              <input type="text" id="manuscript-folder" placeholder="/Users/you/Documents/MyNovel/Manuscript" />
-              <button class="btn btn-sm" id="btn-pick-folder">Browse…</button>
+        <!-- Analyzer -->
+        <div id="analyzer-panel" class="panel visible">
+          <div class="analyzer-header">
+            <div>
+              <div class="panel-title">Analyzer</div>
+              <p class="panel-desc" id="analyzer-desc">Select or create a story to begin.</p>
             </div>
           </div>
 
-          <div class="genre-buttons-primary">
-            <button class="btn btn-run-all" id="btn-run-everything">&#9654; Run Analysis</button>
-            <button class="btn btn-competition btn-run-all-comp" id="btn-analyze-competition">&#9654; Analyze Competition</button>
-          </div>
-          <div class="genre-buttons-secondary">
-            <span class="secondary-label">Individual steps:</span>
-            <button class="btn btn-secondary btn-sm" id="btn-gen-summaries">Summaries</button>
-            <button class="btn btn-secondary btn-sm" id="btn-run-genre">Analyze</button>
-            <button class="btn btn-secondary btn-sm" id="btn-full-analysis">Full Analysis</button>
-            <button class="btn btn-secondary btn-sm" id="btn-optimize-keywords">KDP Keywords</button>
-            <button class="btn btn-secondary btn-sm" id="btn-gen-pr-keywords">PR Keywords</button>
-            <button class="btn btn-stop btn-sm" id="btn-stop" style="display:none">&#x23F9; Stop</button>
+          <!-- Primary action buttons -->
+          <div class="analyzer-actions">
+            <div class="analyzer-primary">
+              <button class="btn btn-action-primary" id="btn-run-everything" disabled>&#9654; Run Analysis</button>
+              <button class="btn btn-action-comp" id="btn-analyze-competition" disabled>&#9654; Analyze Competition</button>
+              <button class="btn btn-action-stop" id="btn-stop" style="display:none">&#x23F9; Stop</button>
+            </div>
+            <div class="analyzer-steps">
+              <span class="steps-label">Steps:</span>
+              <button class="btn btn-step" id="btn-gen-summaries" disabled>Summaries</button>
+              <button class="btn btn-step" id="btn-run-genre" disabled>Analyze</button>
+              <button class="btn btn-step" id="btn-full-analysis" disabled>Full Analysis</button>
+              <button class="btn btn-step" id="btn-optimize-keywords" disabled>KDP Keywords</button>
+              <button class="btn btn-step" id="btn-gen-pr-keywords" disabled>PR Keywords</button>
+            </div>
           </div>
 
           <div class="store-selector" id="competition-store-row" style="display:none">
@@ -90,149 +99,14 @@
           </div>
         </div>
 
-        <!-- Category Finder -->
-        <div id="finder-panel" class="panel">
-          <div class="panel-title">Category Finder</div>
-          <p class="panel-desc">
-            Describe your book's genre and the AI will find the best matching Kindle categories and their keywords.
-          </p>
-          <div class="store-selector">
-            <label class="store-label">Store</label>
-            <div class="store-options">
-              <label class="store-option"><input type="radio" name="finder-store" value="All" /> All</label>
-              <label class="store-option"><input type="radio" name="finder-store" value="Books" /> Books</label>
-              <label class="store-option"><input type="radio" name="finder-store" value="Kindle" checked /> Kindle</label>
-              <label class="store-option"><input type="radio" name="finder-store" value="Audible" /> Audible</label>
-            </div>
-          </div>
-          <div class="store-selector">
-            <label class="store-label">Filter</label>
-            <div class="store-options">
-              <label class="store-option"><input type="radio" name="finder-filter" value="All" /> All</label>
-              <label class="store-option"><input type="radio" name="finder-filter" value="Selectable" /> Selectable</label>
-              <label class="store-option"><input type="radio" name="finder-filter" value="Selectable Excluding Ghosts" checked /> Selectable Excl. Ghosts</label>
-              <label class="store-option"><input type="radio" name="finder-filter" value="Ghost" /> Ghost</label>
-              <label class="store-option"><input type="radio" name="finder-filter" value="Duplicate" /> Duplicate</label>
-            </div>
-          </div>
-          <textarea id="genre-description"
-            placeholder="e.g. First-century Christian historical fiction with mystery and romantic elements, set in ancient Rome during the reign of Nero"></textarea>
-          <button class="btn" id="btn-run-finder">Find Categories</button>
-
-          <div class="output-area">
-            <div class="output-tabs">
-              <button class="output-tab active" data-tab="finder-log">Log</button>
-              <button class="output-tab" data-tab="finder-markdown">Results</button>
-              <button class="clear-log" id="btn-clear-finder-log">Clear</button>
-            </div>
-            <div class="output-pane" id="finder-log-pane">
-              <pre id="finder-log-output"></pre>
-            </div>
-            <div class="output-pane hidden" id="finder-markdown-pane">
-              <pre id="finder-markdown-output"></pre>
-            </div>
-            <button id="btn-copy-finder">Copy results</button>
-          </div>
-        </div>
-
-        <!-- Category Analyzer -->
-        <div id="category-panel" class="panel">
-          <div class="panel-title">Category Analyzer</div>
-          <p class="panel-desc">
-            Enter one category path per line, e.g.<br>
-            <code>Literature &amp; Fiction &gt; Historical Fiction &gt; Ancient World</code>
-          </p>
-          <div class="store-selector">
-            <label class="store-label">Store</label>
-            <div class="store-options">
-              <label class="store-option">
-                <input type="radio" name="store" value="All" /> All
-              </label>
-              <label class="store-option">
-                <input type="radio" name="store" value="Books" /> Books
-              </label>
-              <label class="store-option">
-                <input type="radio" name="store" value="Kindle" checked /> Kindle
-              </label>
-              <label class="store-option">
-                <input type="radio" name="store" value="Audible" /> Audible
-              </label>
-            </div>
-          </div>
-          <div class="store-selector">
-            <label class="store-label">Filter</label>
-            <div class="store-options">
-              <label class="store-option">
-                <input type="radio" name="filter" value="All" /> All
-              </label>
-              <label class="store-option">
-                <input type="radio" name="filter" value="Selectable" /> Selectable
-              </label>
-              <label class="store-option">
-                <input type="radio" name="filter" value="Selectable Excluding Ghosts" checked /> Selectable Excl. Ghosts
-              </label>
-              <label class="store-option">
-                <input type="radio" name="filter" value="Ghost" /> Ghost
-              </label>
-              <label class="store-option">
-                <input type="radio" name="filter" value="Duplicate" /> Duplicate
-              </label>
-            </div>
-          </div>
-          <textarea id="category-paths"
-            placeholder="Literature &amp; Fiction > Historical Fiction > Ancient World&#10;Mystery, Thriller &amp; Suspense > Mystery > Historical"></textarea>
-          <button class="btn" id="btn-run-category">Run Category Analyzer</button>
-
-          <div class="output-area">
-            <div class="output-tabs">
-              <button class="output-tab active" data-tab="log">Log</button>
-              <button class="output-tab" data-tab="markdown">Markdown</button>
-              <button class="clear-log" id="btn-clear-log">Clear</button>
-            </div>
-            <div class="output-pane" id="log-pane">
-              <pre id="log-output"></pre>
-            </div>
-            <div class="output-pane hidden" id="markdown-pane">
-              <pre id="markdown-output"></pre>
-            </div>
-            <button id="btn-copy">Copy markdown</button>
-          </div>
-        </div>
-
-        <!-- CSV Analyzer -->
-        <div id="csv-panel" class="panel">
-          <div class="panel-title">CSV Analyzer</div>
-          <p class="panel-desc">
-            Drop a Competition Analyzer CSV exported from Publisher Rocket.
-          </p>
-          <div id="csv-drop">Drop CSV here or click to browse</div>
-          <div id="csv-filename"></div>
-          <button class="btn" id="btn-run-csv">Analyze CSV</button>
-
-          <div class="output-area">
-            <div class="output-tabs">
-              <button class="output-tab active" data-tab="csv-log">Log</button>
-              <button class="output-tab" data-tab="csv-markdown">Markdown</button>
-              <button class="clear-log" id="btn-clear-csv-log">Clear</button>
-            </div>
-            <div class="output-pane" id="csv-log-pane">
-              <pre id="csv-log-output"></pre>
-            </div>
-            <div class="output-pane hidden" id="csv-markdown-pane">
-              <pre id="csv-markdown-output"></pre>
-            </div>
-            <button id="btn-copy-csv">Copy markdown</button>
-          </div>
-        </div>
-
         <!-- Reports -->
         <div id="reports-panel" class="panel">
           <div class="panel-title">Reports</div>
-          <p class="panel-desc" id="reports-folder-note">No manuscript folder selected.</p>
+          <p class="panel-desc" id="reports-folder-note">Select a story to see its reports.</p>
           <div id="reports-list"></div>
           <div id="reports-viewer" class="reports-viewer hidden">
             <div class="reports-viewer-header">
-              <button class="btn btn-secondary btn-sm" id="btn-reports-back">← Back to list</button>
+              <button class="btn btn-secondary btn-sm" id="btn-reports-back">← Back</button>
               <span id="reports-viewer-title"></span>
               <button class="btn btn-secondary btn-sm" id="btn-reports-copy">Copy</button>
             </div>
@@ -240,17 +114,39 @@
           </div>
         </div>
 
+        <!-- Add/Edit Story -->
+        <div id="story-form-panel" class="panel">
+          <div class="panel-title" id="story-form-title">New Story</div>
+          <div class="settings-form">
+            <input type="hidden" id="story-form-id" value="" />
+            <label for="story-name">Story Name</label>
+            <input type="text" id="story-name" placeholder="e.g. Seen and Still Loved" />
+            <label for="story-folder">Manuscript Folder</label>
+            <div class="folder-row">
+              <input type="text" id="story-folder" placeholder="/Users/you/Documents/MyNovel/Manuscript" />
+              <button class="btn btn-sm" id="btn-story-pick-folder">Browse…</button>
+            </div>
+            <p class="panel-desc" style="margin-top:8px">
+              The <code>_analysis/</code> folder will be created inside this folder automatically.
+            </p>
+            <div style="display:flex;gap:8px;margin-top:4px">
+              <button class="btn" id="btn-story-save">Save Story</button>
+              <button class="btn btn-secondary" id="btn-story-cancel">Cancel</button>
+              <button class="btn btn-danger" id="btn-story-delete" style="display:none;margin-left:auto">Delete Story</button>
+            </div>
+            <p id="story-form-error" style="color:var(--danger);font-size:12px;margin-top:8px"></p>
+          </div>
+        </div>
+
         <!-- Settings -->
         <div id="settings-panel" class="panel">
-          <div class="panel-title">API Settings</div>
+          <div class="panel-title">Settings</div>
           <p class="panel-desc">
             Settings are saved locally on your Mac and never transmitted anywhere except directly to Anthropic.
           </p>
-
           <div class="settings-form">
             <label for="api-key">Anthropic API Key</label>
             <input type="password" id="api-key" placeholder="sk-ant-…" autocomplete="off" />
-
             <label for="model-select">Analysis Model
               <span class="model-hint">Used for genre reports and CSV analysis. Simple tasks always use Haiku automatically.</span>
             </label>
@@ -259,7 +155,6 @@
               <option value="claude-sonnet-4-6" selected>Claude Sonnet 4.6 (recommended)</option>
               <option value="claude-opus-4-6">Claude Opus 4.6 (best quality)</option>
             </select>
-
             <button class="btn" id="btn-save-settings">Save Settings</button>
             <span id="settings-saved" class="settings-saved"></span>
           </div>

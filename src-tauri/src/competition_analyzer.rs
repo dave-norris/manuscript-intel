@@ -107,10 +107,9 @@ fn run_competition_analysis(app: &AppHandle, req: &CompetitionRequest) -> Compet
         return err(&format!("Cannot create competition-csvs folder: {}", e));
     }
 
-    let downloads = match home_dir() {
-        Some(h) => h.join("Downloads"),
-        None    => return err("Cannot find home directory"),
-    };
+    // Download directly to the _analysis/competition-csvs/ folder
+    // so PR saves files there without any intermediate move or save dialog.
+    let downloads = csvs_dir.clone();
 
     emit(app, "Connecting to Publisher Rocket...");
     let target = match cdp::ensure_rocket() {
@@ -122,6 +121,11 @@ fn run_competition_analysis(app: &AppHandle, req: &CompetitionRequest) -> Compet
         Err(e) => return err(&format!("CDP connect error: {}", e)),
     };
     emit(app, "  CDP session established.");
+
+    // Set download path before any export — suppresses the save dialog
+    let downloads_str = downloads.to_string_lossy().to_string();
+    session.set_download_path(&downloads_str);
+    emit(app, &format!("  Downloads path set: {}", downloads_str));
 
     crate::reset_cancel();
 
@@ -258,7 +262,7 @@ fn export_books_csv(
     keyword: &str,
     store: &str,
     downloads: &Path,
-    csvs_dir: &Path,
+    _csvs_dir: &Path,
     app: &AppHandle,
 ) -> Result<PathBuf, String> {
     nav_competition(session)?;
@@ -278,9 +282,7 @@ fn export_books_csv(
     emit(app, "  Waiting for books CSV...");
 
     let csv = wait_for_new_csv(downloads, 15)?;
-    let dest = csvs_dir.join(csv.file_name().unwrap_or_default());
-    fs::rename(&csv, &dest).map_err(|e| format!("Move failed: {}", e))?;
-    Ok(dest)
+    Ok(csv)
 }
 
 // ── CDP: export categories CSV (Unleash the Categories) ───────────────────────
@@ -288,7 +290,7 @@ fn export_books_csv(
 fn export_categories_csv(
     session: &mut cdp::Session,
     downloads: &Path,
-    csvs_dir: &Path,
+    _csvs_dir: &Path,
     _keyword: &str,
     app: &AppHandle,
 ) -> Result<PathBuf, String> {
@@ -312,14 +314,12 @@ fn export_categories_csv(
     emit(app, "  Waiting for categories CSV...");
 
     let csv = wait_for_new_csv(downloads, 15)?;
-    let dest = csvs_dir.join(csv.file_name().unwrap_or_default());
-    fs::rename(&csv, &dest).map_err(|e| format!("Move failed: {}", e))?;
 
     // Go back to results for next keyword
     click_button_by_exact_text(session, "Back").ok();
     std::thread::sleep(Duration::from_millis(500));
 
-    Ok(dest)
+    Ok(csv)
 }
 
 // ── CDP helpers ───────────────────────────────────────────────────────────────
@@ -484,26 +484,43 @@ fn click_button_by_exact_text(session: &mut cdp::Session, text: &str) -> Result<
 }
 
 fn wait_for_new_csv(downloads: &Path, timeout_secs: u64) -> Result<PathBuf, String> {
-    let before: std::collections::HashSet<PathBuf> = list_csvs(downloads);
+    // Snapshot by (path, mtime) — catches overwrites of existing files
+    let before = snapshot_csvs(downloads);
     let start = std::time::Instant::now();
     while start.elapsed().as_secs() < timeout_secs {
         std::thread::sleep(Duration::from_millis(500));
-        let after = list_csvs(downloads);
-        let mut new: Vec<_> = after.difference(&before).cloned().collect();
+        let after = snapshot_csvs(downloads);
+        // A file is "new" if its (path, mtime) wasn't in the before snapshot
+        let mut new: Vec<PathBuf> = after.iter()
+            .filter(|(path, mtime)| !before.contains(&(path.clone(), *mtime)))
+            .map(|(path, _)| path.clone())
+            .collect();
         if !new.is_empty() {
+            // Return the most recently modified
             new.sort_by_key(|p| std::cmp::Reverse(
-                p.metadata().and_then(|m| m.modified()).unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                p.metadata().and_then(|m| m.modified())
+                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
             ));
             return Ok(new.remove(0));
         }
     }
-    Err(format!("No CSV appeared in Downloads within {}s", timeout_secs))
+    Err(format!("No CSV appeared in {} within {}s",
+        downloads.display(), timeout_secs))
 }
 
-fn list_csvs(dir: &Path) -> std::collections::HashSet<PathBuf> {
+fn snapshot_csvs(dir: &Path) -> std::collections::HashSet<(PathBuf, u64)> {
     fs::read_dir(dir).map(|e| e.flatten()
         .filter(|e| e.file_name().to_string_lossy().to_lowercase().ends_with(".csv"))
-        .map(|e| e.path()).collect()
+        .map(|e| {
+            let path = e.path();
+            let mtime = path.metadata()
+                .and_then(|m| m.modified())
+                .map(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH)
+                          .map(|d| d.as_secs()).unwrap_or(0))
+                .unwrap_or(0);
+            (path, mtime)
+        })
+        .collect()
     ).unwrap_or_default()
 }
 
@@ -761,6 +778,7 @@ fn build_report(raw: &str, books: &[CompetitorBook], categories: &[CategoryRow],
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 fn load_pr_keywords(analysis_dir: &Path) -> Vec<String> {
     if let Ok(text) = fs::read_to_string(analysis_dir.join("pr-keywords.json")) {
         if let Ok(kws) = serde_json::from_str::<Vec<String>>(&text) {
@@ -782,10 +800,6 @@ fn fetch_image_b64(url: &str) -> Result<String, String> {
         .bytes().map_err(|e| e.to_string())?;
     use base64::Engine;
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var("HOME").ok().map(PathBuf::from)
 }
 
 fn err(msg: &str) -> CompetitionResult {

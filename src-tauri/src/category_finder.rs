@@ -6,8 +6,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
 use crate::cdp;
-use crate::commands::call_anthropic;
-use crate::models;
+use crate::commands::call_llm;
 
 // ── Stored top-level Kindle categories ───────────────────────────────────────
 
@@ -88,12 +87,13 @@ pub fn find_categories(
     genre_description: &str,
     store: &str,
     filter: &str,
+    provider: &str,
     api_key: &str,
-    _model: &str,  // reserved — category matching always uses Haiku
+    model: &str,
 ) -> Result<Vec<ScoredCategory>, String> {
 
     emit(app, "Step 1: Asking AI to rank top-level categories...");
-    let top_rankings = ai_rank_top_level(genre_description, api_key, models::HAIKU)?;
+    let top_rankings = ai_rank_top_level(genre_description, provider, api_key, model)?;
 
     emit(app, &format!("  {} top-level candidates ranked.", top_rankings.len()));
     for r in &top_rankings {
@@ -169,7 +169,7 @@ pub fn find_categories(
         }
 
         emit(app, "  Asking AI to pick best subcategories by index (up to 3)...");
-        match ai_match_subcategories(genre_description, &top.category, &rows, api_key, models::HAIKU) {
+        match ai_match_subcategories(genre_description, &top.category, &rows, provider, api_key, model) {
             Err(e) => {
                 emit(app, &format!("  ⚠ AI match failed: {}", e));
                 click_back(&mut session);
@@ -262,7 +262,7 @@ pub fn find_categories(
 
 // ── AI calls ──────────────────────────────────────────────────────────────────
 
-fn ai_rank_top_level(genre: &str, api_key: &str, model: &str)
+fn ai_rank_top_level(genre: &str, provider: &str, api_key: &str, model: &str)
     -> Result<Vec<TopLevelRanking>, String>
 {
     let system = r#"You are an Amazon Kindle publishing expert. Rank the provided top-level Kindle categories by how well they match the genre description.
@@ -277,7 +277,7 @@ Only include items with confidence > 20. Sort descending by confidence."#;
         TOP_LEVEL_CATEGORIES.join("\n")
     );
 
-    let raw = call_anthropic(api_key, model, system, &user, 800)?;
+    let raw = call_llm(provider, api_key, model, system, &user, 800)?;
     let clean = raw.trim()
         .trim_start_matches("```json").trim_start_matches("```")
         .trim_end_matches("```").trim();
@@ -290,6 +290,7 @@ fn ai_match_subcategories(
     genre: &str,
     top_category: &str,
     rows: &[String],
+    provider: &str,
     api_key: &str,
     model: &str,
 ) -> Result<Vec<SubcategoryMatch>, String> {
@@ -311,7 +312,7 @@ The index must match the number at the start of the row you choose. Sort descend
         genre, top_category, numbered
     );
 
-    let raw = call_anthropic(api_key, model, system, &user, 500)?;
+    let raw = call_llm(provider, api_key, model, system, &user, 500)?;
     let clean = raw.trim()
         .trim_start_matches("```json").trim_start_matches("```")
         .trim_end_matches("```").trim();

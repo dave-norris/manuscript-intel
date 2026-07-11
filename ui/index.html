@@ -152,19 +152,27 @@
         <div id="settings-panel" class="panel">
           <div class="panel-title">Settings</div>
           <p class="panel-desc">
-            Settings are saved locally on your Mac and never transmitted anywhere except directly to Anthropic.
+            Settings are saved locally on your Mac and never transmitted anywhere except to your chosen provider.
           </p>
           <div class="settings-form">
-            <label for="api-key">Anthropic API Key</label>
-            <input type="password" id="api-key" placeholder="sk-ant-…" autocomplete="off" />
-            <label for="model-select">Analysis Model
-              <span class="model-hint">Used for genre reports and CSV analysis. Simple tasks always use Haiku automatically.</span>
-            </label>
-            <select id="model-select">
-              <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (fast, cheapest)</option>
-              <option value="claude-sonnet-4-6" selected>Claude Sonnet 4.6 (recommended)</option>
-              <option value="claude-opus-4-6">Claude Opus 4.6 (best quality)</option>
-            </select>
+            <label>Provider</label>
+            <div class="provider-options">
+              <label class="provider-option"><input type="radio" name="provider" value="claude" /> Claude (Anthropic)</label>
+              <label class="provider-option"><input type="radio" name="provider" value="tokenmix" checked /> TokenMix</label>
+            </div>
+
+            <label for="api-key">API Key</label>
+            <input type="password" id="api-key" placeholder="Enter API key for selected provider" autocomplete="off" />
+
+            <label for="model-select">Model</label>
+            <div class="model-row">
+              <select id="model-select">
+                <option value="">— Select a model —</option>
+              </select>
+              <button class="btn btn-sm" id="btn-fetch-models">Fetch Models</button>
+            </div>
+            <span id="model-fetch-status" class="model-hint"></span>
+
             <button class="btn" id="btn-save-settings">Save Settings</button>
             <span id="settings-saved" class="settings-saved"></span>
           </div>

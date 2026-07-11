@@ -22,6 +22,7 @@ pub fn run() {
             commands::analyze_categories,
             commands::analyze_csv,
             commands::find_categories,
+            commands::list_models,
             genre_analyzer::pick_manuscript_folder,
             genre_analyzer::generate_summaries,
             genre_analyzer::run_everything,

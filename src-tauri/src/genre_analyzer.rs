@@ -13,8 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::commands::call_anthropic;
-use crate::models;
+use crate::commands::call_llm;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -54,9 +53,10 @@ pub struct GenreResult {
 
 #[derive(Deserialize)]
 pub struct FolderRequest {
-    pub folder:  String,
-    pub api_key: String,
-    pub model:   String,
+    pub folder:   String,
+    pub api_key:  String,
+    pub model:    String,
+    pub provider: String,
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ pub async fn generate_summaries(app: AppHandle, request: FolderRequest) -> Genre
 
         emit(&app, &format!("Found {} chapter file(s). Starting summaries...", chapters.len()));
 
-        let (done, skipped) = phase1_summaries(&app, &chapters, &summaries_dir, &request.api_key);
+        let (done, skipped) = phase1_summaries(&app, &chapters, &summaries_dir, &request.provider, &request.api_key, &request.model);
 
         GenreResult {
             success: true,
@@ -121,14 +121,14 @@ pub async fn analyze_genre(app: AppHandle, request: FolderRequest) -> GenreResul
             emit(&app, "No summaries found — running Phase 1 first...");
             let chapters = collect_chapters(&folder);
             if chapters.is_empty() { return err("No .md files found."); }
-            phase1_summaries(&app, &chapters, &summaries_dir, &request.api_key);
+            phase1_summaries(&app, &chapters, &summaries_dir, &request.provider, &request.api_key, &request.model);
             summaries = load_summaries(&summaries_dir);
         }
 
         if summaries.is_empty() { return err("Could not produce any chapter summaries."); }
 
         emit(&app, &format!("Phase 2: Analyzing {} chapter summaries...", summaries.len()));
-        phase2_analyze(&app, &analysis_dir, &summaries, &request.api_key, &request.model)
+        phase2_analyze(&app, &analysis_dir, &summaries, &request.provider, &request.api_key, &request.model)
     }).await.unwrap()
 }
 
@@ -155,7 +155,7 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
             emit(&app, "Step 1: No summaries found — generating now...");
             let chapters = collect_chapters(&folder);
             if chapters.is_empty() { return err("No .md chapter files found."); }
-            phase1_summaries(&app, &chapters, &summaries_dir, &request.api_key);
+            phase1_summaries(&app, &chapters, &summaries_dir, &request.provider, &request.api_key, &request.model);
             summaries = load_summaries(&summaries_dir);
             if summaries.is_empty() { return err("Could not produce chapter summaries."); }
         } else {
@@ -166,7 +166,7 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
         // ── Step 2: Genre analysis ─────────────────────────────────────────────
         let data_path = analysis_dir.join("genre-data.json");
         emit(&app, "Step 2: Running genre analysis...");
-        let genre_result = phase2_analyze(&app, &analysis_dir, &summaries, &request.api_key, &request.model);
+        let genre_result = phase2_analyze(&app, &analysis_dir, &summaries, &request.provider, &request.api_key, &request.model);
         if !genre_result.success { return genre_result; }
         if crate::is_cancelled() { return err("Cancelled."); }
 
@@ -194,8 +194,7 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
         // ── Step 4: Optimize KDP keywords ─────────────────────────────────────
         emit(&app, "Step 4: Optimizing KDP keywords...");
         let keywords_context = fs::read_to_string(analysis_dir.join("genre-analysis.md")).unwrap_or_default();
-        let analysis_model = models::resolve_analysis_model(&request.model);
-        match call_keyword_optimizer(&request.api_key, analysis_model, &genre_data, &keywords_context) {
+        match call_keyword_optimizer(&request.provider, &request.api_key, &request.model, &genre_data, &keywords_context) {
             Ok(kw_md) => {
                 let final_md = format!("*(Generated from genre analysis.)*\n\n{}", kw_md);
                 let _ = fs::write(analysis_dir.join("kdp-keywords.md"), &final_md);
@@ -229,7 +228,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
                 .unwrap_or_default()
         );
 
-        match call_anthropic(&request.api_key, models::HAIKU, pr_system, &pr_user, 300) {
+        match call_llm(&request.provider, &request.api_key, &request.model, pr_system, &pr_user, 300) {
             Ok(raw) => {
                 if let Some(clean) = extract_json_object(&raw) {
                     if let Ok(keywords) = serde_json::from_str::<Vec<String>>(&clean) {
@@ -271,7 +270,7 @@ pub async fn run_full_analysis(app: AppHandle, request: FolderRequest) -> GenreR
             emit(&app, "Phase 1: Generating chapter summaries...");
             let chapters = collect_chapters(&folder);
             if chapters.is_empty() { return err("No .md files found."); }
-            phase1_summaries(&app, &chapters, &summaries_dir, &request.api_key);
+            phase1_summaries(&app, &chapters, &summaries_dir, &request.provider, &request.api_key, &request.model);
             summaries = load_summaries(&summaries_dir);
         } else {
             emit(&app, &format!("Phase 1: {} summaries already exist — skipping.", summaries.len()));
@@ -289,7 +288,7 @@ pub async fn run_full_analysis(app: AppHandle, request: FolderRequest) -> GenreR
                 Some(d) => d,
                 None => {
                     emit(&app, "  Could not parse genre-data.json — re-running Phase 2...");
-                    match phase2_analyze(&app, &analysis_dir, &summaries, &request.api_key, &request.model) {
+                    match phase2_analyze(&app, &analysis_dir, &summaries, &request.provider, &request.api_key, &request.model) {
                         r if r.success => match load_genre_data(&data_path) {
                             Some(d) => d,
                             None    => return err("Phase 2 produced no genre-data.json"),
@@ -300,7 +299,7 @@ pub async fn run_full_analysis(app: AppHandle, request: FolderRequest) -> GenreR
             }
         } else {
             emit(&app, "Phase 2: Running genre analysis...");
-            match phase2_analyze(&app, &analysis_dir, &summaries, &request.api_key, &request.model) {
+            match phase2_analyze(&app, &analysis_dir, &summaries, &request.provider, &request.api_key, &request.model) {
                 r if r.success => match load_genre_data(&data_path) {
                     Some(d) => d,
                     None    => return err("Phase 2 produced no genre-data.json"),
@@ -395,10 +394,11 @@ pub async fn check_analysis_state(folder: String) -> AnalysisState {
 
 #[derive(Deserialize)]
 pub struct FindCategoriesRequest {
-    pub folder:  String,
-    pub store:   String,  // "Kindle" or "Books"
-    pub api_key: String,
-    pub model:   String,
+    pub folder:   String,
+    pub store:    String,  // "Kindle" or "Books"
+    pub api_key:  String,
+    pub model:    String,
+    pub provider: String,
 }
 
 #[tauri::command]
@@ -442,6 +442,7 @@ pub async fn find_categories_for_story(app: AppHandle, request: FindCategoriesRe
             &genre_description,
             &request.store,
             "Selectable Excluding Ghosts",
+            &request.provider,
             &request.api_key,
             &request.model,
         ) {
@@ -514,9 +515,10 @@ pub async fn find_categories_for_story(app: AppHandle, request: FindCategoriesRe
 
 #[derive(serde::Deserialize)]
 pub struct KeywordRequest {
-    pub folder:  String,
-    pub api_key: String,
-    pub model:   String,
+    pub folder:   String,
+    pub api_key:  String,
+    pub model:    String,
+    pub provider: String,
 }
 
 // ── PR Keyword Generator ──────────────────────────────────────────────────────
@@ -562,7 +564,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
                 .unwrap_or_default()
         );
 
-        match call_anthropic(&request.api_key, models::HAIKU, system, &user, 300) {
+        match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 300) {
             Err(e) => err(&format!("AI error: {}", e)),
             Ok(raw) => {
                 let clean = raw.trim()
@@ -635,10 +637,9 @@ pub async fn optimize_keywords(app: AppHandle, request: KeywordRequest) -> Genre
             (keywords_text, "*(Generated from Publisher Rocket keyword data.)*")
         };
 
-        let analysis_model = models::resolve_analysis_model(&request.model);
-        emit(&app, &format!("Asking {} to optimize keywords...", analysis_model));
+        emit(&app, &format!("Asking {} to optimize keywords...", &request.model));
 
-        match call_keyword_optimizer(&request.api_key, analysis_model, &genre_data, &keywords_context) {
+        match call_keyword_optimizer(&request.provider, &request.api_key, &request.model, &genre_data, &keywords_context) {
             Err(e) => err(&format!("AI error: {}", e)),
             Ok(result_md) => {
                 let final_md = format!("{}\n\n{}", source_note, result_md);
@@ -672,7 +673,7 @@ fn extract_keyword_sections(report: &str) -> String {
     out.join("\n")
 }
 
-fn call_keyword_optimizer(api_key: &str, model: &str, genre_data: &GenreData, keywords_text: &str)
+fn call_keyword_optimizer(provider: &str, api_key: &str, model: &str, genre_data: &GenreData, keywords_text: &str)
     -> Result<String, String>
 {
     let system = r#"You are an Amazon KDP keyword strategist helping an indie author maximize book discoverability.
@@ -706,7 +707,7 @@ Return ONLY a JSON object:
         keywords_text
     );
 
-    let raw = call_anthropic(api_key, model, system, &user, 1000)?;
+    let raw = call_llm(provider, api_key, model, system, &user, 1000)?;
     // Extract just the JSON object — ignore any trailing text or markdown fences
     let clean = extract_json_object(&raw)
         .ok_or_else(|| format!("No JSON object found in response: {}", &raw[..raw.len().min(200)]))?;
@@ -764,7 +765,7 @@ Return ONLY a JSON object:
 
 // ── Phase implementations ─────────────────────────────────────────────────────
 
-fn phase1_summaries(app: &AppHandle, chapters: &[PathBuf], summaries_dir: &Path, api_key: &str)
+fn phase1_summaries(app: &AppHandle, chapters: &[PathBuf], summaries_dir: &Path, provider: &str, api_key: &str, model: &str)
     -> (usize, usize)
 {
     let mut done = 0usize;
@@ -791,7 +792,7 @@ fn phase1_summaries(app: &AppHandle, chapters: &[PathBuf], summaries_dir: &Path,
         let word_count = content.split_whitespace().count();
         emit(app, &format!("    {} words", word_count));
 
-        match summarize_chapter(api_key, models::HAIKU, &fname, &truncate_words(&content, 8000)) {
+        match summarize_chapter(provider, api_key, model, &fname, &truncate_words(&content, 8000)) {
             Ok(signals) => {
                 let summary = ChapterSummary {
                     file: fname.clone(),
@@ -815,18 +816,17 @@ fn phase1_summaries(app: &AppHandle, chapters: &[PathBuf], summaries_dir: &Path,
     (done, skipped)
 }
 
-fn phase2_analyze(app: &AppHandle, analysis_dir: &Path, summaries: &[ChapterSummary], api_key: &str, model: &str)
+fn phase2_analyze(app: &AppHandle, analysis_dir: &Path, summaries: &[ChapterSummary], provider: &str, api_key: &str, model: &str)
     -> GenreResult
 {
-    let analysis_model = models::resolve_analysis_model(model);
     let combined = build_combined_context(summaries);
 
     emit(app, &format!(
         "  Sending {} summaries ({} chars) to {}...",
-        summaries.len(), combined.len(), analysis_model
+        summaries.len(), combined.len(), model
     ));
 
-    match call_ai_genre_analysis(api_key, analysis_model, &combined) {
+    match call_ai_genre_analysis(provider, api_key, model, &combined) {
         Err(e) => err(&format!("Phase 2 AI error: {}", e)),
         Ok((report_md, genre_data)) => {
             let _ = fs::write(analysis_dir.join("genre-analysis.md"), &report_md);
@@ -842,7 +842,7 @@ fn phase2_analyze(app: &AppHandle, analysis_dir: &Path, summaries: &[ChapterSumm
 
 // ── AI calls ──────────────────────────────────────────────────────────────────
 
-fn summarize_chapter(api_key: &str, model: &str, filename: &str, content: &str)
+fn summarize_chapter(provider: &str, api_key: &str, model: &str, filename: &str, content: &str)
     -> Result<String, String>
 {
     let system = r#"You are a literary analyst specializing in book genre classification for publishing.
@@ -863,11 +863,11 @@ Cover:
 
 Write 2-3 dense paragraphs. Be specific."#;
 
-    call_anthropic(api_key, model, system,
+    call_llm(provider, api_key, model, system,
         &format!("Chapter: {}\n\n---\n\n{}", filename, content), 600)
 }
 
-fn call_ai_genre_analysis(api_key: &str, model: &str, combined: &str)
+fn call_ai_genre_analysis(provider: &str, api_key: &str, model: &str, combined: &str)
     -> Result<(String, GenreData), String>
 {
     let system = r#"You are a senior publishing consultant specializing in Amazon KDP and the broader ebook/print marketplace.
@@ -892,7 +892,7 @@ Rules:
 - Include exactly 2 category paths per format (ebook and print)
 - Return ONLY the JSON object, no markdown fences, no preamble"#;
 
-    let raw = call_anthropic(api_key, model, system,
+    let raw = call_llm(provider, api_key, model, system,
         &format!("Genre signals from all chapters:\n\n{}", combined), 1500)?;
 
     let clean = extract_json_object(&raw)

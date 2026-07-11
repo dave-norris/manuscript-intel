@@ -15,8 +15,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
 use crate::cdp;
-use crate::commands::call_anthropic;
-use crate::models;
+use crate::commands::call_llm;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -66,10 +65,11 @@ pub struct CompetitionResult {
 
 #[derive(Deserialize)]
 pub struct CompetitionRequest {
-    pub folder:  String,
-    pub api_key: String,
-    pub model:   String,
-    pub store:   String,
+    pub folder:   String,
+    pub api_key:  String,
+    pub model:    String,
+    pub store:    String,
+    pub provider: String,
 }
 
 // ── Command ───────────────────────────────────────────────────────────────────
@@ -235,14 +235,14 @@ fn run_competition_analysis(app: &AppHandle, req: &CompetitionRequest) -> Compet
 
     // ── AI analysis ───────────────────────────────────────────────────────────
     emit(app, "Running AI analysis...");
-    let analysis_model = models::resolve_analysis_model(&req.model);
+    let analysis_model = &req.model;
     emit(app, &format!("  Using {}", analysis_model));
 
     let genre_context = fs::read_to_string(analysis_dir.join("genre-analysis.md"))
         .unwrap_or_default();
 
     match call_competition_ai(
-        &req.api_key, analysis_model,
+        &req.provider, &req.api_key, analysis_model,
         &all_books, &all_categories,
         &covers_b64, &genre_context, &keywords,
     ) {
@@ -595,6 +595,7 @@ fn parse_csv_line(line: &str) -> Vec<String> {
 // ── AI Analysis ───────────────────────────────────────────────────────────────
 
 fn call_competition_ai(
+    provider: &str,
     api_key: &str,
     model: &str,
     books: &[CompetitorBook],
@@ -662,30 +663,62 @@ Return ONLY a JSON object — no markdown, no preamble:
     );
 
     let raw = if covers.is_empty() {
-        call_anthropic(api_key, model, system, &user_text, 1200)?
+        call_llm(provider, api_key, model, system, &user_text, 1200)?
     } else {
-        let mut parts = vec![json!({"type":"text","text":user_text})];
-        for (title, b64) in covers.iter().take(8) {
-            parts.push(json!({"type":"text","text":format!("Cover: {}", title)}));
-            parts.push(json!({"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64}}));
+        // Multimodal request with cover images
+        match provider {
+            "tokenmix" => {
+                // OpenAI-compatible format for images
+                let mut parts: Vec<Value> = vec![json!({"type":"text","text":user_text})];
+                for (title, b64) in covers.iter().take(8) {
+                    parts.push(json!({"type":"text","text":format!("Cover: {}", title)}));
+                    parts.push(json!({"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{}", b64)}}));
+                }
+                let body = json!({
+                    "model": model, "max_tokens": 1200,
+                    "messages": [
+                        {"role":"system","content":system},
+                        {"role":"user","content":parts}
+                    ]
+                });
+                let resp = reqwest::blocking::Client::builder()
+                    .timeout(Duration::from_secs(120)).build().unwrap()
+                    .post("https://api.tokenmix.ai/v1/chat/completions")
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .header("content-type", "application/json")
+                    .json(&body).send().map_err(|e| format!("API: {}", e))?;
+                let jv: Value = resp.json().map_err(|e| format!("Parse: {}", e))?;
+                if let Some(e) = jv.get("error") {
+                    return Err(format!("TokenMix: {}", e["message"].as_str().unwrap_or("unknown")));
+                }
+                jv["choices"][0]["message"]["content"].as_str().ok_or("Empty response")?.to_string()
+            }
+            _ => {
+                // Anthropic format for images
+                let mut parts: Vec<Value> = vec![json!({"type":"text","text":user_text})];
+                for (title, b64) in covers.iter().take(8) {
+                    parts.push(json!({"type":"text","text":format!("Cover: {}", title)}));
+                    parts.push(json!({"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64}}));
+                }
+                let body = json!({
+                    "model": model, "max_tokens": 1200,
+                    "system": system,
+                    "messages": [{"role":"user","content":parts}]
+                });
+                let resp = reqwest::blocking::Client::builder()
+                    .timeout(Duration::from_secs(120)).build().unwrap()
+                    .post("https://api.anthropic.com/v1/messages")
+                    .header("x-api-key", api_key)
+                    .header("anthropic-version", "2023-06-01")
+                    .header("content-type", "application/json")
+                    .json(&body).send().map_err(|e| format!("API: {}", e))?;
+                let jv: Value = resp.json().map_err(|e| format!("Parse: {}", e))?;
+                if let Some(e) = jv.get("error") {
+                    return Err(format!("Claude: {}", e["message"].as_str().unwrap_or("unknown")));
+                }
+                jv["content"][0]["text"].as_str().ok_or("Empty response")?.to_string()
+            }
         }
-        let body = json!({
-            "model": model, "max_tokens": 1200,
-            "system": system,
-            "messages": [{"role":"user","content":parts}]
-        });
-        let resp = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(120)).build().unwrap()
-            .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body).send().map_err(|e| format!("API: {}", e))?;
-        let jv: Value = resp.json().map_err(|e| format!("Parse: {}", e))?;
-        if let Some(e) = jv.get("error") {
-            return Err(format!("Anthropic: {}", e["message"].as_str().unwrap_or("unknown")));
-        }
-        jv["content"][0]["text"].as_str().ok_or("Empty response")?.to_string()
     };
 
     build_report(&raw, books, categories, keywords)

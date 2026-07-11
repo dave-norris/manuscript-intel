@@ -21,26 +21,82 @@ const statusLabel = document.getElementById('status-label');
 const btnLaunch   = document.getElementById('btn-launch');
 
 // ── Settings ──────────────────────────────────────────────────────────────────
+function getSelectedProvider() {
+  return document.querySelector('input[name="provider"]:checked')?.value || 'tokenmix';
+}
+
 function loadSettings() {
-  document.getElementById('api-key').value      = localStorage.getItem('apiKey') || '';
-  document.getElementById('model-select').value = localStorage.getItem('model')  || 'claude-sonnet-4-6';
+  const provider = localStorage.getItem('provider') || 'tokenmix';
+  const radio = document.querySelector(`input[name="provider"][value="${provider}"]`);
+  if (radio) radio.checked = true;
+  document.getElementById('api-key').value = localStorage.getItem('apiKey') || '';
+  // Restore saved model into the dropdown if it exists
+  const savedModel = localStorage.getItem('model') || '';
+  const select = document.getElementById('model-select');
+  if (savedModel && select.querySelector(`option[value="${savedModel}"]`)) {
+    select.value = savedModel;
+  }
 }
 
 document.getElementById('btn-save-settings').addEventListener('click', () => {
+  const provider = getSelectedProvider();
+  localStorage.setItem('provider', provider);
   localStorage.setItem('apiKey', document.getElementById('api-key').value.trim());
-  localStorage.setItem('model',  document.getElementById('model-select').value);
+  localStorage.setItem('model', document.getElementById('model-select').value);
   const saved = document.getElementById('settings-saved');
   saved.textContent = '✓ Saved';
   setTimeout(() => { saved.textContent = ''; }, 1500);
-  // Close settings — return to previous panel
   const prevPanel = localStorage.getItem('prevPanel') || 'analyzer';
   showPanel(prevPanel);
 });
 
+document.getElementById('btn-fetch-models').addEventListener('click', async () => {
+  const provider = getSelectedProvider();
+  const apiKey = document.getElementById('api-key').value.trim();
+  const status = document.getElementById('model-fetch-status');
+  const select = document.getElementById('model-select');
+
+  if (!apiKey) { status.textContent = 'Enter an API key first.'; return; }
+
+  status.textContent = 'Fetching models...';
+  select.disabled = true;
+
+  try {
+    const result = await invoke('list_models', { provider, apiKey });
+    if (result.success && result.models.length > 0) {
+      select.innerHTML = '';
+      result.models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        let label = m.id;
+        if (m.owned_by) label += ` (${m.owned_by})`;
+        if (m.input_price != null && m.output_price != null) {
+          label += ` — $${m.input_price}/$${m.output_price} per 1M tokens`;
+        }
+        opt.textContent = label;
+        select.appendChild(opt);
+      });
+      // Restore previously saved model if it's in the new list
+      const savedModel = localStorage.getItem('model') || '';
+      if (savedModel && select.querySelector(`option[value="${savedModel}"]`)) {
+        select.value = savedModel;
+      }
+      status.textContent = `${result.models.length} models loaded.`;
+    } else {
+      status.textContent = result.error || 'No models returned.';
+    }
+  } catch (e) {
+    status.textContent = 'Error: ' + String(e);
+  } finally {
+    select.disabled = false;
+  }
+});
+
 function getSettings() {
   return {
-    apiKey: localStorage.getItem('apiKey') || '',
-    model:  localStorage.getItem('model')  || 'claude-sonnet-4-6',
+    provider: localStorage.getItem('provider') || 'tokenmix',
+    apiKey:   localStorage.getItem('apiKey')   || '',
+    model:    localStorage.getItem('model')    || '',
   };
 }
 
@@ -363,12 +419,13 @@ function appendGenreLog(msg) {
 async function runGenreCommand(cmdName, logMsg, successMsg) {
   const folder = getActiveFolder();
   if (!folder) { appendGenreLog('✗ No story selected.'); return; }
-  const { apiKey, model } = getSettings();
+  const { provider, apiKey, model } = getSettings();
   if (!apiKey) { appendGenreLog('✗ No API key set. Go to Settings.'); return; }
-  appendGenreLog(logMsg);
+  if (!model)  { appendGenreLog('✗ No model selected. Go to Settings and fetch models.'); return; }
+  appendGenreLog(`${logMsg} [${provider}: ${model}]`);
   disableGenreButtons(true);
   try {
-    const result = await invoke(cmdName, { request: { folder, api_key: apiKey, model } });
+    const result = await invoke(cmdName, { request: { folder, api_key: apiKey, model, provider } });
     if (result.success) { setGenreReport(result.report); appendGenreLog(successMsg); }
     else { appendGenreLog('✗ ' + result.error); }
   } catch (e) { appendGenreLog('✗ ' + String(e)); }
@@ -406,14 +463,15 @@ document.getElementById('btn-analyze-competition').addEventListener('mouseenter'
 document.getElementById('btn-analyze-competition').addEventListener('click', async () => {
   const folder = getActiveFolder();
   if (!folder) { appendGenreLog('✗ No story selected.'); return; }
-  const { apiKey, model } = getSettings();
+  const { provider, apiKey, model } = getSettings();
   if (!apiKey) { appendGenreLog('✗ No API key set. Go to Settings.'); return; }
+  if (!model)  { appendGenreLog('✗ No model selected. Go to Settings.'); return; }
   const store = document.querySelector('input[name="comp-store"]:checked')?.value || 'Kindle';
-  appendGenreLog(`Analyzing competition [${store}] via Publisher Rocket...`);
+  appendGenreLog(`Analyzing competition [${store}] via Publisher Rocket... [${provider}: ${model}]`);
   appendGenreLog('This may take several minutes.');
   disableGenreButtons(true);
   try {
-    const result = await invoke('analyze_competition', { request: { folder, api_key: apiKey, model, store } });
+    const result = await invoke('analyze_competition', { request: { folder, api_key: apiKey, model, store, provider } });
     if (result.success) { setGenreReport(result.report); appendGenreLog('✓ Competition analysis complete.'); }
     else { appendGenreLog('✗ ' + result.error); }
   } catch (e) { appendGenreLog('✗ ' + String(e)); }
@@ -423,14 +481,15 @@ document.getElementById('btn-analyze-competition').addEventListener('click', asy
 document.getElementById('btn-find-categories').addEventListener('click', async () => {
   const folder = getActiveFolder();
   if (!folder) { appendGenreLog('No story selected.'); return; }
-  const { apiKey, model } = getSettings();
+  const { provider, apiKey, model } = getSettings();
   if (!apiKey) { appendGenreLog('No API key set. Go to Settings.'); return; }
+  if (!model)  { appendGenreLog('No model selected. Go to Settings.'); return; }
   const store = document.querySelector('input[name="cat-store"]:checked')?.value || 'Kindle';
-  appendGenreLog('Finding categories [' + store + ', Selectable Excluding Ghosts] via Publisher Rocket...');
+  appendGenreLog('Finding categories [' + store + ', Selectable Excluding Ghosts] [' + provider + ': ' + model + ']');
   appendGenreLog('This may take several minutes.');
   disableGenreButtons(true);
   try {
-    const result = await invoke('find_categories_for_story', { request: { folder, api_key: apiKey, model, store } });
+    const result = await invoke('find_categories_for_story', { request: { folder, api_key: apiKey, model, store, provider } });
     if (result.success) { setGenreReport(result.report); appendGenreLog('Category Finder complete.'); }
     else { appendGenreLog('Error: ' + result.error); }
   } catch (e) { appendGenreLog('Error: ' + String(e)); }

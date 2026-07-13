@@ -254,10 +254,16 @@ fn run_competition_analysis(app: &AppHandle, database: &db::Db, req: &Competitio
     ) {
         Err(e) => err(&format!("AI error: {}", e)),
         Ok(report) => {
+            // Wrap AI markdown in a JSON envelope so the frontend knows the format
+            let json = serde_json::json!({
+                "schema": "competition_report_v1",
+                "content_format": "markdown",
+                "content": report,
+            }).to_string();
             let conn = database.0.lock().unwrap();
-            let _ = db::save_document(&conn, &req.folder, "competition_report", &report);
+            let _ = db::save_document(&conn, &req.folder, "competition_report", &json);
             emit(app, "✓ Competition report saved to database.");
-            CompetitionResult { success: true, report, error: String::new() }
+            CompetitionResult { success: true, report: json, error: String::new() }
         }
     }
 }

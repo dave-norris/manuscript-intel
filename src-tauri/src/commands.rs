@@ -599,7 +599,6 @@ pub async fn find_categories(
 ) -> AnalyzerResult {
     tokio::task::spawn_blocking(move || {
         use crate::category_finder;
-        let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
 
         match category_finder::find_categories(
             &app,
@@ -612,70 +611,36 @@ pub async fn find_categories(
         ) {
             Err(e) => AnalyzerResult { success: false, markdown: String::new(), error: e, rows: Vec::new() },
             Ok(results) => {
-                let mut lines = vec![
-                    "# Category Finder Results".to_string(),
-                    format!("Genre: {}", request.genre),
-                    format!("Generated: {}", now),
-                    String::new(),
-                ];
+                let high: Vec<_> = results.iter().filter(|r| r.confidence >= 80 && r.note.is_none()).collect();
+                let low: Vec<_> = results.iter().filter(|r| r.confidence < 80 && r.note.is_none()).collect();
+                let failed: Vec<_> = results.iter().filter(|r| r.note.is_some()).collect();
 
-                // Check if any result has keywords (high-confidence matches)
-                // Split results into high-confidence (≥80%) and low-confidence
-                let high: Vec<_> = results.iter().filter(|r| r.confidence >= 80).collect();
-                let low:  Vec<_> = results.iter().filter(|r| r.confidence <  80).collect();
-
-                if !high.is_empty() {
-                    lines.push("## Matched Categories".to_string());
-                    lines.push(String::new());
-                    for r in &high {
-                        lines.push(format!("### {} ({}% match)", r.path, r.confidence));
-                        lines.push(String::new());
-                        if !r.stats.is_empty() {
-                            lines.push("**Sales Potential**".to_string());
-                            lines.push(String::new());
-                            lines.push(format!("- Sales needed to reach #1: **{}**", r.stats.sales_to_one));
-                            lines.push(format!("- Sales needed to reach #10: **{}**", r.stats.sales_to_ten));
-                            lines.push(format!("- Publisher books: **{}**", r.stats.publisher_pct));
-                            lines.push(format!("- KU books: **{}**", r.stats.ku_pct));
-                            lines.push(String::new());
-                        }
-                        if !r.keywords.is_empty() {
-                            lines.push("**Keywords**".to_string());
-                            lines.push(String::new());
-                            lines.push(r.keywords.clone());
-                            lines.push(String::new());
-                        } else {
-                            lines.push("*⚠️ Keywords could not be scraped for this category.*".to_string());
-                            lines.push(String::new());
-                        }
-                        lines.push("---".to_string());
-                        lines.push(String::new());
-                    }
-                } else {
-                    lines.push("## No High-Confidence Match Found".to_string());
-                    lines.push(String::new());
-                    lines.push("The following categories were found but none reached the 80% confidence threshold.".to_string());
-                    lines.push("Use one of these paths in the **Category Analyzer** to get keywords.".to_string());
-                    lines.push(String::new());
-                    for (i, r) in results.iter().enumerate() {
-                        lines.push(format!("{}. {} — **{}%**", i + 1, r.path, r.confidence));
-                    }
-                    lines.push(String::new());
-                }
-
-                // Always append any low-confidence candidates at the bottom
-                if !low.is_empty() {
-                    lines.push("## Also Considered (below 80%)".to_string());
-                    lines.push(String::new());
-                    for (i, r) in low.iter().enumerate() {
-                        lines.push(format!("{}. {} — **{}%**", i + 1, r.path, r.confidence));
-                    }
-                    lines.push(String::new());
-                }
+                let json = serde_json::json!({
+                    "schema": "category_finder_standalone_v1",
+                    "genre": request.genre,
+                    "store": request.store,
+                    "matched": high.iter().map(|r| serde_json::json!({
+                        "path": r.path,
+                        "confidence": r.confidence,
+                        "sales_to_one": r.stats.sales_to_one,
+                        "sales_to_ten": r.stats.sales_to_ten,
+                        "publisher_pct": r.stats.publisher_pct,
+                        "ku_pct": r.stats.ku_pct,
+                        "keywords": r.keywords,
+                    })).collect::<Vec<_>>(),
+                    "considered": low.iter().map(|r| serde_json::json!({
+                        "path": r.path,
+                        "confidence": r.confidence,
+                    })).collect::<Vec<_>>(),
+                    "failed": failed.iter().map(|r| serde_json::json!({
+                        "path": r.path,
+                        "note": r.note,
+                    })).collect::<Vec<_>>(),
+                });
 
                 AnalyzerResult {
                     success: true,
-                    markdown: lines.join("\n"),
+                    markdown: json.to_string(),
                     error: String::new(),
                     rows: Vec::new(),
                 }

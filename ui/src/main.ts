@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
+import { renderReport } from './reportRenderer';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -20,18 +21,6 @@ interface StoriesResult {
 interface GenreResult {
   success: boolean;
   report: string;
-  error: string;
-}
-
-interface StatusResult {
-  running: boolean;
-  cdp_enabled: boolean;
-  page_id: string;
-  error: string;
-}
-
-interface LaunchResult {
-  success: boolean;
   error: string;
 }
 
@@ -70,8 +59,6 @@ interface Settings {
   model: string;
 }
 
-declare const marked: { parse(md: string): string } | undefined;
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function $(id: string): HTMLElement {
@@ -101,15 +88,10 @@ document.addEventListener('contextmenu', (e) => {
 
 // ── App State ─────────────────────────────────────────────────────────────────
 
-let currentGenreMarkdown = '';
 let activeStoryId: string | null = localStorage.getItem('activeStoryId') || null;
 let allStories: Story[] = [];
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
-
-const statusDot = $('status-dot');
-const statusLabel = $('status-label');
-const btnLaunch = $btn('btn-launch');
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 
@@ -122,6 +104,7 @@ function loadSettings(): void {
   const radio = document.querySelector(`input[name="provider"][value="${provider}"]`) as HTMLInputElement | null;
   if (radio) radio.checked = true;
   $input('api-key').value = localStorage.getItem('apiKey') || '';
+  $input('canopy-api-key').value = localStorage.getItem('canopyApiKey') || '';
   const savedModel = localStorage.getItem('model') || '';
   const select = $select('model-select');
   if (savedModel && select.querySelector(`option[value="${savedModel}"]`)) {
@@ -134,11 +117,23 @@ $btn('btn-save-settings').addEventListener('click', () => {
   localStorage.setItem('provider', provider);
   localStorage.setItem('apiKey', $input('api-key').value.trim());
   localStorage.setItem('model', $select('model-select').value);
+  localStorage.setItem('canopyApiKey', $input('canopy-api-key').value.trim());
   const saved = $('settings-saved');
   saved.textContent = '✓ Saved';
   setTimeout(() => { saved.textContent = ''; }, 1500);
   const prevPanel = localStorage.getItem('prevPanel') || 'analyzer';
   showPanel(prevPanel);
+});
+
+$btn('btn-test-canopy').addEventListener('click', async () => {
+  const key = $input('canopy-api-key').value.trim();
+  const status = $('canopy-test-status');
+  if (!key) { status.textContent = 'Enter a key first.'; return; }
+  status.textContent = 'Testing...';
+  try {
+    const result = await invoke<{ success: boolean; error: string }>('test_canopy_connection', { apiKey: key });
+    status.textContent = result.success ? '✓ Connected' : '✗ ' + result.error;
+  } catch (e) { status.textContent = '✗ ' + String(e); }
 });
 
 $btn('btn-fetch-models').addEventListener('click', async () => {
@@ -277,7 +272,7 @@ function setActiveStory(id: string | null): void {
   } else {
     disableAllButtons();
   }
-  if ($('reports-panel').classList.contains('visible')) loadReportsList();
+  loadReportsList();
 }
 
 function updateAnalyzerDesc(): void {
@@ -295,6 +290,7 @@ async function loadStoriesFromDisk(): Promise<void> {
   updateAnalyzerDesc();
   if (activeStoryId && allStories.find(s => s.id === activeStoryId)) {
     refreshAnalysisState(getActiveFolder());
+    loadReportsList();
   } else if (activeStoryId) {
     setActiveStory(null);
   } else {
@@ -405,12 +401,12 @@ $btn('btn-story-delete').addEventListener('click', async () => {
 
 function showPanel(name: string): void {
   const currentlyVisible = document.querySelector('.panel.visible')?.id?.replace('-panel', '');
-  if ((name === 'settings' || name === 'reports') && currentlyVisible === name) {
+  if (name === 'settings' && currentlyVisible === name) {
     const prev = localStorage.getItem('prevPanel') || 'analyzer';
     showPanel(prev);
     return;
   }
-  if ((name === 'settings' || name === 'reports') && currentlyVisible && currentlyVisible !== name) {
+  if (name === 'settings' && currentlyVisible && currentlyVisible !== name) {
     localStorage.setItem('prevPanel', currentlyVisible);
   }
   document.querySelectorAll('.panel').forEach(p => {
@@ -419,60 +415,11 @@ function showPanel(name: string): void {
   document.querySelectorAll<HTMLButtonElement>('.nav-item').forEach(b => {
     b.classList.toggle('active', b.dataset.panel === name);
   });
-  if (name === 'reports') loadReportsList();
 }
 
 document.querySelectorAll<HTMLButtonElement>('.nav-item').forEach(btn => {
   btn.addEventListener('click', () => showPanel(btn.dataset.panel!));
 });
-
-// ── Rocket status ─────────────────────────────────────────────────────────────
-
-async function refreshStatus(): Promise<void> {
-  try {
-    const s = await invoke<StatusResult>('check_rocket_status');
-    if (s.cdp_enabled) {
-      statusDot.className = 'status-dot running';
-      statusLabel.textContent = 'Rocket running';
-      btnLaunch.textContent = 'Connected';
-      btnLaunch.disabled = true;
-    } else if (s.running) {
-      statusDot.className = 'status-dot error';
-      statusLabel.textContent = 'Rocket open (no CDP)';
-      btnLaunch.disabled = false;
-      btnLaunch.textContent = 'Relaunch with CDP';
-    } else {
-      statusDot.className = 'status-dot';
-      statusLabel.textContent = 'Rocket not running';
-      btnLaunch.disabled = false;
-      btnLaunch.textContent = 'Launch Rocket';
-    }
-  } catch { statusLabel.textContent = 'Status unknown'; }
-}
-
-btnLaunch.addEventListener('click', async () => {
-  btnLaunch.disabled = true; btnLaunch.textContent = 'Launching…';
-  const result = await invoke<LaunchResult>('launch_rocket');
-  if (result.success) { refreshStatus(); }
-  else { btnLaunch.disabled = false; btnLaunch.textContent = 'Retry'; }
-});
-
-setInterval(refreshStatus, 5000);
-refreshStatus();
-
-// ── Tab switching ─────────────────────────────────────────────────────────────
-
-document.querySelectorAll<HTMLButtonElement>('[data-tab="genre-log"],[data-tab="genre-preview"],[data-tab="genre-raw"]')
-  .forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll<HTMLButtonElement>('[data-tab="genre-log"],[data-tab="genre-preview"],[data-tab="genre-raw"]')
-        .forEach(t => t.classList.toggle('active', t === tab));
-      const name = tab.dataset.tab!;
-      $('genre-log-pane').classList.toggle('hidden', name !== 'genre-log');
-      $('genre-preview-pane').classList.toggle('hidden', name !== 'genre-preview');
-      $('genre-raw-pane').classList.toggle('hidden', name !== 'genre-raw');
-    });
-  });
 
 // ── Button state ──────────────────────────────────────────────────────────────
 
@@ -492,7 +439,7 @@ function disableGenreButtons(disabled: boolean): void {
   if (!disabled) {
     const f = getActiveFolder();
     if (f) refreshAnalysisState(f);
-    if ($('reports-panel').classList.contains('visible')) loadReportsList();
+    loadReportsList();
   }
 }
 
@@ -505,29 +452,12 @@ async function refreshAnalysisState(folder: string): Promise<void> {
   } catch (e) { console.error('check_analysis_state:', e); }
 }
 
-// ── Analyzer buttons ──────────────────────────────────────────────────────────
-
-function setGenreReport(markdown: string): void {
-  currentGenreMarkdown = markdown;
-  $('genre-raw-output').textContent = markdown;
-  $('genre-preview-content').innerHTML =
-    typeof marked !== 'undefined' ? marked.parse(markdown) : '<pre>' + markdown + '</pre>';
-  document.querySelectorAll<HTMLButtonElement>('[data-tab="genre-log"],[data-tab="genre-preview"],[data-tab="genre-raw"]')
-    .forEach(t => t.classList.toggle('active', t.dataset.tab === 'genre-preview'));
-  $('genre-log-pane').classList.add('hidden');
-  $('genre-preview-pane').classList.remove('hidden');
-  $('genre-raw-pane').classList.add('hidden');
-}
+// ── Analyzer output ───────────────────────────────────────────────────────────
 
 function appendGenreLog(msg: string): void {
   const el = $('genre-log-output');
   el.textContent += (el.textContent ? '\n' : '') + msg;
   el.scrollTop = el.scrollHeight;
-  document.querySelectorAll<HTMLButtonElement>('[data-tab="genre-log"],[data-tab="genre-preview"],[data-tab="genre-raw"]')
-    .forEach(t => t.classList.toggle('active', t.dataset.tab === 'genre-log'));
-  $('genre-log-pane').classList.remove('hidden');
-  $('genre-preview-pane').classList.add('hidden');
-  $('genre-raw-pane').classList.add('hidden');
 }
 
 // ── Analyze handler ───────────────────────────────────────────────────────────
@@ -542,8 +472,8 @@ $btn('btn-analyze').addEventListener('click', async () => {
   appendGenreLog(`Running full analysis pipeline... [${provider}: ${model}]${forceResummarize ? ' (force re-summarize)' : ''}`);
   disableGenreButtons(true);
   try {
-    const result = await invoke<GenreResult>('analyze_story', { request: { folder, api_key: apiKey, model, provider, force_resummarize: forceResummarize } });
-    if (result.success) { setGenreReport(result.report); appendGenreLog('✓ Analysis complete.'); }
+    const result = await invoke<GenreResult>('analyze_story', { request: { folder, api_key: apiKey, model, provider, force_resummarize: forceResummarize, canopy_api_key: localStorage.getItem('canopyApiKey') || '' } });
+    if (result.success) { appendGenreLog('✓ Analysis complete. View reports in the sidebar.'); }
     else { appendGenreLog('✗ ' + result.error); }
   } catch (e) { appendGenreLog('✗ ' + String(e)); }
   finally { disableGenreButtons(false); }
@@ -565,26 +495,19 @@ $btn('btn-analyze-competition').addEventListener('click', async () => {
   if (!apiKey) { appendGenreLog('✗ No API key set. Go to Settings.'); return; }
   if (!model) { appendGenreLog('✗ No model selected. Go to Settings.'); return; }
   const store = (document.querySelector('input[name="comp-store"]:checked') as HTMLInputElement)?.value || 'Kindle';
-  appendGenreLog(`Analyzing competition [${store}] via Publisher Rocket... [${provider}: ${model}]`);
-  appendGenreLog('This may take several minutes.');
+  const canopyKey = localStorage.getItem('canopyApiKey') || '';
+  if (!canopyKey) { appendGenreLog('✗ No Canopy API key set. Go to Settings.'); return; }
+  appendGenreLog(`Analyzing competition [${store}] via Canopy API... [${provider}: ${model}]`);
   disableGenreButtons(true);
   try {
-    const result = await invoke<GenreResult>('analyze_competition', { request: { folder, api_key: apiKey, model, store, provider } });
-    if (result.success) { setGenreReport(result.report); appendGenreLog('✓ Competition analysis complete.'); }
+    const result = await invoke<GenreResult>('analyze_competition_canopy', { request: { folder, api_key: apiKey, model, store, provider, canopy_api_key: canopyKey } });
+    if (result.success) { appendGenreLog('✓ Competition analysis complete. View reports in the sidebar.'); }
     else { appendGenreLog('✗ ' + result.error); }
   } catch (e) { appendGenreLog('✗ ' + String(e)); }
   finally { disableGenreButtons(false); }
 });
 
 // ── Output actions ────────────────────────────────────────────────────────────
-
-$btn('btn-copy-genre').addEventListener('click', async () => {
-  if (!currentGenreMarkdown) return;
-  await writeText(currentGenreMarkdown);
-  const btn = $btn('btn-copy-genre');
-  btn.textContent = 'Copied!';
-  setTimeout(() => { btn.textContent = 'Copy markdown'; }, 1500);
-});
 
 $btn('btn-clear-genre-log').addEventListener('click', () => {
   $('genre-log-output').textContent = '';
@@ -617,131 +540,98 @@ let viewingSavedId: number | null = null;
 
 async function loadReportsList(): Promise<void> {
   const folder = getActiveFolder();
-  const note = $('reports-folder-note');
   const list = $('reports-list');
   list.innerHTML = '';
-  showReportsList();
 
   if (!folder) {
-    note.textContent = 'Select a story to see its reports.';
-    note.style.display = 'block';
+    list.innerHTML = '<div class="sidebar-hint">Select a story to see reports.</div>';
     return;
   }
 
-  const story = getActiveStory();
-  note.textContent = story ? `Reports for: ${story.name}` : '';
-  note.style.display = story ? 'block' : 'none';
-
   try {
-    // Load current (latest) reports
     const docs = await invoke<DocMeta[]>('list_reports_cmd', { folder });
-    // Load saved versioned reports
     const saved = await invoke<SavedReportMeta[]>('list_saved_reports_cmd', { folder });
 
     if (docs.length === 0 && saved.length === 0) {
-      const empty = document.createElement('p');
-      empty.className = 'panel-desc';
-      empty.textContent = 'No reports yet. Run the Analyzer to generate reports.';
-      list.appendChild(empty);
+      list.innerHTML = '<div class="sidebar-hint">No reports yet.</div>';
       return;
     }
 
-    // Current reports section
+    // Current reports
     if (docs.length > 0) {
       const header = document.createElement('div');
-      header.className = 'reports-section-header';
-      header.textContent = 'Current (latest run)';
+      header.className = 'sidebar-section-header';
+      header.textContent = 'Current';
       list.appendChild(header);
 
       docs.forEach(doc => {
         const item = document.createElement('div');
-        item.className = 'report-item';
-        const when = new Date(doc.generated_at).toLocaleString();
-        item.innerHTML = `
-          <div>
-            <div class="report-item-name">${doc.label}</div>
-            <div class="report-item-meta">${when}</div>
-          </div>
-          <span class="report-item-arrow">›</span>
-        `;
+        item.className = 'sidebar-report-item';
+        item.textContent = doc.label;
+        item.title = new Date(doc.generated_at).toLocaleString();
         item.addEventListener('click', () => openReport(folder, doc.doc_type, doc.label));
         list.appendChild(item);
       });
     }
 
-    // Saved versions section
+    // Saved versions
     if (saved.length > 0) {
       const header = document.createElement('div');
-      header.className = 'reports-section-header';
-      header.textContent = 'Saved Versions';
+      header.className = 'sidebar-section-header';
+      header.textContent = 'Saved';
       list.appendChild(header);
 
       saved.forEach(s => {
         const item = document.createElement('div');
-        item.className = 'report-item';
-        const when = new Date(s.saved_at).toLocaleString();
-        item.innerHTML = `
-          <div>
-            <div class="report-item-name">${s.label}</div>
-            <div class="report-item-meta">Saved ${when}</div>
-          </div>
-          <span class="report-item-arrow">›</span>
-        `;
+        item.className = 'sidebar-report-item';
+        item.textContent = s.label;
+        item.title = `Saved ${new Date(s.saved_at).toLocaleString()}`;
         item.addEventListener('click', () => openSavedReport(s.id, s.label));
         list.appendChild(item);
       });
     }
   } catch (e) {
-    const p = document.createElement('p');
-    p.className = 'panel-desc';
-    p.textContent = 'Could not load reports: ' + String(e);
-    list.appendChild(p);
+    list.innerHTML = `<div class="sidebar-hint">Error: ${String(e)}</div>`;
   }
+}
+
+interface ReportEnvelope {
+  doc_type: string;
+  label: string;
+  format: string;
+  content: string;
+  generated_at: string;
 }
 
 async function openReport(folder: string, docType: string, label: string): Promise<void> {
   try {
-    const content = await invoke<string>('get_report_cmd', { folder, docType });
+    const envelope = await invoke<ReportEnvelope>('get_report_cmd', { folder, docType });
+    const storyName = getActiveStory()?.name || '';
     viewingDocType = docType;
     viewingSavedId = null;
     $('reports-viewer-title').textContent = label;
-    $('reports-viewer-content').innerHTML =
-      typeof marked !== 'undefined' ? marked.parse(content) : '<pre>' + content + '</pre>';
-    ($('reports-viewer') as HTMLElement).dataset.content = content;
+    $('reports-viewer-content').innerHTML = renderReport(envelope, storyName);
+    ($('reports-viewer') as HTMLElement).dataset.content = envelope.content;
     $btn('btn-reports-save').classList.remove('hidden');
     $btn('btn-reports-delete').classList.add('hidden');
-    showReportsViewer();
+    showPanel('reports');
   } catch (e) { alert('Could not read report: ' + String(e)); }
 }
 
 async function openSavedReport(id: number, label: string): Promise<void> {
   try {
-    const content = await invoke<string>('get_saved_report_cmd', { id });
+    const envelope = await invoke<ReportEnvelope>('get_saved_report_cmd', { id });
+    const storyName = getActiveStory()?.name || '';
     viewingDocType = '';
     viewingSavedId = id;
     $('reports-viewer-title').textContent = label;
-    $('reports-viewer-content').innerHTML =
-      typeof marked !== 'undefined' ? marked.parse(content) : '<pre>' + content + '</pre>';
-    ($('reports-viewer') as HTMLElement).dataset.content = content;
+    $('reports-viewer-content').innerHTML = renderReport(envelope, storyName);
+    ($('reports-viewer') as HTMLElement).dataset.content = envelope.content;
     $btn('btn-reports-save').classList.add('hidden');
     $btn('btn-reports-delete').classList.remove('hidden');
-    showReportsViewer();
+    showPanel('reports');
   } catch (e) { alert('Could not read saved report: ' + String(e)); }
 }
-
-function showReportsList(): void {
-  $('reports-list').classList.remove('hidden');
-  $('reports-folder-note').classList.remove('hidden');
-  $('reports-viewer').classList.add('hidden');
-}
-
-function showReportsViewer(): void {
-  $('reports-list').classList.add('hidden');
-  $('reports-folder-note').classList.add('hidden');
-  $('reports-viewer').classList.remove('hidden');
-}
-
-$btn('btn-reports-back').addEventListener('click', showReportsList);
 
 $btn('btn-reports-copy').addEventListener('click', async () => {
   const content = ($('reports-viewer') as HTMLElement).dataset.content || '';
@@ -761,6 +651,7 @@ $btn('btn-reports-save').addEventListener('click', async () => {
   try {
     const meta = await invoke<SavedReportMeta>('save_report_version_cmd', { folder, docType: viewingDocType });
     btn.textContent = `Saved as ${meta.label}`;
+    loadReportsList(); // Refresh sidebar list
     setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 2000);
   } catch (e) {
     btn.textContent = 'Error';
@@ -776,8 +667,8 @@ $btn('btn-reports-delete').addEventListener('click', async () => {
   btn.disabled = true;
   try {
     await invoke<void>('delete_saved_report_cmd', { id: viewingSavedId });
-    showReportsList();
     loadReportsList();
+    showPanel('analyzer');
   } catch (e) {
     alert('Could not delete: ' + String(e));
   } finally {

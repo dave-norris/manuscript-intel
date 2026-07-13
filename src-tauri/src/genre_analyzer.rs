@@ -37,6 +37,8 @@ pub struct FolderRequest {
     pub api_key:  String,
     pub model:    String,
     pub provider: String,
+    #[serde(default)]
+    pub canopy_api_key: String,
 }
 
 #[derive(Deserialize)]
@@ -46,6 +48,8 @@ pub struct AnalyzeStoryRequest {
     pub api_key:           String,
     pub model:             String,
     pub force_resummarize: bool,
+    #[serde(default)]
+    pub canopy_api_key:    String,
 }
 
 // ── Folder picker ────────────────────────────────────────────────────────────
@@ -328,6 +332,8 @@ pub struct FindCategoriesRequest {
     pub api_key:  String,
     pub model:    String,
     pub provider: String,
+    #[serde(default)]
+    pub canopy_api_key: String,
 }
 
 #[tauri::command]
@@ -526,7 +532,7 @@ pub async fn match_categories_for_story(app: AppHandle, request: FindCategoriesR
             match_categories_by_store(&app_c, &database, &folder_c, &store_c, &desc_c, &terms_c, &provider_c, &api_key_c, &model_c)
         }).await.unwrap();
 
-        let final_cats = rank_by_discoverability(&app, store, result.qualifying).await;
+        let final_cats = rank_by_discoverability(&app, store, result.qualifying, &request.canopy_api_key).await;
         if !final_cats.is_empty() { any_data = true; }
 
         store_sections.push(render_store_match_section(store, &result.per_genre, &final_cats));
@@ -536,17 +542,11 @@ pub async fn match_categories_for_story(app: AppHandle, request: FindCategoriesR
         return err("No catalog categories cleared the fit bar for either store. Run Rank Genres first, import more WinningCat coverage, or use Find Categories to discover new paths.");
     }
 
-    let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
-    let lines = vec![
-        "# Amazon Categories — Best 3 for Discoverability".to_string(),
-        format!("Generated: {}", now),
-        "Method: only categories that honestly fit (confidence ≥55%, or independently found by 2+ ranked genres) are eligible. Every eligible candidate is then checked live in Publisher Rocket, and the final 3 are the ones with the best real discoverability among those honest fits — not just the highest genre-confidence score. Anything past the top 3 that still qualified is kept as a bonus candidate for post-launch request.".to_string(),
-        String::new(),
-        "---".to_string(),
-        String::new(),
-        store_sections.join("\n---\n\n"),
-    ];
-    let report = lines.join("\n");
+    let report = serde_json::json!({
+        "schema": "category_finder_v1",
+        "method": "Only categories that honestly fit (confidence ≥55%, or independently found by 2+ ranked genres) are eligible. Every eligible candidate is checked live in Publisher Rocket; final 3 ranked by real discoverability.",
+        "stores": store_sections.iter().map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap_or_default()).collect::<Vec<_>>(),
+    }).to_string();
 
     { let conn = database.0.lock().unwrap(); let _ = db::save_document(&conn, &request.folder, "category_finder", &report); }
     emit(&app, "✓ Best-for-discoverability catalog match (both stores) saved to database.");
@@ -574,15 +574,22 @@ struct QualifiedCategory {
 /// discoverability. This is the actual method for "best discoverability
 /// among what honestly fits" — not a narrow tiebreak, a real ranking over
 /// every candidate that earned a look.
-async fn rank_by_discoverability(app: &AppHandle, store: &str, qualifying: Vec<(String, u8, Vec<String>)>) -> Vec<QualifiedCategory> {
+async fn rank_by_discoverability(app: &AppHandle, store: &str, qualifying: Vec<(String, u8, Vec<String>)>, canopy_api_key: &str) -> Vec<QualifiedCategory> {
     if qualifying.is_empty() { return Vec::new(); }
 
-    emit(app, &format!("  {} candidate(s) honestly fit {} — checking Publisher Rocket for discoverability...", qualifying.len(), store));
+    emit(app, &format!("  {} candidate(s) honestly fit {} — checking via Canopy API for discoverability...", qualifying.len(), store));
 
     let paths: Vec<String> = qualifying.iter().map(|(p, _, _)| p.clone()).collect();
-    let result = crate::commands::analyze_categories(
-        app.clone(),
-        crate::commands::CategoryRequest { paths, store: store.to_string(), filter: "Selectable Excluding Ghosts".to_string() },
+
+    if canopy_api_key.is_empty() {
+        emit(app, "    ⚠ No Canopy API key set. Configure it in Settings.");
+        return qualifying.into_iter().map(|(path, fit_confidence, agreeing_genres)| {
+            QualifiedCategory { path, fit_confidence, agreeing_genres, verified: false, sales_to_one: String::new(), sales_to_ten: String::new(), publisher_pct: String::new(), ku_pct: String::new(), discoverability_score: -1 }
+        }).collect();
+    }
+
+    let result = crate::canopy::analyze_categories_canopy(
+        app.clone(), paths, store.to_string(), canopy_api_key.to_string(),
     ).await;
 
     if !result.success {
@@ -722,60 +729,34 @@ fn match_categories_by_store(
 }
 
 fn render_store_match_section(store: &str, per_genre: &[(String, u8, Vec<(String, u8, String)>)], final_cats: &[QualifiedCategory]) -> String {
-    let mut sec = vec![format!("## {}", store), String::new()];
-
-    sec.push("### Per-Genre Results".to_string());
-    sec.push(String::new());
-    for (genre_name, genre_conf, picks) in per_genre {
-        sec.push(format!("**{} ({}%)**", genre_name, genre_conf));
-        if picks.is_empty() {
-            sec.push("- *No confident catalog match.*".to_string());
-        } else {
-            for (path, conf, reason) in picks {
-                sec.push(format!("- `{}` ({}% match)", path, conf));
-                sec.push(format!("  {}", reason));
-            }
-        }
-        sec.push(String::new());
-    }
-
-    if final_cats.is_empty() {
-        sec.push("### Best for Discoverability".to_string());
-        sec.push(String::new());
-        sec.push(format!("*No candidates cleared the fit bar (confidence ≥{}%, or found by 2+ genres independently) for this store.*", FIT_CONFIDENCE_BAR));
-        return sec.join("\n");
-    }
-
-    sec.push("### Best for Discoverability (among honestly-fitting candidates)".to_string());
-    sec.push(String::new());
-    sec.push(format!(
-        "{} candidate(s) cleared the fit bar (confidence ≥{}%, or independently found by 2+ genres). Every one was checked live in Publisher Rocket; ranked here by real discoverability, not fit alone. KDP only gives 3 slots at setup — anything past the top 3 is a bonus candidate for post-launch request.",
-        final_cats.len(), FIT_CONFIDENCE_BAR
-    ));
-    sec.push(String::new());
-
-    for (i, q) in final_cats.iter().enumerate() {
-        let bonus_flag = if i >= 3 { " — **beyond top 3, bonus candidate for post-launch request**" } else { "" };
-        sec.push(format!("**{}. `{}`** (fit {}%){}", i + 1, q.path, q.fit_confidence, bonus_flag));
-        sec.push(format!("Matched by: {}", q.agreeing_genres.join(", ")));
-        if q.verified {
-            let bucket = match q.discoverability_score {
-                3 => "**sweet spot for a debut launch (5–30/day)**",
-                2 => "moderate competition",
-                1 => "highly competitive or very low traffic",
-                _ => "competition level unclear",
-            };
-            sec.push(format!(
-                "Sales to #1: **{}** | Sales to #10: **{}** | Publisher: **{}** | KU: **{}** — {}",
-                q.sales_to_one, q.sales_to_ten, q.publisher_pct, q.ku_pct, bucket
-            ));
-        } else {
-            sec.push("*Could not confirm this category live in Publisher Rocket — check manually before relying on it.*".to_string());
-        }
-        sec.push(String::new());
-    }
-
-    sec.join("\n")
+    let json = serde_json::json!({
+        "store": store,
+        "per_genre": per_genre.iter().map(|(genre_name, genre_conf, picks)| {
+            serde_json::json!({
+                "genre": genre_name,
+                "confidence": genre_conf,
+                "picks": picks.iter().map(|(path, conf, reason)| {
+                    serde_json::json!({ "path": path, "confidence": conf, "reason": reason })
+                }).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
+        "final_categories": final_cats.iter().enumerate().map(|(i, q)| {
+            serde_json::json!({
+                "rank": i + 1,
+                "path": q.path,
+                "fit_confidence": q.fit_confidence,
+                "agreeing_genres": q.agreeing_genres,
+                "verified": q.verified,
+                "sales_to_one": q.sales_to_one,
+                "sales_to_ten": q.sales_to_ten,
+                "publisher_pct": q.publisher_pct,
+                "ku_pct": q.ku_pct,
+                "discoverability_score": q.discoverability_score,
+                "is_bonus": i >= 3,
+            })
+        }).collect::<Vec<_>>(),
+    });
+    json.to_string()
 }
 
 #[derive(Deserialize)]
@@ -1095,7 +1076,7 @@ pub async fn find_genres_and_categories_for_story(app: AppHandle, request: Folde
             match_categories_by_store(&app_c, &database, &folder_c, &store_c, &desc_c, &terms_c, &provider_c, &api_key_c, &model_c)
         }).await.unwrap();
 
-        let final_cats = rank_by_discoverability(&app, store, result.qualifying).await;
+        let final_cats = rank_by_discoverability(&app, store, result.qualifying, &request.canopy_api_key).await;
 
         if final_cats.is_empty() {
             kdp_section.push("*No candidates cleared the fit bar for this store.*".to_string());
@@ -1230,8 +1211,7 @@ pub async fn find_genres_and_categories_for_story(app: AppHandle, request: Folde
 
 // ── Combined Report Assembly ──────────────────────────────────────────────────
 
-/// Assembles all pipeline output sections into a single markdown document.
-/// Sections are joined with "---" separators in the specified order.
+/// Assembles all pipeline output sections into a single structured JSON document.
 fn render_combined_report(
     kdp_paste_section: &str,
     genre_ranking_section: &str,
@@ -1241,18 +1221,19 @@ fn render_combined_report(
     discovery_keywords_section: &str,
     positioning_section: &str,
 ) -> String {
-    let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
-    format!(
-        "# Full Analysis Report\nGenerated: {}\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}\n\n---\n\n{}",
-        now,
-        kdp_paste_section,
-        genre_ranking_section,
-        kdp_categories_section,
-        bisac_section,
-        kdp_keywords_section,
-        discovery_keywords_section,
-        positioning_section,
-    )
+    let json = serde_json::json!({
+        "schema": "analysis_v1",
+        "sections": {
+            "kdp_paste": kdp_paste_section,
+            "genre_ranking": genre_ranking_section,
+            "kdp_categories": kdp_categories_section,
+            "bisac": bisac_section,
+            "kdp_keywords": kdp_keywords_section,
+            "discovery_keywords": discovery_keywords_section,
+            "positioning": positioning_section,
+        }
+    });
+    json.to_string()
 }
 
 // ── Unified analyze_story command ─────────────────────────────────────────────
@@ -1369,14 +1350,14 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
     for r in &ranked { emit(&app, &format!("  {}% — {}", r.confidence, r.genre)); }
     if crate::is_cancelled() { return err("Cancelled."); }
 
-    // Build genre ranking report section
-    let genre_ranking_section = {
-        let mut s = vec!["## Genre Ranking".to_string(), String::new(),
-            "Scored independently — percentages do not sum to 100.".to_string(), String::new()];
-        for r in &ranked { s.push(format!("- **{}** — {}%: {}", r.genre, r.confidence, r.reason)); }
-        s.push(String::new());
-        s.join("\n")
-    };
+    // Build genre ranking report section as JSON
+    let genre_ranking_section = serde_json::json!({
+        "genres": ranked.iter().map(|r| serde_json::json!({
+            "genre": r.genre,
+            "confidence": r.confidence,
+            "reason": r.reason,
+        })).collect::<Vec<_>>(),
+    }).to_string();
 
     let genre_terms: Vec<(String, u8)> = if !ranked.is_empty() {
         ranked.iter().filter(|r| r.confidence >= 30).take(6).map(|r| (r.genre.clone(), r.confidence)).collect()
@@ -1387,7 +1368,7 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
     // ── Step 4: KDP Categories (both stores) ───────────────────────────────
     emit(&app, "Step 4: Matching KDP categories...");
     let base_description = format!("{}\n\n{}", genre_data.industry_ebook, genre_data.genre_signals);
-    let mut kdp_section_lines = vec!["## KDP Categories".to_string(), String::new()];
+    let mut kdp_stores_json: Vec<serde_json::Value> = Vec::new();
     let mut kindle_top_categories: Vec<String> = Vec::new();
     let mut print_top_categories: Vec<String> = Vec::new();
 
@@ -1395,13 +1376,9 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
         ("Kindle", "Kindle eBook", &mut kindle_top_categories as &mut Vec<String>),
         ("Books", "Paperback", &mut print_top_categories as &mut Vec<String>),
     ] {
-        kdp_section_lines.push(format!("### {}", label));
-        kdp_section_lines.push(String::new());
-
         let total_catalog = { let conn = database.0.lock().unwrap(); db::kdp_category_count(&conn, store) };
         if total_catalog < 50 {
-            kdp_section_lines.push("*Catalog nearly empty for this store — import WinningCat data.*".to_string());
-            kdp_section_lines.push(String::new());
+            kdp_stores_json.push(serde_json::json!({ "store": label, "error": "Catalog nearly empty — import WinningCat data." }));
             continue;
         }
 
@@ -1419,32 +1396,29 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
             match_categories_by_store(&app_c, &database, &folder_c, &store_c, &desc_c, &terms_c, &provider_c, &api_key_c, &model_c)
         }).await.unwrap();
 
-        let final_cats = rank_by_discoverability(&app, store, result.qualifying).await;
+        let final_cats = rank_by_discoverability(&app, store, result.qualifying, &request.canopy_api_key).await;
 
         // Extract top 3 category paths for the KDP paste section
         for q in final_cats.iter().take(3) {
             top_cats.push(q.path.clone());
         }
 
-        if final_cats.is_empty() {
-            kdp_section_lines.push("*No candidates cleared the fit bar for this store.*".to_string());
-        } else {
-            for (i, q) in final_cats.iter().enumerate() {
-                let bonus = if i >= 3 { " — bonus candidate" } else { "" };
-                let disc_note = if q.verified {
-                    format!(" — sales to #10: {}", q.sales_to_ten)
-                } else {
-                    " — could not verify live".to_string()
-                };
-                kdp_section_lines.push(format!("{}. `{}` (fit {}%){}{} — matched by: {}",
-                    i + 1, q.path, q.fit_confidence, bonus, disc_note, q.agreeing_genres.join(", ")));
-            }
-        }
-        kdp_section_lines.push(String::new());
+        kdp_stores_json.push(serde_json::json!({
+            "store": label,
+            "categories": final_cats.iter().enumerate().map(|(i, q)| serde_json::json!({
+                "rank": i + 1,
+                "path": q.path,
+                "fit_confidence": q.fit_confidence,
+                "sales_to_ten": q.sales_to_ten,
+                "verified": q.verified,
+                "is_bonus": i >= 3,
+                "agreeing_genres": q.agreeing_genres,
+            })).collect::<Vec<_>>(),
+        }));
 
         if crate::is_cancelled() { return err("Cancelled."); }
     }
-    let kdp_categories_section = kdp_section_lines.join("\n");
+    let kdp_categories_section = serde_json::json!({ "stores": kdp_stores_json }).to_string();
     if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 5: BISAC Classification ───────────────────────────────────────
@@ -1486,31 +1460,18 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
                 Some(picks)
             };
 
-            let mut lines = vec![
-                "## BISAC Classification".to_string(), String::new(),
-                "### Ebook".to_string(), String::new(),
-            ];
-            if ebook_picks.is_empty() {
-                lines.push("*No confident BISAC match.*".to_string());
-            } else {
-                for (i, (code, heading, conf, _)) in ebook_picks.iter().enumerate() {
-                    lines.push(format!("{}. `{}` — {} ({}%)", i + 1, code, heading, conf));
-                }
-            }
-            lines.push(String::new());
-            lines.push("### Print".to_string());
-            lines.push(String::new());
-            match &print_picks {
-                None => lines.push("*Same as ebook.*".to_string()),
-                Some(picks) if picks.is_empty() => lines.push("*No confident BISAC match.*".to_string()),
-                Some(picks) => {
-                    for (i, (code, heading, conf, _)) in picks.iter().enumerate() {
-                        lines.push(format!("{}. `{}` — {} ({}%)", i + 1, code, heading, conf));
-                    }
-                }
-            }
-            lines.push(String::new());
-            lines.join("\n")
+            let bisac_json = serde_json::json!({
+                "ebook": ebook_picks.iter().map(|(code, heading, conf, reason)| serde_json::json!({
+                    "code": code, "heading": heading, "confidence": conf, "reason": reason,
+                })).collect::<Vec<_>>(),
+                "print": match &print_picks {
+                    None => serde_json::json!("same_as_ebook"),
+                    Some(picks) => serde_json::json!(picks.iter().map(|(code, heading, conf, reason)| serde_json::json!({
+                        "code": code, "heading": heading, "confidence": conf, "reason": reason,
+                    })).collect::<Vec<_>>()),
+                },
+            });
+            bisac_json.to_string()
         }).await.unwrap()
     };
     if crate::is_cancelled() { return err("Cancelled."); }
@@ -1525,7 +1486,12 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
             Vec::new()
         } else {
             emit(&app, &format!("  Seeds: {:?}", seeds));
-            run_keyword_searches(&app, &request.folder, &seeds).await
+            if request.canopy_api_key.is_empty() {
+                emit(&app, "  ⚠ No Canopy API key — skipping keyword search.");
+                Vec::new()
+            } else {
+                run_keyword_searches_canopy(&app, &request.folder, &seeds, &request.canopy_api_key).await
+            }
         }
     };
     if crate::is_cancelled() { return err("Cancelled."); }
@@ -1606,39 +1572,20 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
     let kdp_keywords_section = render_kdp_keywords(&kdp_keyword_entries, &kdp_keyword_strategy, source_note);
 
     // Discovery keywords section
-    let discovery_keywords_section = {
-        let mut lines = vec!["## Non-KDP Discovery Keywords".to_string(), String::new()];
-        if discovery_entries.is_empty() {
-            lines.push("*Discovery keyword generation was not available.*".to_string());
-        } else {
-            lines.push("Optimized for Apple Books, Kobo, Google Play, B&N, BookBub, Goodreads, and SEO.".to_string());
-            lines.push(String::new());
-            for entry in &discovery_entries {
-                lines.push(format!("- **{}** — {}", entry.phrase, entry.rationale));
-            }
-        }
-        lines.push(String::new());
-        lines.join("\n")
-    };
+    let discovery_keywords_section = serde_json::json!({
+        "keywords": discovery_entries.iter().map(|e| serde_json::json!({
+            "phrase": e.phrase,
+            "rationale": e.rationale,
+        })).collect::<Vec<_>>(),
+    }).to_string();
 
     // Positioning context section
-    let positioning_section = {
-        let mut lines = vec!["## Positioning Context".to_string(), String::new()];
-        lines.push(format!("**Reader demographic:** {}", genre_data.reader_demographic));
-        lines.push(format!("**Bookstore shelving:** {}", genre_data.bookstore_shelving));
-        if !genre_data.comps_ebook.is_empty() {
-            lines.push(String::new());
-            lines.push("**Ebook comps:**".to_string());
-            for c in &genre_data.comps_ebook { lines.push(format!("- {}", c)); }
-        }
-        if !genre_data.comps_print.is_empty() {
-            lines.push(String::new());
-            lines.push("**Print comps:**".to_string());
-            for c in &genre_data.comps_print { lines.push(format!("- {}", c)); }
-        }
-        lines.push(String::new());
-        lines.join("\n")
-    };
+    let positioning_section = serde_json::json!({
+        "reader_demographic": genre_data.reader_demographic,
+        "bookstore_shelving": genre_data.bookstore_shelving,
+        "comps_ebook": genre_data.comps_ebook,
+        "comps_print": genre_data.comps_print,
+    }).to_string();
 
     let report = render_combined_report(
         &kdp_paste,
@@ -2164,137 +2111,56 @@ Return ONLY a JSON object:
 // ── Rendering (structured DB data → markdown, always fresh, never cached-stale) ─
 
 fn render_genre_analysis_md(g: &db::GenreDataRow) -> String {
-    let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
-    let mut md = vec![
-        "# Genre Analysis Report".to_string(),
-        format!("Generated: {}", now),
-        String::new(),
-        "> **Note:** Classifications are based on AI training data. Verify KDP paths in Publisher Rocket.".to_string(),
-        String::new(),
-        "---".to_string(),
-        String::new(),
-        "## 1. Industry Genre Classification".to_string(),
-        String::new(),
-        "### Ebook".to_string(),
-        format!("**{}**", g.industry_ebook),
-        String::new(),
-    ];
-    if !g.comps_ebook.is_empty() {
-        md.push("**Comparable titles:**".to_string());
-        for c in &g.comps_ebook { md.push(format!("- {}", c)); }
-        md.push(String::new());
-    }
-    md.push(format!("**Reader demographic:** {}", g.reader_demographic));
-    md.push(String::new());
-    md.push("### Print".to_string());
-    md.push(format!("**{}**", g.industry_print));
-    md.push(String::new());
-    md.push(format!("**Bookstore shelving:** {}", g.bookstore_shelving));
-    md.push(String::new());
-    if !g.comps_print.is_empty() {
-        md.push("**Comparable titles:**".to_string());
-        for c in &g.comps_print { md.push(format!("- {}", c)); }
-        md.push(String::new());
-    }
-    md.push("---".to_string());
-    md.push(String::new());
-    md.push("## 2. KDP Category Recommendations".to_string());
-    md.push(String::new());
-    md.push("### Kindle Ebook".to_string());
-    for p in &g.kdp_ebook { md.push(format!("- `{}`", p)); }
-    md.push(String::new());
-    md.push("### KDP Print".to_string());
-    for p in &g.kdp_print { md.push(format!("- `{}`", p)); }
-    md.push(String::new());
-    md.push("---".to_string());
-    md.push(String::new());
-    md.push("## 3. Genre Signals Summary".to_string());
-    md.push(String::new());
-    md.push(g.genre_signals.clone());
-    md.push(String::new());
-    md.push("---".to_string());
-    md.push(String::new());
-    md.push("## 4. Marketing Notes".to_string());
-    md.push(String::new());
-    for note in &g.marketing_notes { md.push(format!("- {}", note)); }
-    md.push(String::new());
-    md.join("\n")
+    let json = serde_json::json!({
+        "schema": "genre_analysis_v1",
+        "industry_ebook": g.industry_ebook,
+        "industry_print": g.industry_print,
+        "comps_ebook": g.comps_ebook,
+        "comps_print": g.comps_print,
+        "reader_demographic": g.reader_demographic,
+        "bookstore_shelving": g.bookstore_shelving,
+        "kdp_ebook": g.kdp_ebook,
+        "kdp_print": g.kdp_print,
+        "genre_signals": g.genre_signals,
+        "marketing_notes": g.marketing_notes,
+    });
+    json.to_string()
 }
 
 fn render_full_report(g: &db::GenreDataRow, competition_done: bool) -> String {
-    let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
-    let genre_report = render_genre_analysis_md(g);
-    let footer = if competition_done {
-        "> Run **Analyze Competition** to refresh Publisher Rocket market data, category stats,\n> competitor pricing, and cover analysis in this report."
-    } else {
-        "> Run **Analyze Competition** to add Publisher Rocket market data."
-    };
-    vec![
-        "# Full Genre & Market Analysis".to_string(),
-        format!("Generated: {}", now),
-        String::new(), "---".to_string(), String::new(),
-        genre_report,
-        String::new(), "---".to_string(), String::new(),
-        footer.to_string(),
-        String::new(),
-    ].join("\n")
+    let json = serde_json::json!({
+        "schema": "full_report_v1",
+        "genre_analysis": serde_json::from_str::<serde_json::Value>(&render_genre_analysis_md(g)).unwrap_or_default(),
+        "competition_done": competition_done,
+    });
+    json.to_string()
 }
 
 fn render_kdp_keywords(entries: &[db::KdpKeywordEntry], strategy: &str, source_note: &str) -> String {
-    let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
-    let mut md = vec![
-        source_note.to_string(),
-        String::new(),
-        "# KDP Keyword Strings".to_string(),
-        format!("Generated: {}", now),
-        String::new(),
-        "> These 7 strings are ready to paste directly into KDP's keyword fields.".to_string(),
-        "> Each is 50 characters or fewer.".to_string(),
-        String::new(),
-        "---".to_string(),
-        String::new(),
-        "## Your 7 KDP Keyword Strings".to_string(),
-        String::new(),
-    ];
-    for (i, kw) in entries.iter().enumerate() {
-        let actual = kw.string.len() as i64;
-        let flag = if actual > 50 { " ⚠️ OVER 50 CHARS — shorten before using" } else { "" };
-        md.push(format!("**{}. `{}`**{}", i + 1, kw.string, flag));
-        md.push(format!("*{} characters — {}*", kw.chars.max(actual), kw.rationale));
-        md.push(String::new());
-    }
-    md.push("---".to_string());
-    md.push(String::new());
-    md.push("## Strategy".to_string());
-    md.push(String::new());
-    md.push(strategy.to_string());
-    md.push(String::new());
-    md.push("---".to_string());
-    md.push(String::new());
-    md.push("## How to Use".to_string());
-    md.push(String::new());
-    md.push("1. Go to KDP → Your Books → Edit eBook Details".to_string());
-    md.push("2. Scroll to **Keywords** (7 fields)".to_string());
-    md.push("3. Paste one string per field".to_string());
-    md.push("4. Do NOT use commas inside a field".to_string());
-    md.push("5. Do NOT repeat words already in your title, subtitle, or categories".to_string());
-    md.push(String::new());
-    md.join("\n")
+    // Store as structured JSON — the frontend renders to HTML
+    let json = serde_json::json!({
+        "schema": "kdp_keywords_v1",
+        "source_note": source_note,
+        "entries": entries.iter().enumerate().map(|(i, kw)| {
+            serde_json::json!({
+                "field": i + 1,
+                "string": kw.string,
+                "chars": kw.chars,
+                "rationale": kw.rationale,
+                "over_limit": kw.string.len() > 50,
+            })
+        }).collect::<Vec<_>>(),
+        "strategy": strategy,
+    });
+    json.to_string()
 }
 
 fn render_pr_keywords(keywords: &[String]) -> String {
-    let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
-    let mut md = vec![
-        "# PR Competition Analyzer Keywords".to_string(),
-        format!("Generated: {}", now),
-        String::new(),
-        "> These short phrases are for Publisher Rocket's Competition Analyzer.".to_string(),
-        "> They are NOT the same as your KDP keyword strings.".to_string(),
-        String::new(),
-    ];
-    for kw in keywords { md.push(format!("- `{}`", kw)); }
-    md.push(String::new());
-    md.join("\n")
+    let json = serde_json::json!({
+        "schema": "pr_keywords_v1",
+        "keywords": keywords,
+    });
+    json.to_string()
 }
 
 // ── Phase implementations ─────────────────────────────────────────────────────
@@ -2753,6 +2619,97 @@ pub async fn run_keyword_searches(
     aggregated
 }
 
+/// Canopy-based keyword search — replaces PR keyword search in the pipeline.
+/// For each seed: gets autocomplete suggestions, searches top results, estimates volume.
+async fn run_keyword_searches_canopy(
+    app: &AppHandle,
+    folder: &str,
+    seeds: &[String],
+    canopy_api_key: &str,
+) -> Vec<KeywordResult> {
+    let mut all_results: Vec<KeywordResult> = Vec::new();
+
+    for seed in seeds {
+        if crate::is_cancelled() { break; }
+
+        let app_c = app.clone();
+        let seed_c = seed.clone();
+        let key_c = canopy_api_key.to_string();
+        let folder_c = folder.to_string();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let client = crate::canopy::CanopyClient::new(&key_c)?;
+            let _ = app_c.emit("cdp:log", &format!("Keyword search (Canopy): \"{}\"", seed_c));
+
+            // Get suggestions
+            let suggestions = client.autocomplete(&seed_c, "amazon.com", Some("digital-text"))
+                .unwrap_or_else(|_| vec![seed_c.clone()]);
+            let mut keywords: Vec<String> = vec![seed_c.clone()];
+            for s in suggestions.into_iter().take(10) {
+                if !keywords.contains(&s) { keywords.push(s); }
+            }
+
+            let mut results: Vec<KeywordResult> = Vec::new();
+            for kw in &keywords {
+                let search = match client.search(kw, "amazon.com", Some("digital-text"), 1) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                if search.is_empty() {
+                    results.push(KeywordResult { keyword: kw.clone(), searches: "0".to_string(), competition: "Low".to_string(), estimated_earnings: "$0".to_string() });
+                    continue;
+                }
+                let organic: Vec<_> = search.iter().filter(|r| !r.is_sponsored).take(3).collect();
+                let mut daily_sales: Vec<f64> = Vec::new();
+                for sr in &organic {
+                    if sr.asin.is_empty() { continue; }
+                    if let Ok(s) = client.get_sales(&sr.asin, "amazon.com") {
+                        if let Some(d) = s.estimated_daily_sales { daily_sales.push(d); }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                }
+                let avg = if daily_sales.is_empty() { 0.0 } else { daily_sales.iter().sum::<f64>() / daily_sales.len() as f64 };
+                let monthly_searches = (avg * 30.0 * 33.0) as u64;
+                let avg_reviews: f64 = {
+                    let counts: Vec<f64> = search.iter().filter_map(|r| r.review_count.map(|c| c as f64)).collect();
+                    if counts.is_empty() { 0.0 } else { counts.iter().sum::<f64>() / counts.len() as f64 }
+                };
+                let sponsored_count = search.iter().filter(|r| r.is_sponsored).count();
+                let competition = if avg_reviews > 500.0 || sponsored_count > 5 { "High" }
+                    else if avg_reviews > 100.0 || sponsored_count > 2 { "Medium" }
+                    else { "Low" };
+                let est_earnings = avg * 30.0 * 0.3 * 2.80;
+                results.push(KeywordResult {
+                    keyword: kw.clone(),
+                    searches: format!("{}", monthly_searches),
+                    competition: competition.to_string(),
+                    estimated_earnings: format!("${:.0}", est_earnings),
+                });
+            }
+
+            // Persist
+            let database = app_c.state::<crate::db::Db>();
+            let conn = database.0.lock().unwrap();
+            let rows: Vec<(String, String, String, String)> = results.iter()
+                .map(|r| (r.keyword.clone(), r.searches.clone(), r.competition.clone(), r.estimated_earnings.clone()))
+                .collect();
+            let _ = crate::db::replace_keyword_search_results(&conn, &folder_c, &seed_c, &rows);
+
+            Ok::<Vec<KeywordResult>, String>(results)
+        }).await.unwrap();
+
+        match result {
+            Ok(kws) => {
+                let _ = app.emit("cdp:log", &format!("✓ \"{}\" → {} keyword(s).", seed, kws.len()));
+                all_results.extend(kws);
+            }
+            Err(e) => { let _ = app.emit("cdp:log", &format!("⚠ \"{}\" failed: {}", seed, e)); }
+        }
+    }
+
+    all_results
+}
+
 // ── KDP Paste Section Renderer ─────────────────────────────────────────────────
 
 /// Renders the "KDP Metadata — Ready to Paste" section that mirrors the KDP
@@ -2764,39 +2721,13 @@ fn render_kdp_paste_section(
     print_categories: &[String],
     keywords: &[db::KdpKeywordEntry],
 ) -> String {
-    let mut lines = vec![
-        "## KDP Metadata — Ready to Paste".to_string(),
-        String::new(),
-        "### Categories (Kindle eBook)".to_string(),
-        String::new(),
-    ];
-
-    for cat in kindle_categories.iter().take(3) {
-        lines.push(cat.clone());
-        lines.push(String::new());
-    }
-
-    lines.push("### Categories (Paperback)".to_string());
-    lines.push(String::new());
-
-    for cat in print_categories.iter().take(3) {
-        lines.push(cat.clone());
-        lines.push(String::new());
-    }
-
-    lines.push("### Keywords".to_string());
-    lines.push(String::new());
-    lines.push("| Field 1–4 | Field 5–7 |".to_string());
-    lines.push("|-----------|-----------|".to_string());
-
-    for i in 0..4 {
-        let left = keywords.get(i).map(|k| k.string.as_str()).unwrap_or("");
-        let right = keywords.get(i + 4).map(|k| k.string.as_str()).unwrap_or("");
-        lines.push(format!("| {} | {} |", left, right));
-    }
-
-    lines.push(String::new());
-    lines.join("\n")
+    let json = serde_json::json!({
+        "schema": "kdp_paste_v1",
+        "kindle_categories": kindle_categories.iter().take(3).collect::<Vec<_>>(),
+        "print_categories": print_categories.iter().take(3).collect::<Vec<_>>(),
+        "keywords": keywords.iter().map(|k| &k.string).collect::<Vec<_>>(),
+    });
+    json.to_string()
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────

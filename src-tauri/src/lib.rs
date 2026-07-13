@@ -1,4 +1,6 @@
 mod cancel;
+#[allow(dead_code)]
+mod canopy;
 mod cdp;
 mod commands;
 mod category_finder;
@@ -64,6 +66,10 @@ pub fn run() {
             keyword_search::search_pr_keywords,
             competition_analyzer::analyze_competition,
             cancel::cancel_operation,
+            canopy::test_canopy_connection,
+            canopy::analyze_categories_canopy,
+            canopy::analyze_competition_canopy,
+            canopy::search_keywords_canopy,
             stories::list_stories,
             stories::add_story,
             stories::update_story,

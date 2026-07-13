@@ -4,20 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Publisher Rocket Reader</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
-    <script type="module" crossorigin src="/assets/index-EfeXD7tl.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-BtBcKqR7.css">
+    <script type="module" crossorigin src="/assets/index-VKyb2TMf.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-VLeG99G4.css">
   </head>
   <body>
     <div id="app">
 
       <div id="titlebar" data-tauri-drag-region>
         <h1>Publisher Rocket Reader</h1>
-        <div id="rocket-status">
-          <span class="status-dot" id="status-dot"></span>
-          <span id="status-label">Checking…</span>
-          <button id="btn-launch">Launch Rocket</button>
-        </div>
       </div>
 
       <nav id="sidebar">
@@ -25,7 +19,6 @@
         <!-- Nav items -->
         <div class="nav-section">
           <button class="nav-item active" data-panel="analyzer">Analyzer</button>
-          <button class="nav-item" data-panel="reports">Reports</button>
         </div>
 
         <!-- Stories list -->
@@ -35,6 +28,14 @@
             <button class="btn-new-story" id="btn-new-story" title="Add story">+</button>
           </div>
           <div id="stories-list"></div>
+        </div>
+
+        <!-- Reports list in sidebar -->
+        <div class="nav-section reports-section">
+          <div class="nav-label-row">
+            <span class="nav-label">Reports</span>
+          </div>
+          <div id="reports-list"></div>
         </div>
 
         <!-- Settings at bottom -->
@@ -76,32 +77,19 @@
 
           <div class="output-area">
             <div class="output-tabs">
-              <button class="output-tab active" data-tab="genre-log">Log</button>
-              <button class="output-tab" data-tab="genre-preview">Preview</button>
-              <button class="output-tab" data-tab="genre-raw">Markdown</button>
+              <span class="output-tab-label">Log</span>
               <button class="clear-log" id="btn-clear-genre-log">Clear</button>
             </div>
             <div class="output-pane" id="genre-log-pane">
               <pre id="genre-log-output"></pre>
             </div>
-            <div class="output-pane hidden" id="genre-preview-pane">
-              <div id="genre-preview-content" class="markdown-preview"></div>
-            </div>
-            <div class="output-pane hidden" id="genre-raw-pane">
-              <pre id="genre-raw-output"></pre>
-            </div>
-            <button id="btn-copy-genre">Copy markdown</button>
           </div>
         </div>
 
-        <!-- Reports -->
+        <!-- Reports Viewer -->
         <div id="reports-panel" class="panel">
-          <div class="panel-title">Reports</div>
-          <p class="panel-desc" id="reports-folder-note">Select a story to see its reports.</p>
-          <div id="reports-list"></div>
-          <div id="reports-viewer" class="reports-viewer hidden">
+          <div id="reports-viewer" class="reports-viewer">
             <div class="reports-viewer-header">
-              <button class="btn btn-secondary btn-sm" id="btn-reports-back">← Back</button>
               <span id="reports-viewer-title"></span>
               <div class="reports-viewer-actions">
                 <button class="btn btn-sm" id="btn-reports-save" title="Save this version">Save</button>
@@ -109,7 +97,7 @@
                 <button class="btn btn-danger btn-sm hidden" id="btn-reports-delete" title="Delete this saved version">Delete</button>
               </div>
             </div>
-            <div id="reports-viewer-content" class="markdown-preview"></div>
+            <div id="reports-viewer-content"></div>
           </div>
         </div>
 
@@ -164,6 +152,18 @@
 
             <button class="btn" id="btn-save-settings">Save Settings</button>
             <span id="settings-saved" class="settings-saved"></span>
+          </div>
+
+          <div class="settings-form" style="margin-top:24px;border-top:1px solid var(--border);padding-top:20px">
+            <label for="canopy-api-key">Canopy API Key</label>
+            <p class="panel-desc" style="margin:0 0 8px">
+              Used for Amazon book data (category stats, competition analysis, keyword research). Get a free key at <strong>canopyapi.co</strong>.
+            </p>
+            <div class="model-row">
+              <input type="password" id="canopy-api-key" placeholder="Enter Canopy API key" autocomplete="off" style="flex:1" />
+              <button class="btn btn-sm" id="btn-test-canopy">Test</button>
+            </div>
+            <span id="canopy-test-status" class="model-hint"></span>
           </div>
 
           <div class="settings-form" style="margin-top:24px;border-top:1px solid var(--border);padding-top:20px">

@@ -959,6 +959,16 @@ pub struct DocMeta {
     pub generated_at: String,
 }
 
+/// Response envelope for get_report_cmd — tells the frontend what format to expect.
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct ReportEnvelope {
+    pub doc_type:     String,
+    pub label:        String,
+    pub format:       String,   // "json" | "markdown"
+    pub content:      String,
+    pub generated_at: String,
+}
+
 pub fn list_documents(conn: &Connection, story_folder: &str) -> Vec<DocMeta> {
     let mut stmt = match conn.prepare(
         "SELECT doc_type, generated_at FROM story_documents WHERE story_folder = ?1"
@@ -988,9 +998,25 @@ pub async fn list_reports_cmd(db: tauri::State<'_, Db>, folder: String) -> Resul
 }
 
 #[tauri::command]
-pub async fn get_report_cmd(db: tauri::State<'_, Db>, folder: String, doc_type: String) -> Result<String, String> {
+pub async fn get_report_cmd(db: tauri::State<'_, Db>, folder: String, doc_type: String) -> Result<ReportEnvelope, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    get_document(&conn, &folder, &doc_type).ok_or_else(|| "Report not found.".to_string())
+    let (content, generated_at) = conn.query_row(
+        "SELECT content, generated_at FROM story_documents WHERE story_folder = ?1 AND doc_type = ?2",
+        params![folder, doc_type], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    ).map_err(|_| "Report not found.".to_string())?;
+
+    let label = DOC_TYPES.iter().find(|(t, _)| *t == doc_type)
+        .map(|(_, l)| l.to_string())
+        .unwrap_or_else(|| doc_type.clone());
+
+    // Detect format: if the content parses as a JSON object with a "schema" field, it's structured
+    let format = if content.starts_with('{') || content.starts_with('[') {
+        if serde_json::from_str::<serde_json::Value>(&content).is_ok() { "json" } else { "markdown" }
+    } else {
+        "markdown"
+    };
+
+    Ok(ReportEnvelope { doc_type, label, format: format.to_string(), content, generated_at })
 }
 
 // ── Tauri commands for saved (versioned) reports ────────────────────────
@@ -1008,9 +1034,20 @@ pub async fn list_saved_reports_cmd(db: tauri::State<'_, Db>, folder: String) ->
 }
 
 #[tauri::command]
-pub async fn get_saved_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<String, String> {
+pub async fn get_saved_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<ReportEnvelope, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    get_saved_report(&conn, id).ok_or_else(|| "Saved report not found.".to_string())
+    let (doc_type, content, saved_at, label): (String, String, String, String) = conn.query_row(
+        "SELECT doc_type, content, saved_at, label FROM saved_reports WHERE id = ?1",
+        params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    ).map_err(|_| "Saved report not found.".to_string())?;
+
+    let format = if content.starts_with('{') || content.starts_with('[') {
+        if serde_json::from_str::<serde_json::Value>(&content).is_ok() { "json" } else { "markdown" }
+    } else {
+        "markdown"
+    };
+
+    Ok(ReportEnvelope { doc_type, label, format: format.to_string(), content, generated_at: saved_at })
 }
 
 #[tauri::command]
@@ -1111,6 +1148,15 @@ pub fn top_level_kdp_categories(conn: &Connection, store: &str) -> Vec<String> {
     out
 }
 
+/// Look up the Amazon node ID for a category path. Returns None if the path
+/// isn't in the catalog or has no node ID (manually-added paths without WinningCat data).
+pub fn node_id_for_path(conn: &Connection, path: &str, store: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT amazon_node_id FROM kdp_categories WHERE path = ?1 AND store = ?2 AND amazon_node_id IS NOT NULL AND amazon_node_id != ''",
+        params![path, store], |r| r.get::<_, String>(0)
+    ).ok()
+}
+
 // ── Saved reports (versioned) ───────────────────────────────────────────
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -1173,6 +1219,7 @@ pub fn list_saved_reports(conn: &Connection, story_folder: &str) -> Vec<SavedRep
 }
 
 /// Get the content of a specific saved report by ID.
+#[allow(dead_code)]
 pub fn get_saved_report(conn: &Connection, id: i64) -> Option<String> {
     conn.query_row(
         "SELECT content FROM saved_reports WHERE id = ?1",

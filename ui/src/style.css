@@ -306,6 +306,38 @@ html, body {
   cursor: pointer;
   white-space: nowrap;
 }
+.force-resummarize-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.force-resummarize-label input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+.competition-wrapper {
+  position: relative;
+}
+.competition-wrapper .store-selector {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 10;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  margin-top: 4px;
+  white-space: nowrap;
+}
+.competition-wrapper:hover .store-selector,
+.competition-wrapper:focus-within .store-selector {
+  display: block;
+}
 .analyzer-steps {
   display: flex;
   align-items: center;

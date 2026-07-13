@@ -29,3 +29,6 @@ chrono = "0.4"
 base64 = "0.21"
 log = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+[dev-dependencies]
+proptest = "1"

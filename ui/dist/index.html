@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Publisher Rocket Reader</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
-    <script type="module" crossorigin src="/assets/index-BtmaOMBl.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-Dw8FQLLW.css">
+    <script type="module" crossorigin src="/assets/index-BbmYRoBe.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-Ct-HtMvd.css">
   </head>
   <body>
     <div id="app">
@@ -58,36 +58,20 @@
           <!-- Primary action buttons -->
           <div class="analyzer-actions">
             <div class="analyzer-primary">
-              <button class="btn btn-action-primary" id="btn-run-everything" disabled>&#9654; Run Analysis</button>
-              <button class="btn btn-action-comp" id="btn-analyze-competition" disabled>&#9654; Analyze Competition</button>
-              <button class="btn btn-action-cat" id="btn-find-categories" disabled>&#9654; Find Categories</button>
+              <button class="btn btn-action-primary" id="btn-analyze" disabled>&#9654; Analyze</button>
+              <label class="force-resummarize-label"><input type="checkbox" id="force-resummarize" /> Force re-summarize</label>
+              <div class="competition-wrapper">
+                <button class="btn btn-action-comp" id="btn-analyze-competition" disabled>&#9654; Analyze Competition</button>
+                <div class="store-selector" id="competition-store-row">
+                  <label class="store-label">Competition Store</label>
+                  <div class="store-options">
+                    <label class="store-option"><input type="radio" name="comp-store" value="Kindle" checked /> Kindle</label>
+                    <label class="store-option"><input type="radio" name="comp-store" value="Books" /> Books</label>
+                  </div>
+                </div>
+              </div>
               <button class="btn btn-action-stop" id="btn-stop" style="display:none">&#x23F9; Stop</button>
             </div>
-            <div class="analyzer-steps">
-              <span class="steps-label">Steps:</span>
-              <button class="btn btn-step" id="btn-gen-summaries" disabled>Summaries</button>
-              <button class="btn btn-step" id="btn-run-genre" disabled>Analyze</button>
-              <button class="btn btn-step" id="btn-full-analysis" disabled>Full Analysis</button>
-              <button class="btn btn-step" id="btn-optimize-keywords" disabled>KDP Keywords</button>
-              <button class="btn btn-step" id="btn-gen-pr-keywords" disabled>PR Keywords</button>
-            </div>
-          </div>
-
-          <div class="store-selector" id="competition-store-row" style="display:none">
-            <label class="store-label">Competition Store</label>
-            <div class="store-options">
-              <label class="store-option"><input type="radio" name="comp-store" value="Kindle" checked /> Kindle</label>
-              <label class="store-option"><input type="radio" name="comp-store" value="Books" /> Books</label>
-            </div>
-          </div>
-
-          <div class="store-selector" id="category-store-row">
-            <label class="store-label">Category Search Store</label>
-            <div class="store-options">
-              <label class="store-option"><input type="radio" name="cat-store" value="Kindle" checked /> Kindle</label>
-              <label class="store-option"><input type="radio" name="cat-store" value="Books" /> Books</label>
-            </div>
-            <p class="panel-desc" style="margin:4px 0 0;font-size:11px">Filter is always "Selectable Excluding Ghosts."</p>
           </div>
 
           <div class="output-area">
@@ -176,6 +160,19 @@
 
             <button class="btn" id="btn-save-settings">Save Settings</button>
             <span id="settings-saved" class="settings-saved"></span>
+          </div>
+
+          <div class="settings-form" style="margin-top:24px;border-top:1px solid var(--border);padding-top:20px">
+            <label>Category Data</label>
+            <p class="panel-desc" style="margin:0 0 8px">
+              Import the WinningCat Amazon category dataset to populate the KDP category map with real, ID-backed paths for Books and Kindle Store. Existing entries verified live in Publisher Rocket are never downgraded.
+            </p>
+            <button class="btn btn-sm" id="btn-import-winningcat">Import WinningCat CSV…</button>
+            <span id="winningcat-import-status" class="model-hint"></span>
+            <div id="winningcat-stale-row" style="display:none;margin-top:8px">
+              <button class="btn btn-sm btn-danger" id="btn-remove-stale-winningcat">Remove stale categories…</button>
+              <span id="winningcat-stale-status" class="model-hint"></span>
+            </div>
           </div>
         </div>
 

@@ -23,11 +23,24 @@ pub struct LaunchResult {
     pub error: String,
 }
 
+#[derive(Serialize, Clone, Default)]
+pub struct CategoryStatRow {
+    pub requested_path: String,
+    pub matched_path:   String,
+    pub found:          bool,
+    pub sales_to_one:   String,
+    pub sales_to_ten:   String,
+    pub publisher_pct:  String,
+    pub ku_pct:         String,
+}
+
 #[derive(Serialize)]
 pub struct AnalyzerResult {
-    pub success: bool,
+    pub success:  bool,
     pub markdown: String,
-    pub error: String,
+    pub error:    String,
+    #[serde(default)]
+    pub rows:     Vec<CategoryStatRow>,
 }
 
 // ── Status ────────────────────────────────────────────────────────────────────
@@ -88,12 +101,12 @@ fn run_category_analyzer(app: &AppHandle, paths: Vec<String>, store: String, fil
 
     let target = match cdp::ensure_rocket() {
         Ok(t) => t,
-        Err(e) => return AnalyzerResult { success: false, markdown: String::new(), error: e },
+        Err(e) => return AnalyzerResult { success: false, markdown: String::new(), error: e, rows: Vec::new() },
     };
 
     let mut session = match cdp::connect(&target) {
         Ok(s) => s,
-        Err(e) => return AnalyzerResult { success: false, markdown: String::new(), error: e },
+        Err(e) => return AnalyzerResult { success: false, markdown: String::new(), error: e, rows: Vec::new() },
     };
 
     emit_log(app, "CDP session established.");
@@ -104,6 +117,7 @@ fn run_category_analyzer(app: &AppHandle, paths: Vec<String>, store: String, fil
         format!("Generated: {}", now),
         String::new(),
     ];
+    let mut rows: Vec<CategoryStatRow> = Vec::new();
 
     for (ci, full_path) in paths.iter().enumerate() {
         let segments: Vec<&str> = full_path.split('>')
@@ -309,6 +323,7 @@ fn run_category_analyzer(app: &AppHandle, paths: Vec<String>, store: String, fil
             lines.push(String::new());
             lines.push("---".to_string());
             lines.push(String::new());
+            rows.push(CategoryStatRow { requested_path: full_path.clone(), found: false, ..Default::default() });
             continue;
         }
 
@@ -403,6 +418,7 @@ fn run_category_analyzer(app: &AppHandle, paths: Vec<String>, store: String, fil
             lines.push(String::new());
             click_back(&mut session);
             std::thread::sleep(Duration::from_secs(2));
+            rows.push(CategoryStatRow { requested_path: full_path.clone(), found: false, ..Default::default() });
             continue;
         }
 
@@ -476,6 +492,16 @@ fn run_category_analyzer(app: &AppHandle, paths: Vec<String>, store: String, fil
         lines.push("---".to_string());
         lines.push(String::new());
 
+        rows.push(CategoryStatRow {
+            requested_path: full_path.clone(),
+            matched_path:   matched_path.to_string(),
+            found:          true,
+            sales_to_one:   row["salesToOne"].as_str().unwrap_or("").to_string(),
+            sales_to_ten:   row["salesToTen"].as_str().unwrap_or("").to_string(),
+            publisher_pct:  row["publisherPct"].as_str().unwrap_or("").to_string(),
+            ku_pct:         row["kuPct"].as_str().unwrap_or("").to_string(),
+        });
+
         click_back(&mut session);
         std::thread::sleep(Duration::from_secs(2));
     }
@@ -485,6 +511,7 @@ fn run_category_analyzer(app: &AppHandle, paths: Vec<String>, store: String, fil
         success: true,
         markdown: lines.join("\n"),
         error: String::new(),
+        rows,
     }
 }
 
@@ -583,7 +610,7 @@ pub async fn find_categories(
             &request.api_key,
             &request.model,
         ) {
-            Err(e) => AnalyzerResult { success: false, markdown: String::new(), error: e },
+            Err(e) => AnalyzerResult { success: false, markdown: String::new(), error: e, rows: Vec::new() },
             Ok(results) => {
                 let mut lines = vec![
                     "# Category Finder Results".to_string(),
@@ -650,6 +677,7 @@ pub async fn find_categories(
                     success: true,
                     markdown: lines.join("\n"),
                     error: String::new(),
+                    rows: Vec::new(),
                 }
             }
         }
@@ -700,9 +728,9 @@ Keep each section concise. No padding."#;
     match call_llm(&req.provider, &req.api_key, &req.model, system, &user, 1500) {
         Ok(markdown) => {
             emit_log(app, "✓ CSV analysis complete.");
-            AnalyzerResult { success: true, markdown, error: String::new() }
+            AnalyzerResult { success: true, markdown, error: String::new(), rows: Vec::new() }
         }
-        Err(e) => AnalyzerResult { success: false, markdown: String::new(), error: e },
+        Err(e) => AnalyzerResult { success: false, markdown: String::new(), error: e, rows: Vec::new() },
     }
 }
 

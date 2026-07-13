@@ -6,8 +6,10 @@ mod competition_analyzer;
 mod db;
 mod genre_analyzer;
 mod genre_taxonomy;
+mod keyword_search;
 mod models;
 mod stories;
+mod winningcat;
 
 use tauri::Manager;
 
@@ -42,6 +44,10 @@ pub fn run() {
             genre_analyzer::generate_pr_keywords,
             genre_analyzer::check_analysis_state,
             genre_analyzer::find_categories_for_story,
+            genre_analyzer::match_categories_for_story,
+            genre_analyzer::classify_bisac_for_story,
+            genre_analyzer::find_genres_and_categories_for_story,
+            genre_analyzer::analyze_story,
             genre_analyzer::rank_genres_for_story,
             genre_analyzer::verify_mapped_categories,
             genre_taxonomy::get_genre_taxonomy,
@@ -49,6 +55,9 @@ pub fn run() {
             db::add_kdp_path_cmd,
             db::list_reports_cmd,
             db::get_report_cmd,
+            winningcat::import_winningcat_csv,
+            winningcat::remove_stale_kdp_categories,
+            keyword_search::search_pr_keywords,
             competition_analyzer::analyze_competition,
             cancel::cancel_operation,
             stories::list_stories,

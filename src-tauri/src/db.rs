@@ -20,6 +20,7 @@ use tauri::{AppHandle, Manager};
 
 const SEED_GENRE_LIST_JSON:    &str = include_str!("../data/genre-list.json");
 const SEED_GENRE_KDP_MAP_JSON: &str = include_str!("../data/genre-kdp-map.json");
+const SEED_BISAC_JSON:         &str = include_str!("../data/bisac-fiction.json");
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS genres (
@@ -116,6 +117,25 @@ CREATE TABLE IF NOT EXISTS pr_keywords (
     keywords_json TEXT NOT NULL   -- ["kw1","kw2",...]
 );
 
+CREATE TABLE IF NOT EXISTS discovery_keywords (
+    story_folder  TEXT PRIMARY KEY,
+    generated_at  TEXT NOT NULL,
+    keywords_json TEXT NOT NULL   -- [{"phrase":..,"rationale":..}]
+);
+
+CREATE TABLE IF NOT EXISTS keyword_search_results (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    story_folder  TEXT NOT NULL,
+    seed          TEXT NOT NULL,
+    keyword       TEXT NOT NULL,
+    searches      TEXT,
+    competition   TEXT,
+    earnings      TEXT,
+    generated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_keyword_results_folder ON keyword_search_results(story_folder);
+
 -- Rendered markdown cache for the Reports panel. Every report type is
 -- re-rendered fresh from its structured source table whenever regenerated —
 -- this table is what the UI reads, never hand-edited, never stale-checked
@@ -130,6 +150,23 @@ CREATE TABLE IF NOT EXISTS story_documents (
 );
 
 CREATE INDEX IF NOT EXISTS idx_summaries_folder ON chapter_summaries(story_folder);
+
+CREATE TABLE IF NOT EXISTS bisac_codes (
+    code    TEXT PRIMARY KEY,
+    heading TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bisac_classifications (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    story_folder TEXT NOT NULL,
+    code         TEXT NOT NULL,
+    heading      TEXT NOT NULL,
+    confidence   INTEGER NOT NULL,
+    reason       TEXT,
+    generated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_bisac_folder ON bisac_classifications(story_folder);
 "#;
 
 pub struct Db(pub Mutex<Connection>);
@@ -144,7 +181,18 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     let conn = Connection::open(&db_path).map_err(|e| format!("Cannot open database: {}", e))?;
     conn.execute_batch(SCHEMA).map_err(|e| format!("Schema error: {}", e))?;
 
+    // Migration: bisac_classifications gained a `format` column (ebook/print)
+    // after initial release. Ignore the error if it already exists.
+    let _ = conn.execute("ALTER TABLE bisac_classifications ADD COLUMN format TEXT NOT NULL DEFAULT 'ebook'", []);
+
+    // Migration: kdp_categories gained `last_seen_at` so re-importing an
+    // updated WinningCat file can detect categories that dropped out of the
+    // new file (retired/renamed by Amazon) instead of leaving stale rows
+    // sitting in the catalog forever with no signal they're outdated.
+    let _ = conn.execute("ALTER TABLE kdp_categories ADD COLUMN last_seen_at TEXT", []);
+
     seed_if_empty(&conn)?;
+    seed_bisac_if_empty(&conn)?;
 
     Ok(Db(Mutex::new(conn)))
 }
@@ -195,6 +243,28 @@ fn seed_if_empty(conn: &Connection) -> Result<(), String> {
                 ).map_err(|e| e.to_string())?;
             }
         }
+    }
+
+    Ok(())
+}
+
+fn seed_bisac_if_empty(conn: &Connection) -> Result<(), String> {
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM bisac_codes", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if count > 0 { return Ok(()); }
+
+    #[derive(serde::Deserialize)]
+    struct SeedBisac { code: String, heading: String }
+
+    let codes: Vec<SeedBisac> = serde_json::from_str(SEED_BISAC_JSON)
+        .map_err(|e| format!("Cannot parse seed bisac-fiction.json: {}", e))?;
+
+    for c in &codes {
+        conn.execute(
+            "INSERT OR IGNORE INTO bisac_codes (code, heading) VALUES (?1, ?2)",
+            params![c.code, c.heading],
+        ).map_err(|e| e.to_string())?;
     }
 
     Ok(())
@@ -372,6 +442,99 @@ pub fn has_category_results(conn: &Connection, story_folder: &str) -> bool {
     ).is_ok()
 }
 
+pub fn kdp_category_count(conn: &Connection, store: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM kdp_categories WHERE store = ?1",
+        params![store], |r| r.get(0)
+    ).unwrap_or(0)
+}
+
+/// Keyword search over the imported category catalog — case-insensitive
+/// substring match per term, deduplicated, capped at `limit`. This is the
+/// direct replacement for Category Finder's live top-level PR scraping: once
+/// the catalog is populated (WinningCat import, or prior discoveries), this
+/// is a plain SQL query instead of driving Publisher Rocket's UI at all.
+pub fn search_kdp_categories(conn: &Connection, store: &str, terms: &[String], limit: usize) -> Vec<(String, String)> {
+    if terms.is_empty() { return Vec::new(); }
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+
+    for term in terms {
+        let cleaned = term.replace('%', " ").replace('_', " ");
+        let cleaned = cleaned.trim();
+        if cleaned.is_empty() { continue; }
+        let pattern = format!("%{}%", cleaned);
+
+        let mut stmt = match conn.prepare(
+            "SELECT path, COALESCE(amazon_node_id,'') FROM kdp_categories
+             WHERE store = ?1 AND path LIKE ?2 ESCAPE '\\' COLLATE NOCASE LIMIT 200"
+        ) { Ok(s) => s, Err(_) => continue };
+
+        let rows: Vec<(String, String)> = match stmt.query_map(params![store, pattern], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        }) {
+            Ok(mapped) => mapped.flatten().collect(),
+            Err(_) => continue,
+        };
+
+        for row in rows {
+            if seen.insert(row.0.clone()) {
+                out.push(row);
+                if out.len() >= limit { return out; }
+            }
+        }
+    }
+    out
+}
+
+/// Import a category path + node ID from an external catalog (WinningCat)
+/// without linking it to any genre yet — that happens later via Category
+/// Finder discovery or manual mapping. Preserves the source label if a path
+/// was already verified live against Publisher Rocket (category_finder /
+/// category_analyzer outrank a catalog import), but always refreshes the
+/// node ID and last_seen_at since those are authoritative either way.
+pub fn import_kdp_category(conn: &Connection, path: &str, store: &str, node_id: &str) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO kdp_categories (path, store, amazon_node_id, source, created_at, last_seen_at)
+         VALUES (?1, ?2, ?3, 'winningcat', ?4, ?4)
+         ON CONFLICT(path, store) DO UPDATE SET
+            amazon_node_id = excluded.amazon_node_id,
+            last_seen_at = ?4,
+            source = CASE
+                WHEN kdp_categories.source IN ('category_finder', 'category_analyzer')
+                THEN kdp_categories.source ELSE 'winningcat' END",
+        params![path, store, node_id, now],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Every catalog entry sourced from WinningCat that was NOT touched by an
+/// import run started at or after `since` — i.e. it was in a previous
+/// WinningCat file but missing from the latest one. Doesn't delete anything
+/// automatically (Amazon renaming a category and it genuinely disappearing
+/// look identical from here); surfaces the list so a human decides.
+pub fn stale_winningcat_paths(conn: &Connection, since: &str) -> Vec<(String, String)> {
+    let mut stmt = match conn.prepare(
+        "SELECT path, store FROM kdp_categories
+         WHERE source = 'winningcat' AND (last_seen_at IS NULL OR last_seen_at < ?1)
+         ORDER BY store, path"
+    ) { Ok(s) => s, Err(_) => return Vec::new() };
+    stmt.query_map(params![since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        .unwrap_or_default()
+}
+
+/// Remove every WinningCat-sourced catalog entry not seen since `since`.
+/// Called only when the user explicitly confirms cleanup after reviewing
+/// the stale count from an import — not automatic.
+pub fn remove_stale_winningcat_paths(conn: &Connection, since: &str) -> Result<usize, String> {
+    conn.execute(
+        "DELETE FROM kdp_categories WHERE source = 'winningcat' AND (last_seen_at IS NULL OR last_seen_at < ?1)",
+        params![since],
+    ).map_err(|e| e.to_string())
+}
+
 /// Replace all stored category-finder results for a story with a fresh set.
 /// Every matched/considered result also gets written into kdp_categories and
 /// linked to the genre it was found under (when it clears 80%, marked
@@ -484,6 +647,15 @@ pub fn chapter_summary_count(conn: &Connection, story_folder: &str) -> i64 {
         "SELECT COUNT(*) FROM chapter_summaries WHERE story_folder = ?1",
         params![story_folder], |r| r.get(0)
     ).unwrap_or(0)
+}
+
+/// Wipe all chapter summaries for a story so the next Analyze run
+/// regenerates every chapter from scratch, instead of skipping ones that
+/// already have a summary. Used by the "force re-summarize" checkbox.
+pub fn delete_chapter_summaries(conn: &Connection, story_folder: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM chapter_summaries WHERE story_folder = ?1", params![story_folder])
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ── Genre classification (industry genre + KDP paths + comps + notes) ──────────────
@@ -638,17 +810,96 @@ pub fn load_pr_keywords(conn: &Connection, story_folder: &str) -> Vec<String> {
      .unwrap_or_default()
 }
 
+// ── Non-KDP discovery keywords (broader platforms: Apple Books, Kobo, etc.) ──
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct DiscoveryKeywordEntry {
+    pub phrase:    String,
+    pub rationale: String,
+}
+
+pub fn save_discovery_keywords(conn: &Connection, story_folder: &str, entries: &[DiscoveryKeywordEntry]) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO discovery_keywords (story_folder, generated_at, keywords_json)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(story_folder) DO UPDATE SET generated_at = excluded.generated_at, keywords_json = excluded.keywords_json",
+        params![story_folder, now, serde_json::to_string(entries).unwrap_or_default()],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn load_discovery_keywords(conn: &Connection, story_folder: &str) -> Vec<DiscoveryKeywordEntry> {
+    conn.query_row(
+        "SELECT keywords_json FROM discovery_keywords WHERE story_folder = ?1",
+        params![story_folder], |r| r.get::<_, String>(0)
+    ).ok()
+     .and_then(|json| serde_json::from_str(&json).ok())
+     .unwrap_or_default()
+}
+
+pub fn has_keyword_search_results(conn: &Connection, story_folder: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM keyword_search_results WHERE story_folder = ?1)",
+        params![story_folder],
+        |r| r.get::<_, bool>(0),
+    ).unwrap_or(false)
+}
+
+// ── Publisher Rocket Keyword Search results (real search volume / competition) ──
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct KeywordSearchRow {
+    pub keyword:     String,
+    pub searches:    String,
+    pub competition: String,
+    pub earnings:    String,
+}
+
+/// Replace all stored results for this story+seed — latest search wins, same
+/// "supersede, don't accumulate" model used everywhere else in this app.
+pub fn replace_keyword_search_results(
+    conn: &Connection, story_folder: &str, seed: &str,
+    rows: &[(String, String, String, String)],  // (keyword, searches, competition, earnings)
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "DELETE FROM keyword_search_results WHERE story_folder = ?1 AND seed = ?2",
+        params![story_folder, seed],
+    ).map_err(|e| e.to_string())?;
+    for (keyword, searches, competition, earnings) in rows {
+        conn.execute(
+            "INSERT INTO keyword_search_results (story_folder, seed, keyword, searches, competition, earnings, generated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![story_folder, seed, keyword, searches, competition, earnings, now],
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub fn get_keyword_search_results(conn: &Connection, story_folder: &str, seed: &str) -> Vec<KeywordSearchRow> {
+    let mut stmt = match conn.prepare(
+        "SELECT keyword, searches, competition, earnings FROM keyword_search_results
+         WHERE story_folder = ?1 AND seed = ?2 ORDER BY id"
+    ) { Ok(s) => s, Err(_) => return Vec::new() };
+    stmt.query_map(params![story_folder, seed], |r| {
+        Ok(KeywordSearchRow { keyword: r.get(0)?, searches: r.get(1)?, competition: r.get(2)?, earnings: r.get(3)? })
+    }).and_then(|rows| rows.collect::<Result<Vec<_>, _>>()).unwrap_or_default()
+}
+
 // ── Story documents (rendered markdown cache, read by the Reports panel) ─────
 
 pub const DOC_TYPES: &[(&str, &str)] = &[
-    ("genre_analysis",    "Genre Analysis"),
-    ("full_report",       "Full Report"),
-    ("kdp_keywords",      "KDP Keywords"),
-    ("pr_keywords",       "PR Keywords"),
-    ("competition_report","Competition Analysis"),
-    ("category_finder",   "Category Finder"),
-    ("genre_ranking",     "Genre Ranking"),
-    ("mapped_categories", "Mapped Categories (Verified)"),
+    ("genres_and_categories","Find Genres & Categories"),
+    ("genre_analysis",      "Genre Analysis"),
+    ("full_report",         "Full Report"),
+    ("kdp_keywords",        "KDP Keywords"),
+    ("pr_keywords",         "PR Keywords"),
+    ("competition_report",  "Competition Analysis"),
+    ("category_finder",     "Category Finder"),
+    ("genre_ranking",       "Genre Ranking"),
+    ("mapped_categories",   "Mapped Categories (Verified)"),
+    ("bisac_classification","BISAC Classification"),
 ];
 
 pub fn save_document(conn: &Connection, story_folder: &str, doc_type: &str, content: &str) -> Result<(), String> {
@@ -708,4 +959,66 @@ pub async fn list_reports_cmd(db: tauri::State<'_, Db>, folder: String) -> Resul
 pub async fn get_report_cmd(db: tauri::State<'_, Db>, folder: String, doc_type: String) -> Result<String, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     get_document(&conn, &folder, &doc_type).ok_or_else(|| "Report not found.".to_string())
+}
+
+// ── BISAC classifications ──────────────────────────────────────────────
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct BisacCodeRow {
+    pub code:    String,
+    pub heading: String,
+}
+
+pub fn master_bisac_list(conn: &Connection) -> Vec<BisacCodeRow> {
+    let mut stmt = match conn.prepare("SELECT code, heading FROM bisac_codes ORDER BY code")
+        { Ok(s) => s, Err(_) => return Vec::new() };
+    stmt.query_map([], |r| Ok(BisacCodeRow { code: r.get(0)?, heading: r.get(1)? }))
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        .unwrap_or_default()
+}
+
+/// Replace all stored BISAC classifications for a story+format — latest call
+/// wins, same "supersede, don't accumulate" model as genre rankings. `format`
+/// is "ebook" or "print", scored and stored independently since a print-only
+/// distribution can legitimately warrant different codes than the ebook.
+pub fn replace_bisac_classifications(
+    conn: &Connection, story_folder: &str, format: &str, rows: &[(String, String, u8, String)],
+    // (code, heading, confidence, reason)
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute("DELETE FROM bisac_classifications WHERE story_folder = ?1 AND format = ?2", params![story_folder, format])
+        .map_err(|e| e.to_string())?;
+    for (code, heading, confidence, reason) in rows {
+        conn.execute(
+            "INSERT INTO bisac_classifications (story_folder, code, heading, confidence, reason, generated_at, format)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![story_folder, code, heading, confidence, reason, now, format],
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct BisacClassificationRow {
+    pub code:       String,
+    pub heading:    String,
+    pub confidence: i64,
+    pub reason:     String,
+}
+
+pub fn get_bisac_classifications(conn: &Connection, story_folder: &str, format: &str) -> Vec<BisacClassificationRow> {
+    let mut stmt = match conn.prepare(
+        "SELECT code, heading, confidence, reason FROM bisac_classifications
+         WHERE story_folder = ?1 AND format = ?2 ORDER BY confidence DESC"
+    ) { Ok(s) => s, Err(_) => return Vec::new() };
+    stmt.query_map(params![story_folder, format], |r| {
+        Ok(BisacClassificationRow { code: r.get(0)?, heading: r.get(1)?, confidence: r.get(2)?, reason: r.get(3)? })
+    }).and_then(|rows| rows.collect::<Result<Vec<_>, _>>()).unwrap_or_default()
+}
+
+pub fn has_bisac_classifications(conn: &Connection, story_folder: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM bisac_classifications WHERE story_folder = ?1 LIMIT 1",
+        params![story_folder], |_| Ok(())
+    ).is_ok()
 }

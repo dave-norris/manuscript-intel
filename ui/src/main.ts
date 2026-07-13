@@ -59,6 +59,9 @@ interface AnalysisState {
   has_categories: boolean;
   has_genre_ranking: boolean;
   has_mapped_verified: boolean;
+  has_bisac: boolean;
+  has_discovery_keywords: boolean;
+  has_keyword_search_results: boolean;
 }
 
 interface Settings {
@@ -132,7 +135,7 @@ $btn('btn-save-settings').addEventListener('click', () => {
   localStorage.setItem('apiKey', $input('api-key').value.trim());
   localStorage.setItem('model', $select('model-select').value);
   const saved = $('settings-saved');
-  saved.textContent = '\u2713 Saved';
+  saved.textContent = '✓ Saved';
   setTimeout(() => { saved.textContent = ''; }, 1500);
   const prevPanel = localStorage.getItem('prevPanel') || 'analyzer';
   showPanel(prevPanel);
@@ -186,6 +189,73 @@ function getSettings(): Settings {
     model:    localStorage.getItem('model')    || '',
   };
 }
+
+// ── WinningCat import ──────────────────────────────────────────────────
+
+interface WinningCatImportResult {
+  success: boolean;
+  imported: number;
+  skipped_other_department: number;
+  skipped_unparseable: number;
+  stale_count: number;
+  imported_at: string;
+  error: string;
+}
+
+interface StaleCleanupResult {
+  success: boolean;
+  removed: number;
+  error: string;
+}
+
+let lastImportedAt = '';
+
+$btn('btn-import-winningcat').addEventListener('click', async () => {
+  const status = $('winningcat-import-status');
+  const btn = $btn('btn-import-winningcat');
+  const staleRow = $('winningcat-stale-row');
+  status.textContent = 'Select the CSV file…';
+  btn.disabled = true;
+  staleRow.style.display = 'none';
+  try {
+    const result = await invoke<WinningCatImportResult>('import_winningcat_csv');
+    if (result.success) {
+      status.textContent = `✓ Imported ${result.imported} categories. Skipped ${result.skipped_other_department} (other department), ${result.skipped_unparseable} (unparseable).`;
+      lastImportedAt = result.imported_at;
+      if (result.stale_count > 0) {
+        staleRow.style.display = 'block';
+        $('winningcat-stale-status').textContent = `${result.stale_count} categor${result.stale_count === 1 ? 'y was' : 'ies were'} in the catalog from a previous import but missing from this one — possibly retired or renamed by Amazon.`;
+      }
+    } else {
+      status.textContent = result.error || 'Import failed.';
+    }
+  } catch (e) {
+    status.textContent = 'Error: ' + String(e);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$btn('btn-remove-stale-winningcat').addEventListener('click', async () => {
+  if (!lastImportedAt) return;
+  if (!confirm('Remove these stale categories from the catalog? This only affects reference data — no story data is touched.')) return;
+  const status = $('winningcat-stale-status');
+  const btn = $btn('btn-remove-stale-winningcat');
+  btn.disabled = true;
+  try {
+    const result = await invoke<StaleCleanupResult>('remove_stale_kdp_categories', { since: lastImportedAt });
+    if (result.success) {
+      status.textContent = `✓ Removed ${result.removed} stale categor${result.removed === 1 ? 'y' : 'ies'}.`;
+      ($('winningcat-stale-row') as HTMLElement).style.display = 'none';
+    } else {
+      status.textContent = result.error || 'Cleanup failed.';
+    }
+  } catch (e) {
+    status.textContent = 'Error: ' + String(e);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // ── Active story ──────────────────────────────────────────────────────────────
 
@@ -247,7 +317,7 @@ function renderStoriesList(): void {
     item.title = story.folder;
     item.innerHTML = `
       <span class="story-item-name">${story.name}</span>
-      <button class="story-item-edit" data-id="${story.id}" title="Edit story">\u270E</button>
+      <button class="story-item-edit" data-id="${story.id}" title="Edit story">✎</button>
     `;
     item.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).classList.contains('story-item-edit')) return;
@@ -381,7 +451,7 @@ async function refreshStatus(): Promise<void> {
 }
 
 btnLaunch.addEventListener('click', async () => {
-  btnLaunch.disabled = true; btnLaunch.textContent = 'Launching\u2026';
+  btnLaunch.disabled = true; btnLaunch.textContent = 'Launching…';
   const result = await invoke<LaunchResult>('launch_rocket');
   if (result.success) { refreshStatus(); }
   else { btnLaunch.disabled = false; btnLaunch.textContent = 'Retry'; }
@@ -407,19 +477,14 @@ document.querySelectorAll<HTMLButtonElement>('[data-tab="genre-log"],[data-tab="
 // ── Button state ──────────────────────────────────────────────────────────────
 
 function disableAllButtons(): void {
-  ['btn-run-everything','btn-analyze-competition','btn-gen-summaries',
-   'btn-run-genre','btn-full-analysis','btn-optimize-keywords',
-   'btn-gen-pr-keywords','btn-find-categories','btn-rank-genres','btn-verify-mapped'].forEach(id => {
+  ['btn-analyze', 'btn-analyze-competition'].forEach(id => {
     const el = document.getElementById(id) as HTMLButtonElement | null;
     if (el) el.disabled = true;
   });
-  updateStepLabels(null);
 }
 
 function disableGenreButtons(disabled: boolean): void {
-  ['btn-run-everything','btn-analyze-competition','btn-gen-summaries',
-   'btn-run-genre','btn-full-analysis','btn-optimize-keywords',
-   'btn-gen-pr-keywords','btn-find-categories','btn-rank-genres','btn-verify-mapped'].forEach(id => {
+  ['btn-analyze', 'btn-analyze-competition'].forEach(id => {
     const el = document.getElementById(id) as HTMLButtonElement | null;
     if (el) el.disabled = disabled;
   });
@@ -435,40 +500,9 @@ async function refreshAnalysisState(folder: string): Promise<void> {
   if (!folder) { disableAllButtons(); return; }
   try {
     const s = await invoke<AnalysisState>('check_analysis_state', { folder });
-    $btn('btn-run-everything').disabled = s.summary_count === 0;
+    $btn('btn-analyze').disabled = false;
     $btn('btn-analyze-competition').disabled = !s.has_pr_keywords;
-    $btn('btn-find-categories').disabled = !s.has_genre_data;
-    $btn('btn-rank-genres').disabled = !s.has_genre_data;
-    $btn('btn-verify-mapped').disabled = !s.has_genre_ranking;
-    $btn('btn-gen-summaries').disabled = false;
-    $btn('btn-run-genre').disabled = s.summary_count === 0;
-    $btn('btn-full-analysis').disabled = !s.has_genre_data;
-    $btn('btn-optimize-keywords').disabled = !s.has_full_report;
-    $btn('btn-gen-pr-keywords').disabled = !s.has_full_report;
-    updateStepLabels(s);
   } catch (e) { console.error('check_analysis_state:', e); }
-}
-
-function updateStepLabels(state: AnalysisState | null): void {
-  const steps: [string, string, string][] = [
-    ['btn-gen-summaries', 'Summaries', state && state.summary_count > 0 ? ` (${state.summary_count})\u2713` : ''],
-    ['btn-run-genre', 'Analyze', state?.has_genre_data ? ' \u2713' : ''],
-    ['btn-full-analysis', 'Full Analysis', state?.has_full_report ? ' \u2713' : ''],
-    ['btn-optimize-keywords', 'KDP Keywords', state?.has_keywords ? ' \u2713' : ''],
-    ['btn-gen-pr-keywords', 'PR Keywords', state?.has_pr_keywords ? ' \u2713' : ''],
-    ['btn-rank-genres', 'Rank Genres', state?.has_genre_ranking ? ' ✓' : ''],
-    ['btn-verify-mapped', 'Verify Mapped Categories', state?.has_mapped_verified ? ' ✓' : ''],
-  ];
-  steps.forEach(([id, base, suffix]) => {
-    const btn = document.getElementById(id);
-    if (btn) btn.textContent = base + suffix;
-  });
-  const rAll = document.getElementById('btn-run-everything');
-  const rComp = document.getElementById('btn-analyze-competition');
-  const rCat = document.getElementById('btn-find-categories');
-  if (rAll) rAll.textContent = '\u25b6 Run Analysis' + (state?.has_pr_keywords ? ' \u2713' : '');
-  if (rCat) rCat.textContent = '\u25b6 Find Categories' + (state?.has_categories ? ' \u2713' : '');
-  if (rComp) rComp.textContent = '\u25b6 Analyze Competition' + (state?.has_competition ? ' \u2713' : '');
 }
 
 // ── Analyzer buttons ──────────────────────────────────────────────────────────
@@ -496,39 +530,26 @@ function appendGenreLog(msg: string): void {
   $('genre-raw-pane').classList.add('hidden');
 }
 
-async function runGenreCommand(cmdName: string, logMsg: string, successMsg: string): Promise<void> {
+// ── Analyze handler ───────────────────────────────────────────────────────────
+
+$btn('btn-analyze').addEventListener('click', async () => {
   const folder = getActiveFolder();
-  if (!folder) { appendGenreLog('\u2717 No story selected.'); return; }
+  if (!folder) { appendGenreLog('✗ No story selected.'); return; }
   const { provider, apiKey, model } = getSettings();
-  if (!apiKey) { appendGenreLog('\u2717 No API key set. Go to Settings.'); return; }
-  if (!model) { appendGenreLog('\u2717 No model selected. Go to Settings and fetch models.'); return; }
-  appendGenreLog(`${logMsg} [${provider}: ${model}]`);
+  if (!apiKey) { appendGenreLog('✗ No API key set. Go to Settings.'); return; }
+  if (!model) { appendGenreLog('✗ No model selected. Go to Settings and fetch models.'); return; }
+  const forceResummarize = $input('force-resummarize').checked;
+  appendGenreLog(`Running full analysis pipeline... [${provider}: ${model}]${forceResummarize ? ' (force re-summarize)' : ''}`);
   disableGenreButtons(true);
   try {
-    const result = await invoke<GenreResult>(cmdName, { request: { folder, api_key: apiKey, model, provider } });
-    if (result.success) { setGenreReport(result.report); appendGenreLog(successMsg); }
-    else { appendGenreLog('\u2717 ' + result.error); }
-  } catch (e) { appendGenreLog('\u2717 ' + String(e)); }
+    const result = await invoke<GenreResult>('analyze_story', { request: { folder, api_key: apiKey, model, provider, force_resummarize: forceResummarize } });
+    if (result.success) { setGenreReport(result.report); appendGenreLog('✓ Analysis complete.'); }
+    else { appendGenreLog('✗ ' + result.error); }
+  } catch (e) { appendGenreLog('✗ ' + String(e)); }
   finally { disableGenreButtons(false); }
-}
+});
 
-$btn('btn-run-everything').addEventListener('click', () =>
-  runGenreCommand('run_everything', 'Running full analysis...', '\u2713 Analysis complete. Run \u25b6 Analyze Competition next.'));
-
-$btn('btn-gen-summaries').addEventListener('click', () =>
-  runGenreCommand('generate_summaries', 'Generating chapter summaries...', '\u2713 Summaries complete.'));
-
-$btn('btn-run-genre').addEventListener('click', () =>
-  runGenreCommand('analyze_genre', 'Running genre analysis...', '\u2713 Genre analysis complete.'));
-
-$btn('btn-full-analysis').addEventListener('click', () =>
-  runGenreCommand('run_full_analysis', 'Running full analysis...', '\u2713 Full analysis complete.'));
-
-$btn('btn-optimize-keywords').addEventListener('click', () =>
-  runGenreCommand('optimize_keywords', 'Optimizing KDP keywords...', '\u2713 KDP keywords complete.'));
-
-$btn('btn-gen-pr-keywords').addEventListener('click', () =>
-  runGenreCommand('generate_pr_keywords', 'Generating PR search terms...', '\u2713 PR keywords generated.'));
+// ── Stop handler ──────────────────────────────────────────────────────────────
 
 $btn('btn-stop').addEventListener('click', async () => {
   appendGenreLog('Stopping after current step...');
@@ -537,62 +558,25 @@ $btn('btn-stop').addEventListener('click', async () => {
 
 // ── Analyze Competition ───────────────────────────────────────────────────────
 
-$btn('btn-analyze-competition').addEventListener('mouseenter', () => {
-  ($('competition-store-row') as HTMLElement).style.display = 'flex';
-});
-
 $btn('btn-analyze-competition').addEventListener('click', async () => {
   const folder = getActiveFolder();
-  if (!folder) { appendGenreLog('\u2717 No story selected.'); return; }
+  if (!folder) { appendGenreLog('✗ No story selected.'); return; }
   const { provider, apiKey, model } = getSettings();
-  if (!apiKey) { appendGenreLog('\u2717 No API key set. Go to Settings.'); return; }
-  if (!model) { appendGenreLog('\u2717 No model selected. Go to Settings.'); return; }
+  if (!apiKey) { appendGenreLog('✗ No API key set. Go to Settings.'); return; }
+  if (!model) { appendGenreLog('✗ No model selected. Go to Settings.'); return; }
   const store = (document.querySelector('input[name="comp-store"]:checked') as HTMLInputElement)?.value || 'Kindle';
   appendGenreLog(`Analyzing competition [${store}] via Publisher Rocket... [${provider}: ${model}]`);
   appendGenreLog('This may take several minutes.');
   disableGenreButtons(true);
   try {
     const result = await invoke<GenreResult>('analyze_competition', { request: { folder, api_key: apiKey, model, store, provider } });
-    if (result.success) { setGenreReport(result.report); appendGenreLog('\u2713 Competition analysis complete.'); }
-    else { appendGenreLog('\u2717 ' + result.error); }
-  } catch (e) { appendGenreLog('\u2717 ' + String(e)); }
+    if (result.success) { setGenreReport(result.report); appendGenreLog('✓ Competition analysis complete.'); }
+    else { appendGenreLog('✗ ' + result.error); }
+  } catch (e) { appendGenreLog('✗ ' + String(e)); }
   finally { disableGenreButtons(false); }
 });
 
-$btn('btn-find-categories').addEventListener('click', async () => {
-  const folder = getActiveFolder();
-  if (!folder) { appendGenreLog('No story selected.'); return; }
-  const { provider, apiKey, model } = getSettings();
-  if (!apiKey) { appendGenreLog('No API key set. Go to Settings.'); return; }
-  if (!model) { appendGenreLog('No model selected. Go to Settings.'); return; }
-  const store = (document.querySelector('input[name="cat-store"]:checked') as HTMLInputElement)?.value || 'Kindle';
-  appendGenreLog(`Finding categories [${store}, Selectable Excluding Ghosts] [${provider}: ${model}]`);
-  appendGenreLog('This may take several minutes.');
-  disableGenreButtons(true);
-  try {
-    const result = await invoke<GenreResult>('find_categories_for_story', { request: { folder, api_key: apiKey, model, store, provider } });
-    if (result.success) { setGenreReport(result.report); appendGenreLog('Category Finder complete.'); }
-    else { appendGenreLog('Error: ' + result.error); }
-  } catch (e) { appendGenreLog('Error: ' + String(e)); }
-  finally { disableGenreButtons(false); }
-});
-
-$btn('btn-rank-genres').addEventListener('click', () =>
-  runGenreCommand('rank_genres_for_story', 'Ranking against master genre list...', 'Genre ranking complete.'));
-
-$btn('btn-verify-mapped').addEventListener('click', async () => {
-  const folder = getActiveFolder();
-  if (!folder) { appendGenreLog('No story selected.'); return; }
-  const store = (document.querySelector('input[name="cat-store"]:checked') as HTMLInputElement)?.value || 'Kindle';
-  appendGenreLog(`Verifying mapped KDP categories [${store}] via Publisher Rocket...`);
-  disableGenreButtons(true);
-  try {
-    const result = await invoke<GenreResult>('verify_mapped_categories', { request: { folder, store } });
-    if (result.success) { setGenreReport(result.report); appendGenreLog('Mapped category verification complete.'); }
-    else { appendGenreLog('Error: ' + result.error); }
-  } catch (e) { appendGenreLog('Error: ' + String(e)); }
-  finally { disableGenreButtons(false); }
-});
+// ── Output actions ────────────────────────────────────────────────────────────
 
 $btn('btn-copy-genre').addEventListener('click', async () => {
   if (!currentGenreMarkdown) return;
@@ -606,7 +590,10 @@ $btn('btn-clear-genre-log').addEventListener('click', () => {
   $('genre-log-output').textContent = '';
 });
 
+// ── Log listeners ─────────────────────────────────────────────────────────────
+
 listen<string>('genre:log', (event) => { appendGenreLog(event.payload); });
+listen<string>('cdp:log', (event) => { appendGenreLog(event.payload); });
 
 // ── Reports ───────────────────────────────────────────────────────────────────
 
@@ -653,7 +640,7 @@ async function loadReportsList(): Promise<void> {
           <div class="report-item-name">${doc.label}</div>
           <div class="report-item-meta">${when}</div>
         </div>
-        <span class="report-item-arrow">\u203A</span>
+        <span class="report-item-arrow">›</span>
       `;
       item.addEventListener('click', () => openReport(folder, doc.doc_type, doc.label));
       list.appendChild(item);

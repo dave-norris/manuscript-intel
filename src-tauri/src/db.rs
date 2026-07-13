@@ -934,6 +934,9 @@ pub const DOC_TYPES: &[(&str, &str)] = &[
     ("bisac_classification","BISAC Classification"),
     ("review_mining",       "Reader Review Intelligence"),
     ("author_analysis",     "Competitor Author Analysis"),
+    ("chapter_summaries",   "Chapter Summaries"),
+    ("discovery_keywords",  "Discovery Keywords"),
+    ("keyword_search",      "Keyword Search Results"),
 ];
 
 pub fn save_document(conn: &Connection, story_folder: &str, doc_type: &str, content: &str) -> Result<(), String> {

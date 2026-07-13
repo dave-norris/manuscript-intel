@@ -49,6 +49,10 @@ function renderBySchema(data: any, _docType: string): string {
   if (schema === 'author_analysis_v1') return renderAuthorAnalysis(data);
   if (schema === 'analysis_v1') return renderCombinedAnalysis(data);
   if (schema === 'kdp_paste_v1') return renderKdpPaste(data);
+  if (schema === 'chapter_summaries_v1') return renderChapterSummaries(data);
+  if (schema === 'keyword_search_v1') return renderKeywordSearch(data);
+  if (schema === 'genre_ranking_v1') return renderGenreRanking(data);
+  if (schema === 'discovery_keywords_v1') return renderDiscoveryKeywords(data);
 
   // Unknown schema — dump as formatted JSON
   return `<pre class="report-json">${esc(JSON.stringify(data, null, 2))}</pre>`;
@@ -589,6 +593,49 @@ function renderKdpPaste(data: any): string {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// ── Chapter Summaries Report ──────────────────────────────────────────────────
+
+function renderChapterSummaries(data: any): string {
+  const chapters: any[] = data.chapters || [];
+  if (!chapters.length) return '<p class="muted">No chapter summaries available.</p>';
+
+  const totalWords = data.total_words || chapters.reduce((sum: number, c: any) => sum + (c.word_count || 0), 0);
+  let html = `<p class="report-hint">${chapters.length} chapters, ${totalWords.toLocaleString()} total words</p>`;
+  html += `<table class="report-table"><thead><tr><th>#</th><th>Chapter</th><th>Words</th><th>Genre Signals</th></tr></thead><tbody>`;
+  chapters.forEach((ch, i) => {
+    html += `<tr>
+      <td>${i + 1}</td>
+      <td><strong>${esc(ch.title || ch.file)}</strong></td>
+      <td>${(ch.word_count || 0).toLocaleString()}</td>
+      <td>${esc(ch.signals || '').substring(0, 200)}${(ch.signals || '').length > 200 ? '...' : ''}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  return html;
+}
+
+// ── Keyword Search Results Report ─────────────────────────────────────────────
+
+function renderKeywordSearch(data: any): string {
+  const keywords: any[] = data.keywords || [];
+  if (!keywords.length) return '<p class="muted">No keyword search results available.</p>';
+
+  let html = `<p class="report-hint">${keywords.length} keywords analyzed</p>`;
+  html += `<table class="report-table"><thead><tr><th>Keyword</th><th>Est. Monthly Searches</th><th>Competition</th><th>Est. Earnings</th></tr></thead><tbody>`;
+  for (const k of keywords) {
+    const compClass = k.competition === 'Low' ? 'style="color:#27ae60"' :
+                      k.competition === 'High' ? 'style="color:#e74c3c"' : '';
+    html += `<tr>
+      <td class="keyword-cell">${esc(k.keyword)}</td>
+      <td>${esc(k.searches)}</td>
+      <td ${compClass}><strong>${esc(k.competition)}</strong></td>
+      <td>${esc(k.earnings)}</td>
+    </tr>`;
+  }
+  html += `</tbody></table>`;
+  return html;
+}
 
 function renderRawSection(title: string, content: string): string {
   // For sections that are still plain text (not yet converted to JSON)

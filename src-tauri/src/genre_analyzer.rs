@@ -1275,6 +1275,21 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
 
         if let Err(e) = result { return err(&e); }
     }
+    // Save chapter summaries as a standalone report
+    {
+        let conn = database.0.lock().unwrap();
+        let summaries = db::load_chapter_summaries(&conn, &request.folder);
+        if !summaries.is_empty() {
+            let cs_json = serde_json::json!({
+                "schema": "chapter_summaries_v1",
+                "chapters": summaries.iter().map(|s| serde_json::json!({
+                    "file": s.file, "title": s.title, "signals": s.signals, "word_count": s.word_count,
+                })).collect::<Vec<_>>(),
+                "total_words": summaries.iter().map(|s| s.word_count).sum::<i64>(),
+            }).to_string();
+            let _ = db::save_document(&conn, &request.folder, "chapter_summaries", &cs_json);
+        }
+    }
     if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 2: Genre Analysis ─────────────────────────────────────────────
@@ -1338,6 +1353,15 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
             let conn = database.0.lock().unwrap();
             let rows: Vec<(String, u8, String)> = ranked.iter().map(|r| (r.genre.clone(), r.confidence, r.reason.clone())).collect();
             let _ = db::replace_genre_rankings(&conn, &folder_c, &rows);
+
+            // Save genre ranking as a standalone report
+            let ranking_json = serde_json::json!({
+                "schema": "genre_ranking_v1",
+                "genres": ranked.iter().map(|r| serde_json::json!({
+                    "genre": r.genre, "confidence": r.confidence, "reason": r.reason,
+                })).collect::<Vec<_>>(),
+            }).to_string();
+            let _ = db::save_document(&conn, &folder_c, "genre_ranking", &ranking_json);
 
             Ok(ranked)
         }).await.unwrap();
@@ -1474,6 +1498,8 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
             bisac_json.to_string()
         }).await.unwrap()
     };
+    // Save BISAC as standalone report
+    { let conn = database.0.lock().unwrap(); let _ = db::save_document(&conn, &request.folder, "bisac_classification", &bisac_section); }
     if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 6: Keyword Search (PR) ────────────────────────────────────────
@@ -1494,6 +1520,17 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
             }
         }
     };
+    // Save keyword search as standalone report
+    if !keyword_pool.is_empty() {
+        let conn = database.0.lock().unwrap();
+        let ks_json = serde_json::json!({
+            "schema": "keyword_search_v1",
+            "keywords": keyword_pool.iter().map(|k| serde_json::json!({
+                "keyword": k.keyword, "searches": k.searches, "competition": k.competition, "earnings": k.estimated_earnings,
+            })).collect::<Vec<_>>(),
+        }).to_string();
+        let _ = db::save_document(&conn, &request.folder, "keyword_search", &ks_json);
+    }
     if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 7: KDP Keywords ───────────────────────────────────────────────
@@ -1546,6 +1583,12 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
             Ok(entries) => {
                 let conn = database.0.lock().unwrap();
                 let _ = db::save_discovery_keywords(&conn, &request.folder, &entries);
+                // Save as standalone report
+                let dk_json = serde_json::json!({
+                    "schema": "discovery_keywords_v1",
+                    "keywords": entries.iter().map(|e| serde_json::json!({ "phrase": e.phrase, "rationale": e.rationale })).collect::<Vec<_>>(),
+                }).to_string();
+                let _ = db::save_document(&conn, &request.folder, "discovery_keywords", &dk_json);
                 emit(&app, &format!("  ✓ {} discovery keywords saved.", entries.len()));
                 entries
             }

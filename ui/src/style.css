@@ -920,3 +920,12 @@ html, body {
   font-size: 11px;
   color: var(--text-muted);
 }
+
+/* ── Analyzer secondary buttons ── */
+.analyzer-secondary {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}

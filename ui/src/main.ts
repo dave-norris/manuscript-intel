@@ -449,6 +449,8 @@ async function refreshAnalysisState(folder: string): Promise<void> {
     const s = await invoke<AnalysisState>('check_analysis_state', { folder });
     $btn('btn-analyze').disabled = false;
     $btn('btn-analyze-competition').disabled = !s.has_pr_keywords;
+    $btn('btn-mine-reviews').disabled = !s.has_pr_keywords;
+    $btn('btn-author-analysis').disabled = !s.has_pr_keywords;
   } catch (e) { console.error('check_analysis_state:', e); }
 }
 
@@ -511,6 +513,57 @@ $btn('btn-analyze-competition').addEventListener('click', async () => {
 
 $btn('btn-clear-genre-log').addEventListener('click', () => {
   $('genre-log-output').textContent = '';
+});
+
+// ── New feature buttons ───────────────────────────────────────────────────────
+
+$btn('btn-mine-reviews').addEventListener('click', async () => {
+  const folder = getActiveFolder();
+  if (!folder) { appendGenreLog('✗ No story selected.'); return; }
+  const { provider, apiKey, model } = getSettings();
+  const canopyKey = localStorage.getItem('canopyApiKey') || '';
+  if (!canopyKey) { appendGenreLog('✗ No Canopy API key. Go to Settings.'); return; }
+  if (!apiKey) { appendGenreLog('✗ No AI API key. Go to Settings.'); return; }
+  appendGenreLog('Mining competitor reviews...');
+  disableGenreButtons(true);
+  try {
+    const result = await invoke<{ success: boolean; error: string }>('mine_competitor_reviews', { request: { folder, canopy_api_key: canopyKey, api_key: apiKey, model, provider } });
+    if (result.success) { appendGenreLog('✓ Review mining complete. View in sidebar.'); loadReportsList(); }
+    else { appendGenreLog('✗ ' + result.error); }
+  } catch (e) { appendGenreLog('✗ ' + String(e)); }
+  finally { disableGenreButtons(false); }
+});
+
+$btn('btn-author-analysis').addEventListener('click', async () => {
+  const folder = getActiveFolder();
+  if (!folder) { appendGenreLog('✗ No story selected.'); return; }
+  const { provider, apiKey, model } = getSettings();
+  const canopyKey = localStorage.getItem('canopyApiKey') || '';
+  if (!canopyKey) { appendGenreLog('✗ No Canopy API key. Go to Settings.'); return; }
+  if (!apiKey) { appendGenreLog('✗ No AI API key. Go to Settings.'); return; }
+  appendGenreLog('Analyzing competitor authors...');
+  disableGenreButtons(true);
+  try {
+    const result = await invoke<{ success: boolean; error: string }>('analyze_comp_authors', { request: { folder, canopy_api_key: canopyKey, api_key: apiKey, model, provider } });
+    if (result.success) { appendGenreLog('✓ Author analysis complete. View in sidebar.'); loadReportsList(); }
+    else { appendGenreLog('✗ ' + result.error); }
+  } catch (e) { appendGenreLog('✗ ' + String(e)); }
+  finally { disableGenreButtons(false); }
+});
+
+$btn('btn-sync-categories').addEventListener('click', async () => {
+  const canopyKey = localStorage.getItem('canopyApiKey') || '';
+  if (!canopyKey) { appendGenreLog('✗ No Canopy API key. Go to Settings.'); return; }
+  appendGenreLog('Syncing categories from Amazon...');
+  try {
+    const kindle = await invoke<{ success: boolean; imported: number; error: string }>('sync_categories_canopy', { canopyApiKey: canopyKey, store: 'Kindle' });
+    if (kindle.success) { appendGenreLog(`  ✓ Kindle: ${kindle.imported} categories synced.`); }
+    else { appendGenreLog('  ✗ Kindle: ' + kindle.error); }
+    const books = await invoke<{ success: boolean; imported: number; error: string }>('sync_categories_canopy', { canopyApiKey: canopyKey, store: 'Books' });
+    if (books.success) { appendGenreLog(`  ✓ Books: ${books.imported} categories synced.`); }
+    else { appendGenreLog('  ✗ Books: ' + books.error); }
+    appendGenreLog('✓ Category sync complete.');
+  } catch (e) { appendGenreLog('✗ ' + String(e)); }
 });
 
 // ── Log listeners ─────────────────────────────────────────────────────────────

@@ -79,29 +79,35 @@ impl CanopyClient {
 }
 
 fn parse_product(v: &Value) -> Result<ProductInfo, String> {
-    // Canopy nests product data — try common paths
-    let data = if v.get("data").is_some() { &v["data"] } else { v };
-    let product = if data.get("product").is_some() { &data["product"] } else { data };
+    let product = &v["data"]["amazonProduct"];
+    if product.is_null() {
+        return Err("No amazonProduct in response".to_string());
+    }
 
     Ok(ProductInfo {
         asin: product["asin"].as_str().unwrap_or("").to_string(),
         title: product["title"].as_str().unwrap_or("").to_string(),
-        author: product["author"].as_str().or_else(|| product["brand"].as_str()).map(|s| s.to_string()),
-        price: product["price"].as_f64().or_else(|| product["currentPrice"].as_f64()),
-        rating: product["rating"].as_f64().or_else(|| product["stars"].as_f64()),
-        review_count: product["reviewCount"].as_u64().or_else(|| product["totalReviews"].as_u64()).map(|n| n as u32),
-        bsr: product["bsr"].as_u64()
-            .or_else(|| product["salesRank"].as_u64())
-            .or_else(|| product["bestSellersRank"].as_u64()),
-        categories: extract_string_array(&product["categories"])
-            .or_else(|| extract_string_array(&product["breadcrumbs"]))
+        author: product["brand"].as_str().map(|s| s.to_string()),
+        price: product["price"]["value"].as_f64(),
+        rating: product["rating"].as_f64(),
+        review_count: product["ratingsTotal"].as_u64().map(|n| n as u32),
+        bsr: None, // BSR not in product endpoint — use sales endpoint
+        categories: product["categories"].as_array()
+            .map(|arr| arr.iter().filter_map(|c| c["name"].as_str().map(|s| s.to_string())).collect())
             .unwrap_or_default(),
-        publisher: product["publisher"].as_str().or_else(|| product["manufacturer"].as_str()).map(|s| s.to_string()),
-        page_count: product["pageCount"].as_u64().or_else(|| product["pages"].as_u64()).map(|n| n as u32),
-        kindle_unlimited: product["kindleUnlimited"].as_bool()
-            .or_else(|| product["isKindleUnlimited"].as_bool())
-            .unwrap_or(false),
-        image_url: product["imageUrl"].as_str().or_else(|| product["mainImage"].as_str()).map(|s| s.to_string()),
+        publisher: product["technicalSpecifications"].as_array()
+            .and_then(|specs| specs.iter().find(|s| s["name"].as_str() == Some("Publisher")))
+            .and_then(|s| s["value"].as_str())
+            .map(|s| s.to_string()),
+        page_count: product["technicalSpecifications"].as_array()
+            .and_then(|specs| specs.iter().find(|s| {
+                let name = s["name"].as_str().unwrap_or("");
+                name == "Print length" || name == "Pages"
+            }))
+            .and_then(|s| s["value"].as_str())
+            .and_then(|v| v.replace(" pages", "").trim().parse::<u32>().ok()),
+        kindle_unlimited: product["isKindleUnlimited"].as_bool().unwrap_or(false),
+        image_url: product["mainImageUrl"].as_str().map(|s| s.to_string()),
     })
 }
 
@@ -118,16 +124,17 @@ pub struct SalesEstimate {
 impl CanopyClient {
     pub fn get_sales(&self, asin: &str, domain: &str) -> Result<SalesEstimate, String> {
         let resp = self.get("/api/amazon/product/sales", &[("asin", asin), ("domain", domain)])?;
-        let data = if resp.get("data").is_some() { &resp["data"] } else { &resp };
+        let estimate = &resp["data"]["amazonProduct"]["salesEstimate"];
+
+        let weekly = estimate["weeklyUnitSales"].as_f64();
+        let monthly = estimate["monthlyUnitSales"].as_f64();
+        let daily = weekly.map(|w| w / 7.0).or_else(|| monthly.map(|m| m / 30.0));
 
         Ok(SalesEstimate {
             asin: asin.to_string(),
-            estimated_daily_sales: data["estimatedDailySales"].as_f64()
-                .or_else(|| data["dailySales"].as_f64())
-                .or_else(|| data["salesEstimate"].as_f64()),
-            estimated_monthly_sales: data["estimatedMonthlySales"].as_f64()
-                .or_else(|| data["monthlySales"].as_f64()),
-            bsr: data["bsr"].as_u64().or_else(|| data["salesRank"].as_u64()),
+            estimated_daily_sales: daily,
+            estimated_monthly_sales: monthly,
+            bsr: None, // BSR not returned by sales endpoint
         })
     }
 }
@@ -153,29 +160,20 @@ impl CanopyClient {
             ("categoryId", category_id), ("domain", domain), ("page", &page_str),
         ])?;
 
-        let items = if resp.get("data").is_some() {
-            &resp["data"]
-        } else if resp.get("products").is_some() {
-            &resp["products"]
-        } else if resp.get("items").is_some() {
-            &resp["items"]
-        } else {
-            &resp
-        };
-
-        let arr = items.as_array().ok_or("Bestsellers response is not an array")?;
+        let results = &resp["data"]["amazonBestSellers"]["productResults"]["results"];
+        let arr = results.as_array().ok_or("No bestseller results in response")?;
         let mut entries = Vec::new();
 
         for (i, item) in arr.iter().enumerate() {
             entries.push(BestsellerEntry {
-                rank: item["rank"].as_u64().unwrap_or((i + 1) as u64) as u32,
+                rank: item["bestSellersRank"].as_u64().unwrap_or((i + 1) as u64) as u32,
                 asin: item["asin"].as_str().unwrap_or("").to_string(),
                 title: item["title"].as_str().unwrap_or("").to_string(),
-                author: item["author"].as_str().or_else(|| item["brand"].as_str()).map(|s| s.to_string()),
-                price: item["price"].as_f64().or_else(|| item["currentPrice"].as_f64()),
-                rating: item["rating"].as_f64().or_else(|| item["stars"].as_f64()),
-                review_count: item["reviewCount"].as_u64().or_else(|| item["totalReviews"].as_u64()).map(|n| n as u32),
-                image_url: item["imageUrl"].as_str().or_else(|| item["mainImage"].as_str()).map(|s| s.to_string()),
+                author: None, // Not in bestseller results — need product lookup
+                price: item["price"]["value"].as_f64(),
+                rating: item["rating"].as_f64(),
+                review_count: item["ratingsTotal"].as_u64().map(|n| n as u32),
+                image_url: item["mainImageUrl"].as_str().map(|s| s.to_string()),
             });
         }
         Ok(entries)
@@ -208,33 +206,24 @@ impl CanopyClient {
         }
 
         let resp = self.get("/api/amazon/search", &params)?;
-        let items = if resp.get("data").is_some() {
-            &resp["data"]
-        } else if resp.get("products").is_some() {
-            &resp["products"]
-        } else if resp.get("results").is_some() {
-            &resp["results"]
-        } else {
-            &resp
-        };
-
-        let arr = items.as_array().ok_or("Search response is not an array")?;
-        let mut results = Vec::new();
+        let results = &resp["data"]["amazonProductSearchResults"]["productResults"]["results"];
+        let arr = results.as_array().ok_or("No search results in response")?;
+        let mut out = Vec::new();
 
         for (i, item) in arr.iter().enumerate() {
-            results.push(SearchResult {
-                position: item["position"].as_u64().unwrap_or((i + 1) as u64) as u32,
+            out.push(SearchResult {
+                position: (i + 1) as u32,
                 asin: item["asin"].as_str().unwrap_or("").to_string(),
                 title: item["title"].as_str().unwrap_or("").to_string(),
-                author: item["author"].as_str().or_else(|| item["brand"].as_str()).map(|s| s.to_string()),
-                price: item["price"].as_f64().or_else(|| item["currentPrice"].as_f64()),
-                rating: item["rating"].as_f64().or_else(|| item["stars"].as_f64()),
-                review_count: item["reviewCount"].as_u64().or_else(|| item["totalReviews"].as_u64()).map(|n| n as u32),
-                is_sponsored: item["isSponsored"].as_bool().or_else(|| item["sponsored"].as_bool()).unwrap_or(false),
-                image_url: item["imageUrl"].as_str().or_else(|| item["mainImage"].as_str()).map(|s| s.to_string()),
+                author: None, // Not directly in search results
+                price: item["price"]["value"].as_f64(),
+                rating: item["rating"].as_f64(),
+                review_count: item["ratingsTotal"].as_u64().map(|n| n as u32),
+                is_sponsored: item["sponsored"].as_bool().unwrap_or(false),
+                image_url: item["mainImageUrl"].as_str().map(|s| s.to_string()),
             });
         }
-        Ok(results)
+        Ok(out)
     }
 }
 
@@ -250,19 +239,11 @@ impl CanopyClient {
         }
 
         let resp = self.get("/api/amazon/autocomplete", &params)?;
-        let suggestions = if resp.get("data").is_some() {
-            &resp["data"]
-        } else if resp.get("suggestions").is_some() {
-            &resp["suggestions"]
-        } else {
-            &resp
-        };
+        let suggestions = &resp["data"]["amazonSearchAutocompleteResults"];
 
         match suggestions.as_array() {
             Some(arr) => Ok(arr.iter().filter_map(|v| {
-                v.as_str().map(|s| s.to_string())
-                    .or_else(|| v["value"].as_str().map(|s| s.to_string()))
-                    .or_else(|| v["suggestion"].as_str().map(|s| s.to_string()))
+                v["suggestion"].as_str().map(|s| s.to_string())
             }).collect()),
             None => Ok(Vec::new()),
         }
@@ -270,8 +251,165 @@ impl CanopyClient {
 
     /// Simple connection test — do a lightweight autocomplete call.
     pub fn test_connection(&self) -> Result<(), String> {
-        self.autocomplete("book", "amazon.com", None)?;
+        self.autocomplete("book", "US", None)?;
         Ok(())
+    }
+}
+
+// ── Reviews ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewEntry {
+    pub rating: u8,
+    pub title: String,
+    pub body: String,
+    pub author: String,
+    pub verified: bool,
+    pub date: String,
+}
+
+impl CanopyClient {
+    /// Fetch reviews for a product. Returns paginated reviews filtered by rating.
+    pub fn get_reviews(&self, asin: &str, domain: &str, page: u32, rating: Option<u8>) -> Result<Vec<ReviewEntry>, String> {
+        let page_str = page.to_string();
+        let mut params: Vec<(&str, &str)> = vec![
+            ("asin", asin), ("domain", domain), ("page", &page_str),
+        ];
+        let rating_str;
+        if let Some(r) = rating {
+            rating_str = match r {
+                5 => "FIVE_STAR",
+                4 => "FOUR_STAR",
+                3 => "THREE_STAR",
+                2 => "TWO_STAR",
+                1 => "ONE_STAR",
+                _ => "ALL",
+            }.to_string();
+            params.push(("rating", &rating_str));
+        }
+
+        let resp = self.get("/api/amazon/product/reviews", &params)?;
+        let product = &resp["data"]["amazonProduct"];
+
+        // Try paginated reviews first, fall back to topReviews
+        let reviews_arr = if let Some(arr) = product["reviewsPaginated"]["reviews"].as_array() {
+            arr
+        } else if let Some(arr) = product["topReviews"].as_array() {
+            arr
+        } else {
+            return Ok(Vec::new());
+        };
+
+        let mut entries = Vec::new();
+        for item in reviews_arr {
+            entries.push(ReviewEntry {
+                rating: item["rating"].as_u64().unwrap_or(0) as u8,
+                title: item["title"].as_str().unwrap_or("").to_string(),
+                body: item["body"].as_str().unwrap_or("").to_string(),
+                author: item["reviewer"]["name"].as_str().unwrap_or("").to_string(),
+                verified: item["verifiedPurchase"].as_bool().unwrap_or(false),
+                date: String::new(), // Not in spec response
+            });
+        }
+        Ok(entries)
+    }
+}
+
+// ── Author ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorBook {
+    pub asin: String,
+    pub title: String,
+    pub price: Option<f64>,
+    pub rating: Option<f64>,
+    pub review_count: Option<u32>,
+    pub image_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorInfo {
+    pub name: String,
+    pub asin: String,
+    pub books: Vec<AuthorBook>,
+}
+
+impl CanopyClient {
+    /// Fetch an author's page and their book catalog.
+    pub fn get_author(&self, author_asin: &str, domain: &str, page: u32) -> Result<AuthorInfo, String> {
+        let page_str = page.to_string();
+        let resp = self.get("/api/amazon/author", &[
+            ("asin", author_asin), ("domain", domain), ("page", &page_str),
+        ])?;
+
+        let author = &resp["data"]["amazonAuthor"];
+        let name = author["name"].as_str().unwrap_or("").to_string();
+
+        let books: Vec<AuthorBook> = match author["bookResults"]["results"].as_array() {
+            Some(arr) => arr.iter().map(|b| AuthorBook {
+                asin: b["asin"].as_str().unwrap_or("").to_string(),
+                title: b["title"].as_str().unwrap_or("").to_string(),
+                price: b["price"]["value"].as_f64(),
+                rating: b["rating"].as_f64(),
+                review_count: b["ratingsTotal"].as_u64().map(|n| n as u32),
+                image_url: b["mainImageUrl"].as_str().map(|s| s.to_string()),
+            }).collect(),
+            None => Vec::new(),
+        };
+
+        Ok(AuthorInfo { name, asin: author_asin.to_string(), books })
+    }
+}
+
+// ── Category Taxonomy ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategoryNode {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    pub children: Vec<CategoryNode>,
+}
+
+impl CanopyClient {
+    /// Fetch the full category taxonomy for a domain.
+    pub fn get_categories(&self, domain: &str) -> Result<Vec<CategoryNode>, String> {
+        let resp = self.get("/api/amazon/categories", &[("domain", domain)])?;
+        let items = &resp["data"]["amazonProductCategoryTaxonomy"];
+
+        let arr = items.as_array().ok_or("No category taxonomy in response")?;
+        Ok(arr.iter().map(|item| CategoryNode {
+            id: item["id"].as_str().unwrap_or("").to_string(),
+            name: item["name"].as_str().unwrap_or("").to_string(),
+            path: item["breadcrumbPath"].as_str().unwrap_or("").to_string(),
+            children: Vec::new(), // Root-level only from this endpoint
+        }).collect())
+    }
+
+    /// Fetch products listed in a specific category (paginated, deeper than bestsellers).
+    /// Also returns subcategories that can be drilled into.
+    pub fn get_category_products(&self, category_id: &str, domain: &str, page: u32) -> Result<Vec<BestsellerEntry>, String> {
+        let page_str = page.to_string();
+        let resp = self.get("/api/amazon/category", &[
+            ("categoryId", category_id), ("domain", domain), ("page", &page_str),
+        ])?;
+
+        let results = &resp["data"]["amazonProductCategory"]["productResults"]["results"];
+        let arr = results.as_array().ok_or("No category product results in response")?;
+        let mut entries = Vec::new();
+        for (i, item) in arr.iter().enumerate() {
+            entries.push(BestsellerEntry {
+                rank: (i + 1) as u32,
+                asin: item["asin"].as_str().unwrap_or("").to_string(),
+                title: item["title"].as_str().unwrap_or("").to_string(),
+                author: None,
+                price: item["price"]["value"].as_f64(),
+                rating: item["rating"].as_f64(),
+                review_count: item["ratingsTotal"].as_u64().map(|n| n as u32),
+                image_url: item["mainImageUrl"].as_str().map(|s| s.to_string()),
+            });
+        }
+        Ok(entries)
     }
 }
 
@@ -353,15 +491,6 @@ impl CanopyClient {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn extract_string_array(v: &Value) -> Option<Vec<String>> {
-    v.as_array().map(|arr| {
-        arr.iter().filter_map(|item| {
-            item.as_str().map(|s| s.to_string())
-                .or_else(|| item["name"].as_str().map(|s| s.to_string()))
-        }).collect()
-    })
-}
-
 // ── Tauri commands ────────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -390,12 +519,12 @@ use crate::commands::CategoryStatRow;
 
 fn emit_canopy(app: &AppHandle, msg: &str) { let _ = app.emit("cdp:log", msg); }
 
-/// Map store name to Amazon domain for Canopy API
+/// Map store name to Canopy domain code
 fn store_to_domain(store: &str) -> &str {
     match store {
-        "Kindle" | "kindle" => "amazon.com",
-        "Books" | "books" => "amazon.com",
-        _ => "amazon.com",
+        "Kindle" | "kindle" => "US",
+        "Books" | "books" => "US",
+        _ => "US",
     }
 }
 
@@ -669,7 +798,7 @@ pub async fn search_keywords_canopy(app: AppHandle, request: KeywordSearchCanopy
         emit_canopy(&app, &format!("Keyword search via Canopy: \"{}\"", request.seed));
 
         // Step 1: Get autocomplete suggestions
-        let suggestions = match client.autocomplete(&request.seed, "amazon.com", Some("digital-text")) {
+        let suggestions = match client.autocomplete(&request.seed, "US", Some("digital-text")) {
             Ok(s) => s,
             Err(e) => {
                 emit_canopy(&app, &format!("  ⚠ Autocomplete failed: {}", e));
@@ -693,7 +822,7 @@ pub async fn search_keywords_canopy(app: AppHandle, request: KeywordSearchCanopy
             emit_canopy(&app, &format!("  [{}/{}] \"{}\"", i + 1, keywords_to_check.len(), keyword));
 
             // Step 2: Search for this keyword in Kindle store
-            let search_results = match client.search(keyword, "amazon.com", Some("digital-text"), 1) {
+            let search_results = match client.search(keyword, "US", Some("digital-text"), 1) {
                 Ok(r) => r,
                 Err(_) => { continue; }
             };
@@ -718,7 +847,7 @@ pub async fn search_keywords_canopy(app: AppHandle, request: KeywordSearchCanopy
             let mut top_daily_sales: Vec<f64> = Vec::new();
             for sr in &organic {
                 if sr.asin.is_empty() { continue; }
-                if let Ok(sales) = client.get_sales(&sr.asin, "amazon.com") {
+                if let Ok(sales) = client.get_sales(&sr.asin, "US") {
                     if let Some(daily) = sales.estimated_daily_sales {
                         top_daily_sales.push(daily);
                     }
@@ -772,4 +901,469 @@ pub async fn search_keywords_canopy(app: AppHandle, request: KeywordSearchCanopy
 
         KeywordSearchResponse { success: true, results, error: String::new() }
     }).await.unwrap()
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// NEW FEATURES: Review Mining, Author Analysis, Category Sync, Deep Categories
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Review Mining ─────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ReviewMiningRequest {
+    pub folder:         String,
+    pub canopy_api_key: String,
+    pub api_key:        String,
+    pub model:          String,
+    pub provider:       String,
+}
+
+#[derive(Serialize)]
+pub struct ReviewMiningResult {
+    pub success: bool,
+    pub report:  String,
+    pub error:   String,
+}
+
+/// Pull reviews from top competitor books, feed to AI for reader insight extraction.
+#[tauri::command]
+pub async fn mine_competitor_reviews(app: AppHandle, request: ReviewMiningRequest) -> ReviewMiningResult {
+    tokio::task::spawn_blocking(move || {
+        let database = app.state::<db::Db>();
+        let client = match CanopyClient::new(&request.canopy_api_key) {
+            Ok(c) => c,
+            Err(e) => return ReviewMiningResult { success: false, report: String::new(), error: e },
+        };
+
+        // Get PR keywords to find comp books
+        let keywords = { let conn = database.0.lock().unwrap(); db::load_pr_keywords(&conn, &request.folder) };
+        if keywords.is_empty() {
+            return ReviewMiningResult { success: false, report: String::new(), error: "No keywords found. Run Analyze first.".to_string() };
+        }
+
+        emit_canopy(&app, "Mining competitor reviews via Canopy API...");
+
+        // Search top 5 books for the first 2 keywords
+        let mut comp_asins: Vec<(String, String)> = Vec::new(); // (asin, title)
+        for kw in keywords.iter().take(2) {
+            if let Ok(results) = client.search(kw, "US", Some("digital-text"), 1) {
+                for sr in results.iter().filter(|r| !r.is_sponsored).take(3) {
+                    if !sr.asin.is_empty() && !comp_asins.iter().any(|(a, _)| a == &sr.asin) {
+                        comp_asins.push((sr.asin.clone(), sr.title.clone()));
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+
+        if comp_asins.is_empty() {
+            return ReviewMiningResult { success: false, report: String::new(), error: "No competitor books found.".to_string() };
+        }
+
+        emit_canopy(&app, &format!("  Found {} comp books. Pulling reviews...", comp_asins.len()));
+
+        // Pull reviews for each comp book
+        let mut all_reviews: Vec<(String, Vec<ReviewEntry>)> = Vec::new(); // (title, reviews)
+        for (asin, title) in &comp_asins {
+            emit_canopy(&app, &format!("  \"{}\"", title));
+            // Get positive and negative reviews
+            let mut book_reviews = Vec::new();
+            if let Ok(reviews) = client.get_reviews(asin, "US", 1, Some(5)) {
+                book_reviews.extend(reviews.into_iter().take(5));
+            }
+            std::thread::sleep(Duration::from_millis(150));
+            if let Ok(reviews) = client.get_reviews(asin, "US", 1, Some(1)) {
+                book_reviews.extend(reviews.into_iter().take(3));
+            }
+            std::thread::sleep(Duration::from_millis(150));
+            if let Ok(reviews) = client.get_reviews(asin, "US", 1, Some(3)) {
+                book_reviews.extend(reviews.into_iter().take(3));
+            }
+            std::thread::sleep(Duration::from_millis(150));
+
+            if !book_reviews.is_empty() {
+                emit_canopy(&app, &format!("    {} reviews collected.", book_reviews.len()));
+                all_reviews.push((title.clone(), book_reviews));
+            }
+        }
+
+        if all_reviews.is_empty() {
+            return ReviewMiningResult { success: false, report: String::new(), error: "Could not pull reviews from any comp book.".to_string() };
+        }
+
+        // Build review text for AI
+        let mut review_text = String::new();
+        for (title, reviews) in &all_reviews {
+            review_text.push_str(&format!("\n## \"{}\"\n", title));
+            for r in reviews {
+                review_text.push_str(&format!("[{}★{}] {}: {}\n",
+                    r.rating, if r.verified { " ✓" } else { "" }, r.title, r.body));
+            }
+        }
+
+        emit_canopy(&app, "  Running AI analysis on reviews...");
+
+        let system = r#"You are a publishing strategist. Analyze these competitor book reviews and extract actionable intelligence. Produce a structured report:
+
+1. **What Readers Love** — themes, elements, tropes that get praised repeatedly
+2. **What Readers Hate** — common complaints, disappointments, unmet expectations
+3. **Reader Language** — exact phrases and words readers use that could go in book descriptions and ad copy
+4. **Gap Opportunities** — things readers want but aren't getting from current books
+5. **Positioning Advice** — how to position a new book to capture these readers
+
+Be specific. Quote review language directly when useful. Keep it actionable."#;
+
+        let genre_context = {
+            let conn = database.0.lock().unwrap();
+            db::load_genre_data(&conn, &request.folder).map(|g| g.genre_signals).unwrap_or_default()
+        };
+
+        let user = format!("Genre context: {}\n\nCompetitor reviews:\n{}", genre_context, review_text);
+
+        match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 2500) {
+            Ok(report) => {
+                let json = serde_json::json!({
+                    "schema": "review_mining_v1",
+                    "content_format": "markdown",
+                    "content": report,
+                    "books_analyzed": comp_asins.iter().map(|(a, t)| serde_json::json!({"asin": a, "title": t})).collect::<Vec<_>>(),
+                    "total_reviews": all_reviews.iter().map(|(_, r)| r.len()).sum::<usize>(),
+                }).to_string();
+                let conn = database.0.lock().unwrap();
+                let _ = db::save_document(&conn, &request.folder, "review_mining", &json);
+                emit_canopy(&app, "✓ Review mining report saved.");
+                ReviewMiningResult { success: true, report: json, error: String::new() }
+            }
+            Err(e) => ReviewMiningResult { success: false, report: String::new(), error: format!("AI error: {}", e) },
+        }
+    }).await.unwrap()
+}
+
+// ── Author Catalog Analysis ───────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct AuthorAnalysisRequest {
+    pub folder:         String,
+    pub canopy_api_key: String,
+    pub api_key:        String,
+    pub model:          String,
+    pub provider:       String,
+}
+
+#[derive(Serialize)]
+pub struct AuthorAnalysisResult {
+    pub success: bool,
+    pub report:  String,
+    pub error:   String,
+}
+
+/// Analyze top competitor authors' catalogs — release cadence, pricing, series strategy.
+#[tauri::command]
+pub async fn analyze_comp_authors(app: AppHandle, request: AuthorAnalysisRequest) -> AuthorAnalysisResult {
+    tokio::task::spawn_blocking(move || {
+        let database = app.state::<db::Db>();
+        let client = match CanopyClient::new(&request.canopy_api_key) {
+            Ok(c) => c,
+            Err(e) => return AuthorAnalysisResult { success: false, report: String::new(), error: e },
+        };
+
+        let keywords = { let conn = database.0.lock().unwrap(); db::load_pr_keywords(&conn, &request.folder) };
+        if keywords.is_empty() {
+            return AuthorAnalysisResult { success: false, report: String::new(), error: "No keywords found. Run Analyze first.".to_string() };
+        }
+
+        emit_canopy(&app, "Analyzing competitor authors via Canopy API...");
+
+        // Find unique authors from search results
+        let mut author_asins: Vec<(String, String)> = Vec::new(); // (asin, name) — we need to find author ASINs
+        let mut seen_authors: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for kw in keywords.iter().take(3) {
+            if let Ok(results) = client.search(kw, "US", Some("digital-text"), 1) {
+                for sr in results.iter().filter(|r| !r.is_sponsored).take(5) {
+                    if sr.asin.is_empty() { continue; }
+                    if let Some(author) = &sr.author {
+                        if !author.is_empty() && seen_authors.insert(author.to_lowercase()) {
+                            // Get the product to find author ASIN if available
+                            if let Ok(product) = client.get_product(&sr.asin, "US") {
+                                // Use the author name; we'll search by product ASIN since author ASIN isn't always exposed
+                                author_asins.push((sr.asin.clone(), author.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+
+        let authors_to_analyze: Vec<_> = author_asins.into_iter().take(5).collect();
+        if authors_to_analyze.is_empty() {
+            return AuthorAnalysisResult { success: false, report: String::new(), error: "No competitor authors found.".to_string() };
+        }
+
+        emit_canopy(&app, &format!("  {} authors identified. Fetching catalogs...", authors_to_analyze.len()));
+
+        // For each author, search for more of their books
+        let mut author_data: Vec<serde_json::Value> = Vec::new();
+        for (book_asin, author_name) in &authors_to_analyze {
+            emit_canopy(&app, &format!("  → {}", author_name));
+
+            // Search for more books by this author
+            let search_term = format!("{}", author_name);
+            let books = match client.search(&search_term, "US", Some("digital-text"), 1) {
+                Ok(results) => results.iter()
+                    .filter(|r| r.author.as_deref() == Some(author_name.as_str()))
+                    .take(10)
+                    .map(|r| serde_json::json!({
+                        "title": r.title,
+                        "price": r.price,
+                        "rating": r.rating,
+                        "reviews": r.review_count,
+                    }))
+                    .collect::<Vec<_>>(),
+                Err(_) => Vec::new(),
+            };
+
+            let book_count = books.len();
+            author_data.push(serde_json::json!({
+                "name": author_name,
+                "book_count": book_count,
+                "books": books,
+            }));
+            emit_canopy(&app, &format!("    {} books found.", book_count));
+            std::thread::sleep(Duration::from_millis(200));
+        }
+
+        emit_canopy(&app, "  Running AI analysis on author catalogs...");
+
+        let system = r#"You are a publishing strategist. Analyze these competitor author catalogs and extract strategic intelligence. Produce a structured report:
+
+1. **Catalog Size & Release Cadence** — how many books, how often they publish
+2. **Pricing Strategy** — price points across their catalog, any patterns (loss leaders, premium pricing)
+3. **Series vs Standalone** — do they write series? How long? Does the first book price differently?
+4. **Review Performance** — average ratings, which books perform best
+5. **Strategic Takeaways** — what can a debut author learn from their approach?
+
+Be specific and data-driven."#;
+
+        let genre_context = {
+            let conn = database.0.lock().unwrap();
+            db::load_genre_data(&conn, &request.folder).map(|g| g.genre_signals).unwrap_or_default()
+        };
+
+        let author_summary = serde_json::to_string_pretty(&author_data).unwrap_or_default();
+        let user = format!("Genre context: {}\n\nCompetitor author catalogs:\n{}", genre_context, author_summary);
+
+        match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 2500) {
+            Ok(report) => {
+                let json = serde_json::json!({
+                    "schema": "author_analysis_v1",
+                    "content_format": "markdown",
+                    "content": report,
+                    "authors_analyzed": author_data,
+                }).to_string();
+                let conn = database.0.lock().unwrap();
+                let _ = db::save_document(&conn, &request.folder, "author_analysis", &json);
+                emit_canopy(&app, "✓ Author catalog analysis saved.");
+                AuthorAnalysisResult { success: true, report: json, error: String::new() }
+            }
+            Err(e) => AuthorAnalysisResult { success: false, report: String::new(), error: format!("AI error: {}", e) },
+        }
+    }).await.unwrap()
+}
+
+// ── Live Category Sync ────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct CategorySyncResult {
+    pub success:  bool,
+    pub imported: usize,
+    pub error:    String,
+}
+
+/// Pull category taxonomy directly from Amazon via Canopy and import into the DB,
+/// replacing the need for WinningCat CSV imports.
+#[tauri::command]
+pub async fn sync_categories_canopy(app: AppHandle, canopy_api_key: String, store: String) -> CategorySyncResult {
+    tokio::task::spawn_blocking(move || {
+        let client = match CanopyClient::new(&canopy_api_key) {
+            Ok(c) => c,
+            Err(e) => return CategorySyncResult { success: false, imported: 0, error: e },
+        };
+
+        let domain = store_to_domain(&store);
+        emit_canopy(&app, &format!("Syncing {} category taxonomy from Amazon via Canopy...", store));
+
+        let categories = match client.get_categories(domain) {
+            Ok(c) => c,
+            Err(e) => return CategorySyncResult { success: false, imported: 0, error: format!("Failed to fetch categories: {}", e) },
+        };
+
+        // Flatten the tree and import leaf nodes into the DB
+        let database = app.state::<db::Db>();
+        let conn = database.0.lock().unwrap();
+        let mut imported = 0usize;
+
+        fn import_nodes(conn: &rusqlite::Connection, nodes: &[CategoryNode], store: &str, imported: &mut usize) {
+            for node in nodes {
+                if !node.id.is_empty() && !node.path.is_empty() {
+                    if db::import_kdp_category(conn, &node.path, store, &node.id).is_ok() {
+                        *imported += 1;
+                    }
+                }
+                import_nodes(conn, &node.children, store, imported);
+            }
+        }
+
+        import_nodes(&conn, &categories, &store, &mut imported);
+        emit_canopy(&app, &format!("✓ Synced {} categories into the catalog.", imported));
+
+        CategorySyncResult { success: true, imported, error: String::new() }
+    }).await.unwrap()
+}
+
+// ── Deep Category Analysis ────────────────────────────────────────────────────
+
+#[derive(Serialize, Clone)]
+pub struct DeepCategoryBook {
+    pub rank:         u32,
+    pub asin:         String,
+    pub title:        String,
+    pub author:       Option<String>,
+    pub price:        Option<f64>,
+    pub rating:       Option<f64>,
+    pub review_count: Option<u32>,
+    pub daily_sales:  Option<f64>,
+    pub ku:           bool,
+    pub indie:        bool,
+}
+
+#[derive(Serialize)]
+pub struct DeepCategoryResult {
+    pub success:    bool,
+    pub category:   String,
+    pub books:      Vec<DeepCategoryBook>,
+    pub stats:      DeepCategoryStats,
+    pub error:      String,
+}
+
+#[derive(Serialize)]
+pub struct DeepCategoryStats {
+    pub total_books:   usize,
+    pub avg_price:     String,
+    pub avg_rating:    String,
+    pub avg_reviews:   String,
+    pub indie_pct:     String,
+    pub ku_pct:        String,
+    pub sales_rank_1:  String,
+    pub sales_rank_10: String,
+    pub sales_rank_25: String,
+    pub sales_rank_50: String,
+}
+
+/// Deep category penetration — pull ranks 1-50 with full product details.
+#[tauri::command]
+pub async fn deep_category_analysis(app: AppHandle, canopy_api_key: String, category_path: String, node_id: String, store: String) -> DeepCategoryResult {
+    tokio::task::spawn_blocking(move || {
+        let client = match CanopyClient::new(&canopy_api_key) {
+            Ok(c) => c,
+            Err(e) => return DeepCategoryResult { success: false, category: category_path, books: Vec::new(), stats: empty_deep_stats(), error: e },
+        };
+
+        let domain = store_to_domain(&store);
+        emit_canopy(&app, &format!("Deep analysis: {} (node {})", category_path, node_id));
+
+        // Pull page 1 (typically 20-30 results) + page 2 to get ~50 books
+        let mut all_books: Vec<BestsellerEntry> = Vec::new();
+        for page in 1..=2 {
+            match client.get_category_products(&node_id, domain, page) {
+                Ok(entries) => {
+                    emit_canopy(&app, &format!("  Page {}: {} books", page, entries.len()));
+                    all_books.extend(entries);
+                }
+                Err(e) => {
+                    if page == 1 {
+                        return DeepCategoryResult { success: false, category: category_path, books: Vec::new(), stats: empty_deep_stats(), error: e };
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+
+        emit_canopy(&app, &format!("  {} total books. Fetching details...", all_books.len()));
+
+        // Get detailed info for each book
+        let mut deep_books: Vec<DeepCategoryBook> = Vec::new();
+        for (i, entry) in all_books.iter().take(50).enumerate() {
+            if entry.asin.is_empty() { continue; }
+
+            let sales = client.get_sales(&entry.asin, domain).ok();
+            let product = client.get_product(&entry.asin, domain).ok();
+
+            let daily = sales.as_ref().and_then(|s| s.estimated_daily_sales);
+            let ku = product.as_ref().map(|p| p.kindle_unlimited).unwrap_or(false);
+            let indie = product.as_ref().and_then(|p| p.publisher.as_ref()).map(|pub_name| {
+                let lower = pub_name.to_lowercase();
+                lower.contains("independently published") || lower.contains("self-published") || lower.contains("kindle direct")
+            }).unwrap_or(false);
+
+            deep_books.push(DeepCategoryBook {
+                rank: entry.rank,
+                asin: entry.asin.clone(),
+                title: entry.title.clone(),
+                author: entry.author.clone(),
+                price: entry.price,
+                rating: entry.rating,
+                review_count: entry.review_count,
+                daily_sales: daily,
+                ku, indie,
+            });
+
+            if (i + 1) % 10 == 0 {
+                emit_canopy(&app, &format!("  {}/{} books detailed.", i + 1, all_books.len().min(50)));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        // Compute stats
+        let total = deep_books.len();
+        let prices: Vec<f64> = deep_books.iter().filter_map(|b| b.price).collect();
+        let ratings: Vec<f64> = deep_books.iter().filter_map(|b| b.rating).collect();
+        let reviews: Vec<f64> = deep_books.iter().filter_map(|b| b.review_count.map(|r| r as f64)).collect();
+        let indie_count = deep_books.iter().filter(|b| b.indie).count();
+        let ku_count = deep_books.iter().filter(|b| b.ku).count();
+
+        let avg = |v: &[f64]| if v.is_empty() { "N/A".to_string() } else { format!("{:.1}", v.iter().sum::<f64>() / v.len() as f64) };
+        let sales_at = |rank: usize| deep_books.get(rank.saturating_sub(1))
+            .and_then(|b| b.daily_sales)
+            .map(|d| format!("{:.0}/day", d))
+            .unwrap_or_else(|| "N/A".to_string());
+
+        let stats = DeepCategoryStats {
+            total_books: total,
+            avg_price: if prices.is_empty() { "N/A".to_string() } else { format!("${:.2}", prices.iter().sum::<f64>() / prices.len() as f64) },
+            avg_rating: avg(&ratings),
+            avg_reviews: avg(&reviews),
+            indie_pct: if total > 0 { format!("{:.0}%", 100.0 * indie_count as f64 / total as f64) } else { "N/A".to_string() },
+            ku_pct: if total > 0 { format!("{:.0}%", 100.0 * ku_count as f64 / total as f64) } else { "N/A".to_string() },
+            sales_rank_1: sales_at(1),
+            sales_rank_10: sales_at(10),
+            sales_rank_25: sales_at(25),
+            sales_rank_50: sales_at(50),
+        };
+
+        emit_canopy(&app, &format!("✓ Deep analysis complete: {} books, avg ${}, {}% indie, {}% KU",
+            total, stats.avg_price, stats.indie_pct, stats.ku_pct));
+
+        DeepCategoryResult { success: true, category: category_path, books: deep_books, stats, error: String::new() }
+    }).await.unwrap()
+}
+
+fn empty_deep_stats() -> DeepCategoryStats {
+    DeepCategoryStats {
+        total_books: 0, avg_price: "N/A".to_string(), avg_rating: "N/A".to_string(),
+        avg_reviews: "N/A".to_string(), indie_pct: "N/A".to_string(), ku_pct: "N/A".to_string(),
+        sales_rank_1: "N/A".to_string(), sales_rank_10: "N/A".to_string(),
+        sales_rank_25: "N/A".to_string(), sales_rank_50: "N/A".to_string(),
+    }
 }

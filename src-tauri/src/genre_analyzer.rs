@@ -2642,7 +2642,7 @@ async fn run_keyword_searches_canopy(
             let _ = app_c.emit("cdp:log", &format!("Keyword search (Canopy): \"{}\"", seed_c));
 
             // Get suggestions
-            let suggestions = client.autocomplete(&seed_c, "amazon.com", Some("digital-text"))
+            let suggestions = client.autocomplete(&seed_c, "US", Some("digital-text"))
                 .unwrap_or_else(|_| vec![seed_c.clone()]);
             let mut keywords: Vec<String> = vec![seed_c.clone()];
             for s in suggestions.into_iter().take(10) {
@@ -2651,7 +2651,7 @@ async fn run_keyword_searches_canopy(
 
             let mut results: Vec<KeywordResult> = Vec::new();
             for kw in &keywords {
-                let search = match client.search(kw, "amazon.com", Some("digital-text"), 1) {
+                let search = match client.search(kw, "US", Some("digital-text"), 1) {
                     Ok(r) => r,
                     Err(_) => continue,
                 };
@@ -2663,7 +2663,7 @@ async fn run_keyword_searches_canopy(
                 let mut daily_sales: Vec<f64> = Vec::new();
                 for sr in &organic {
                     if sr.asin.is_empty() { continue; }
-                    if let Ok(s) = client.get_sales(&sr.asin, "amazon.com") {
+                    if let Ok(s) = client.get_sales(&sr.asin, "US") {
                         if let Some(d) = s.estimated_daily_sales { daily_sales.push(d); }
                     }
                     std::thread::sleep(std::time::Duration::from_millis(80));

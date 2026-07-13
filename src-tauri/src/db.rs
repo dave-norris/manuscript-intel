@@ -932,6 +932,8 @@ pub const DOC_TYPES: &[(&str, &str)] = &[
     ("genre_ranking",       "Genre Ranking"),
     ("mapped_categories",   "Mapped Categories (Verified)"),
     ("bisac_classification","BISAC Classification"),
+    ("review_mining",       "Reader Review Intelligence"),
+    ("author_analysis",     "Competitor Author Analysis"),
 ];
 
 pub fn save_document(conn: &Connection, story_folder: &str, doc_type: &str, content: &str) -> Result<(), String> {

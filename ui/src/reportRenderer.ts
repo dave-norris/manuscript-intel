@@ -45,6 +45,8 @@ function renderBySchema(data: any, _docType: string): string {
   if (schema === 'category_finder_v1') return renderCategoryFinder(data);
   if (schema === 'category_finder_standalone_v1') return renderCategoryFinderStandalone(data);
   if (schema === 'competition_report_v1') return renderCompetitionReport(data);
+  if (schema === 'review_mining_v1') return renderReviewMining(data);
+  if (schema === 'author_analysis_v1') return renderAuthorAnalysis(data);
   if (schema === 'analysis_v1') return renderCombinedAnalysis(data);
   if (schema === 'kdp_paste_v1') return renderKdpPaste(data);
 
@@ -313,6 +315,42 @@ function renderCompetitionReport(data: any): string {
     return `<div class="report-markdown">${markdownToHtml(data.content)}</div>`;
   }
   return `<pre>${esc(JSON.stringify(data, null, 2))}</pre>`;
+}
+
+// ── Review Mining Report ──────────────────────────────────────────────────────
+
+function renderReviewMining(data: any): string {
+  let html = '';
+  const books: any[] = data.books_analyzed || [];
+  if (books.length) {
+    html += `<p class="report-hint">Based on ${data.total_reviews || '?'} reviews from ${books.length} competitor book${books.length > 1 ? 's' : ''}:</p>`;
+    html += `<ul class="category-list">`;
+    for (const b of books) html += `<li>${esc(b.title)}</li>`;
+    html += `</ul>`;
+  }
+  if (data.content_format === 'markdown' && data.content) {
+    html += `<div class="report-markdown">${markdownToHtml(data.content)}</div>`;
+  }
+  return html;
+}
+
+// ── Author Catalog Analysis Report ────────────────────────────────────────────
+
+function renderAuthorAnalysis(data: any): string {
+  let html = '';
+  const authors: any[] = data.authors_analyzed || [];
+  if (authors.length) {
+    html += `<section class="report-section"><h3>Authors Analyzed</h3>`;
+    html += `<table class="report-table"><thead><tr><th>Author</th><th>Books</th></tr></thead><tbody>`;
+    for (const a of authors) {
+      html += `<tr><td><strong>${esc(a.name)}</strong></td><td>${a.book_count}</td></tr>`;
+    }
+    html += `</tbody></table></section>`;
+  }
+  if (data.content_format === 'markdown' && data.content) {
+    html += `<div class="report-markdown">${markdownToHtml(data.content)}</div>`;
+  }
+  return html;
 }
 
 // ── Combined Analysis Report ──────────────────────────────────────────────────

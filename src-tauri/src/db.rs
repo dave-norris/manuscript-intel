@@ -192,7 +192,7 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     let dir: PathBuf = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("Cannot create app data dir: {}", e))?;
 
-    let db_path = dir.join("pub-rocket-reader.db");
+    let db_path = dir.join("manuscript-intel.db");
     let conn = Connection::open(&db_path).map_err(|e| format!("Cannot open database: {}", e))?;
     conn.execute_batch(SCHEMA).map_err(|e| format!("Schema error: {}", e))?;
 

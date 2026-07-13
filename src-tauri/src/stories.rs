@@ -1,7 +1,7 @@
 // stories.rs — Persistent story registry
 //
 // Stores story metadata in:
-//   ~/Library/Application Support/pub-rocket-reader/stories.json
+//   ~/Library/Application Support/manuscript-intel/stories.json
 //
 // Each story has: id, name, folder path, created date.
 

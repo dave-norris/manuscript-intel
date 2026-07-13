@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Publisher Rocket Reader",
+  "productName": "Manuscript Intel",
   "version": "0.1.0",
-  "identifier": "com.davidallennorris.pub-rocket-reader",
+  "identifier": "com.davidallennorris.manuscript-intel",
   "build": {
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Publisher Rocket Reader",
+        "title": "Manuscript Intel",
         "width": 1100,
         "height": 750,
         "minWidth": 800,

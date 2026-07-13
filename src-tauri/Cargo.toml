@@ -1,13 +1,13 @@
 [package]
-name = "pub-rocket-reader"
+name = "manuscript-intel"
 version = "0.1.0"
-description = "Publisher Rocket Reader — automates Publisher Rocket via CDP"
+description = "Manuscript Intel — book market intelligence for fiction authors"
 authors = ["David Allen Norris"]
 edition = "2021"
 rust-version = "1.77.2"
 
 [lib]
-name = "pub_rocket_reader_lib"
+name = "manuscript_intel_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

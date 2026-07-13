@@ -5,7 +5,7 @@
       "name": "Tauri Dev",
       "type": "lldb-dap",
       "request": "launch",
-      "program": "${workspaceFolder}/src-tauri/target/debug/pub-rocket-reader",
+      "program": "${workspaceFolder}/src-tauri/target/debug/manuscript-intel",
       "args": [],
       "cwd": "${workspaceFolder}/src-tauri",
       "preLaunchTask": "cargo:build-debug",

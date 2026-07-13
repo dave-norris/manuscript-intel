@@ -3,36 +3,11 @@
 use std::time::Duration;
 use serde::Deserialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::cdp;
 use crate::commands::call_llm;
-
-// ── Stored top-level Kindle categories ───────────────────────────────────────
-
-pub const TOP_LEVEL_CATEGORIES: &[&str] = &[
-    "Literature & Fiction",
-    "Mystery, Thriller & Suspense",
-    "Science Fiction & Fantasy",
-    "Romance",
-    "Religion & Spirituality",
-    "Teen & Young Adult",
-    "Children's eBooks",
-    "Biographies & Memoirs",
-    "History",
-    "Self-Help",
-    "Health, Fitness & Dieting",
-    "Business & Money",
-    "Computers & Technology",
-    "Comics, Manga & Graphic Novels",
-    "Humor & Entertainment",
-    "Arts & Photography",
-    "Crafts, Hobbies & Home",
-    "Travel",
-    "Education & Teaching",
-    "LGBTQ+ eBooks",
-    "Classics",
-];
+use crate::db;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -93,8 +68,20 @@ pub fn find_categories(
     model: &str,
 ) -> Result<Vec<ScoredCategory>, String> {
 
+    // Derive top-level categories from the DB catalog instead of a hardcoded list
+    let top_level_categories = {
+        let database = app.state::<db::Db>();
+        let conn = database.0.lock().map_err(|e| e.to_string())?;
+        db::top_level_kdp_categories(&conn, store)
+    };
+
+    if top_level_categories.is_empty() {
+        return Err("No KDP categories found in the database. Import a WinningCat file or seed the catalog first.".to_string());
+    }
+
     emit(app, "Step 1: Asking AI to rank top-level categories...");
-    let top_rankings = ai_rank_top_level(genre_description, provider, api_key, model)?;
+    emit(app, &format!("  ({} top-level categories from DB catalog)", top_level_categories.len()));
+    let top_rankings = ai_rank_top_level(genre_description, &top_level_categories, provider, api_key, model)?;
 
     emit(app, &format!("  {} top-level candidates ranked.", top_rankings.len()));
     for r in &top_rankings {
@@ -286,7 +273,7 @@ pub fn find_categories(
 
 // ── AI calls ──────────────────────────────────────────────────────────────────
 
-fn ai_rank_top_level(genre: &str, provider: &str, api_key: &str, model: &str)
+fn ai_rank_top_level(genre: &str, categories: &[String], provider: &str, api_key: &str, model: &str)
     -> Result<Vec<TopLevelRanking>, String>
 {
     let system = r#"You are an Amazon Kindle publishing expert. Rank the provided top-level Kindle categories by how well they match the genre description.
@@ -298,7 +285,7 @@ Only include items with confidence > 20. Sort descending by confidence."#;
     let user = format!(
         "Genre: {}\n\nCategories:\n{}",
         genre,
-        TOP_LEVEL_CATEGORIES.join("\n")
+        categories.join("\n")
     );
 
     let raw = call_llm(provider, api_key, model, system, &user, 800)?;

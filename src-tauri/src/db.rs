@@ -1022,3 +1022,31 @@ pub fn has_bisac_classifications(conn: &Connection, story_folder: &str) -> bool 
         params![story_folder], |_| Ok(())
     ).is_ok()
 }
+
+// ── Top-level KDP categories (derived from catalog) ─────────────────────
+
+/// Extract the distinct top-level segments from all kdp_categories paths for
+/// a given store. Each path looks like "Literature & Fiction > Genre Fiction > Gothic"
+/// — we split on " > " and take the first segment. This replaces the old
+/// hardcoded TOP_LEVEL_CATEGORIES list so the AI only considers categories
+/// that actually exist in the user's catalog.
+pub fn top_level_kdp_categories(conn: &Connection, store: &str) -> Vec<String> {
+    let mut stmt = match conn.prepare(
+        "SELECT DISTINCT path FROM kdp_categories WHERE store = ?1"
+    ) { Ok(s) => s, Err(_) => return Vec::new() };
+
+    let paths: Vec<String> = stmt.query_map(params![store], |r| r.get::<_, String>(0))
+        .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+        .unwrap_or_default();
+
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for path in &paths {
+        let top = path.split(" > ").next().unwrap_or(path).trim().to_string();
+        if !top.is_empty() && seen.insert(top.clone()) {
+            out.push(top);
+        }
+    }
+    out.sort();
+    out
+}

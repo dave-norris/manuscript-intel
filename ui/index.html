@@ -102,7 +102,11 @@
             <div class="reports-viewer-header">
               <button class="btn btn-secondary btn-sm" id="btn-reports-back">← Back</button>
               <span id="reports-viewer-title"></span>
-              <button class="btn btn-secondary btn-sm" id="btn-reports-copy">Copy</button>
+              <div class="reports-viewer-actions">
+                <button class="btn btn-sm" id="btn-reports-save" title="Save this version">Save</button>
+                <button class="btn btn-secondary btn-sm" id="btn-reports-copy">Copy</button>
+                <button class="btn btn-danger btn-sm hidden" id="btn-reports-delete" title="Delete this saved version">Delete</button>
+              </div>
             </div>
             <div id="reports-viewer-content" class="markdown-preview"></div>
           </div>

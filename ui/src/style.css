@@ -645,6 +645,27 @@ html, body {
   color: var(--text-muted);
   font-size: 16px;
 }
+.reports-section-header {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  padding: 12px 0 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+.reports-viewer-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.btn-danger {
+  background: #c0392b;
+  color: #fff;
+  border: none;
+}
+.btn-danger:hover { background: #a93226; }
 .reports-viewer {
   display: flex;
   flex-direction: column;

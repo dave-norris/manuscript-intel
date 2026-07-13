@@ -237,12 +237,12 @@ impl Session {
                 let mut plen = (ml & 0x7f) as usize;
 
                 if plen == 126 {
-                    if pos + 2 > buf.len() { pos -= 2; break; }
+                    if pos + 2 > buf.len() { break; }
                     plen = ((buf[pos] as usize) << 8) | buf[pos + 1] as usize;
                     pos += 2;
                 }
                 if is_masked { pos += 4; }
-                if pos + plen > buf.len() { pos -= if is_masked { 4 } else { 0 }; break; }
+                if pos + plen > buf.len() { break; }
 
                 let frame = &buf[pos..pos + plen];
                 pos += plen;

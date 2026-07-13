@@ -167,6 +167,21 @@ CREATE TABLE IF NOT EXISTS bisac_classifications (
 );
 
 CREATE INDEX IF NOT EXISTS idx_bisac_folder ON bisac_classifications(story_folder);
+
+-- Versioned saved reports. The user explicitly saves a report version via the
+-- UI. Each save auto-increments the version number per story+doc_type pair.
+-- Reports panel shows saved versions newest-first.
+CREATE TABLE IF NOT EXISTS saved_reports (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    story_folder TEXT NOT NULL,
+    doc_type     TEXT NOT NULL,
+    version      INTEGER NOT NULL,
+    label        TEXT NOT NULL,
+    content      TEXT NOT NULL,
+    saved_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_saved_reports_folder ON saved_reports(story_folder, doc_type);
 "#;
 
 pub struct Db(pub Mutex<Connection>);
@@ -190,6 +205,20 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     // new file (retired/renamed by Amazon) instead of leaving stale rows
     // sitting in the catalog forever with no signal they're outdated.
     let _ = conn.execute("ALTER TABLE kdp_categories ADD COLUMN last_seen_at TEXT", []);
+
+    // Migration: saved_reports table for versioned report storage.
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS saved_reports (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            story_folder TEXT NOT NULL,
+            doc_type     TEXT NOT NULL,
+            version      INTEGER NOT NULL,
+            label        TEXT NOT NULL,
+            content      TEXT NOT NULL,
+            saved_at     TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_saved_reports_folder ON saved_reports(story_folder, doc_type);"
+    );
 
     seed_if_empty(&conn)?;
     seed_bisac_if_empty(&conn)?;
@@ -661,6 +690,7 @@ pub fn delete_chapter_summaries(conn: &Connection, story_folder: &str) -> Result
 // ── Genre classification (industry genre + KDP paths + comps + notes) ──────────────
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct GenreDataRow {
     pub generated_at:       String,
     pub industry_ebook:     String,
@@ -849,6 +879,7 @@ pub fn has_keyword_search_results(conn: &Connection, story_folder: &str) -> bool
 // ── Publisher Rocket Keyword Search results (real search volume / competition) ──
 
 #[derive(serde::Serialize, Clone, Debug)]
+#[allow(dead_code)]
 pub struct KeywordSearchRow {
     pub keyword:     String,
     pub searches:    String,
@@ -877,6 +908,7 @@ pub fn replace_keyword_search_results(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub fn get_keyword_search_results(conn: &Connection, story_folder: &str, seed: &str) -> Vec<KeywordSearchRow> {
     let mut stmt = match conn.prepare(
         "SELECT keyword, searches, competition, earnings FROM keyword_search_results
@@ -961,6 +993,32 @@ pub async fn get_report_cmd(db: tauri::State<'_, Db>, folder: String, doc_type: 
     get_document(&conn, &folder, &doc_type).ok_or_else(|| "Report not found.".to_string())
 }
 
+// ── Tauri commands for saved (versioned) reports ────────────────────────
+
+#[tauri::command]
+pub async fn save_report_version_cmd(db: tauri::State<'_, Db>, folder: String, doc_type: String) -> Result<SavedReportMeta, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    save_report_version(&conn, &folder, &doc_type)
+}
+
+#[tauri::command]
+pub async fn list_saved_reports_cmd(db: tauri::State<'_, Db>, folder: String) -> Result<Vec<SavedReportMeta>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    Ok(list_saved_reports(&conn, &folder))
+}
+
+#[tauri::command]
+pub async fn get_saved_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<String, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    get_saved_report(&conn, id).ok_or_else(|| "Saved report not found.".to_string())
+}
+
+#[tauri::command]
+pub async fn delete_saved_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    delete_saved_report(&conn, id)
+}
+
 // ── BISAC classifications ──────────────────────────────────────────────
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -999,6 +1057,7 @@ pub fn replace_bisac_classifications(
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
+#[allow(dead_code)]
 pub struct BisacClassificationRow {
     pub code:       String,
     pub heading:    String,
@@ -1006,6 +1065,7 @@ pub struct BisacClassificationRow {
     pub reason:     String,
 }
 
+#[allow(dead_code)]
 pub fn get_bisac_classifications(conn: &Connection, story_folder: &str, format: &str) -> Vec<BisacClassificationRow> {
     let mut stmt = match conn.prepare(
         "SELECT code, heading, confidence, reason FROM bisac_classifications
@@ -1049,4 +1109,83 @@ pub fn top_level_kdp_categories(conn: &Connection, store: &str) -> Vec<String> {
     }
     out.sort();
     out
+}
+
+// ── Saved reports (versioned) ───────────────────────────────────────────
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SavedReportMeta {
+    pub id:           i64,
+    pub doc_type:     String,
+    pub version:      i64,
+    pub label:        String,
+    pub saved_at:     String,
+}
+
+/// Save the current content of a report as a new version. Auto-increments
+/// the version number for this story+doc_type pair.
+pub fn save_report_version(conn: &Connection, story_folder: &str, doc_type: &str) -> Result<SavedReportMeta, String> {
+    // Get the current (latest) content from story_documents
+    let content = get_document(conn, story_folder, doc_type)
+        .ok_or_else(|| format!("No current '{}' report to save.", doc_type))?;
+
+    // Determine next version number
+    let max_version: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM saved_reports WHERE story_folder = ?1 AND doc_type = ?2",
+        params![story_folder, doc_type], |r| r.get(0)
+    ).unwrap_or(0);
+    let next_version = max_version + 1;
+
+    // Build label from DOC_TYPES lookup
+    let type_label = DOC_TYPES.iter().find(|(t, _)| *t == doc_type)
+        .map(|(_, l)| l.to_string())
+        .unwrap_or_else(|| doc_type.to_string());
+    let label = format!("{} v{}", type_label, next_version);
+
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO saved_reports (story_folder, doc_type, version, label, content, saved_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![story_folder, doc_type, next_version, label, content, now],
+    ).map_err(|e| e.to_string())?;
+
+    let id = conn.last_insert_rowid();
+
+    Ok(SavedReportMeta { id, doc_type: doc_type.to_string(), version: next_version, label, saved_at: now })
+}
+
+/// List all saved report versions for a story, newest first.
+pub fn list_saved_reports(conn: &Connection, story_folder: &str) -> Vec<SavedReportMeta> {
+    let mut stmt = match conn.prepare(
+        "SELECT id, doc_type, version, label, saved_at FROM saved_reports
+         WHERE story_folder = ?1 ORDER BY saved_at DESC"
+    ) { Ok(s) => s, Err(_) => return Vec::new() };
+
+    stmt.query_map(params![story_folder], |r| {
+        Ok(SavedReportMeta {
+            id:       r.get(0)?,
+            doc_type: r.get(1)?,
+            version:  r.get(2)?,
+            label:    r.get(3)?,
+            saved_at: r.get(4)?,
+        })
+    }).and_then(|rows| rows.collect::<Result<Vec<_>, _>>()).unwrap_or_default()
+}
+
+/// Get the content of a specific saved report by ID.
+pub fn get_saved_report(conn: &Connection, id: i64) -> Option<String> {
+    conn.query_row(
+        "SELECT content FROM saved_reports WHERE id = ?1",
+        params![id], |r| r.get(0)
+    ).ok()
+}
+
+/// Delete a saved report version by ID.
+pub fn delete_saved_report(conn: &Connection, id: i64) -> Result<(), String> {
+    let affected = conn.execute("DELETE FROM saved_reports WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    if affected == 0 {
+        return Err("Saved report not found.".to_string());
+    }
+    Ok(())
 }

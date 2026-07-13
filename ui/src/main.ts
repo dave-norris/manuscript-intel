@@ -603,6 +603,18 @@ interface DocMeta {
   generated_at: string;
 }
 
+interface SavedReportMeta {
+  id: number;
+  doc_type: string;
+  version: number;
+  label: string;
+  saved_at: string;
+}
+
+// Track what's currently being viewed so Save/Delete know the context
+let viewingDocType = '';
+let viewingSavedId: number | null = null;
+
 async function loadReportsList(): Promise<void> {
   const folder = getActiveFolder();
   const note = $('reports-folder-note');
@@ -621,9 +633,12 @@ async function loadReportsList(): Promise<void> {
   note.style.display = story ? 'block' : 'none';
 
   try {
+    // Load current (latest) reports
     const docs = await invoke<DocMeta[]>('list_reports_cmd', { folder });
+    // Load saved versioned reports
+    const saved = await invoke<SavedReportMeta[]>('list_saved_reports_cmd', { folder });
 
-    if (docs.length === 0) {
+    if (docs.length === 0 && saved.length === 0) {
       const empty = document.createElement('p');
       empty.className = 'panel-desc';
       empty.textContent = 'No reports yet. Run the Analyzer to generate reports.';
@@ -631,20 +646,51 @@ async function loadReportsList(): Promise<void> {
       return;
     }
 
-    docs.forEach(doc => {
-      const item = document.createElement('div');
-      item.className = 'report-item';
-      const when = new Date(doc.generated_at).toLocaleString();
-      item.innerHTML = `
-        <div>
-          <div class="report-item-name">${doc.label}</div>
-          <div class="report-item-meta">${when}</div>
-        </div>
-        <span class="report-item-arrow">›</span>
-      `;
-      item.addEventListener('click', () => openReport(folder, doc.doc_type, doc.label));
-      list.appendChild(item);
-    });
+    // Current reports section
+    if (docs.length > 0) {
+      const header = document.createElement('div');
+      header.className = 'reports-section-header';
+      header.textContent = 'Current (latest run)';
+      list.appendChild(header);
+
+      docs.forEach(doc => {
+        const item = document.createElement('div');
+        item.className = 'report-item';
+        const when = new Date(doc.generated_at).toLocaleString();
+        item.innerHTML = `
+          <div>
+            <div class="report-item-name">${doc.label}</div>
+            <div class="report-item-meta">${when}</div>
+          </div>
+          <span class="report-item-arrow">›</span>
+        `;
+        item.addEventListener('click', () => openReport(folder, doc.doc_type, doc.label));
+        list.appendChild(item);
+      });
+    }
+
+    // Saved versions section
+    if (saved.length > 0) {
+      const header = document.createElement('div');
+      header.className = 'reports-section-header';
+      header.textContent = 'Saved Versions';
+      list.appendChild(header);
+
+      saved.forEach(s => {
+        const item = document.createElement('div');
+        item.className = 'report-item';
+        const when = new Date(s.saved_at).toLocaleString();
+        item.innerHTML = `
+          <div>
+            <div class="report-item-name">${s.label}</div>
+            <div class="report-item-meta">Saved ${when}</div>
+          </div>
+          <span class="report-item-arrow">›</span>
+        `;
+        item.addEventListener('click', () => openSavedReport(s.id, s.label));
+        list.appendChild(item);
+      });
+    }
   } catch (e) {
     const p = document.createElement('p');
     p.className = 'panel-desc';
@@ -656,12 +702,31 @@ async function loadReportsList(): Promise<void> {
 async function openReport(folder: string, docType: string, label: string): Promise<void> {
   try {
     const content = await invoke<string>('get_report_cmd', { folder, docType });
+    viewingDocType = docType;
+    viewingSavedId = null;
     $('reports-viewer-title').textContent = label;
     $('reports-viewer-content').innerHTML =
       typeof marked !== 'undefined' ? marked.parse(content) : '<pre>' + content + '</pre>';
     ($('reports-viewer') as HTMLElement).dataset.content = content;
+    $btn('btn-reports-save').classList.remove('hidden');
+    $btn('btn-reports-delete').classList.add('hidden');
     showReportsViewer();
   } catch (e) { alert('Could not read report: ' + String(e)); }
+}
+
+async function openSavedReport(id: number, label: string): Promise<void> {
+  try {
+    const content = await invoke<string>('get_saved_report_cmd', { id });
+    viewingDocType = '';
+    viewingSavedId = id;
+    $('reports-viewer-title').textContent = label;
+    $('reports-viewer-content').innerHTML =
+      typeof marked !== 'undefined' ? marked.parse(content) : '<pre>' + content + '</pre>';
+    ($('reports-viewer') as HTMLElement).dataset.content = content;
+    $btn('btn-reports-save').classList.add('hidden');
+    $btn('btn-reports-delete').classList.remove('hidden');
+    showReportsViewer();
+  } catch (e) { alert('Could not read saved report: ' + String(e)); }
 }
 
 function showReportsList(): void {
@@ -685,6 +750,39 @@ $btn('btn-reports-copy').addEventListener('click', async () => {
   const btn = $btn('btn-reports-copy');
   btn.textContent = 'Copied!';
   setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+});
+
+$btn('btn-reports-save').addEventListener('click', async () => {
+  const folder = getActiveFolder();
+  if (!folder || !viewingDocType) return;
+  const btn = $btn('btn-reports-save');
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const meta = await invoke<SavedReportMeta>('save_report_version_cmd', { folder, docType: viewingDocType });
+    btn.textContent = `Saved as ${meta.label}`;
+    setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 2000);
+  } catch (e) {
+    btn.textContent = 'Error';
+    setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 2000);
+    alert('Could not save report: ' + String(e));
+  }
+});
+
+$btn('btn-reports-delete').addEventListener('click', async () => {
+  if (viewingSavedId === null) return;
+  if (!confirm('Delete this saved report version? This cannot be undone.')) return;
+  const btn = $btn('btn-reports-delete');
+  btn.disabled = true;
+  try {
+    await invoke<void>('delete_saved_report_cmd', { id: viewingSavedId });
+    showReportsList();
+    loadReportsList();
+  } catch (e) {
+    alert('Could not delete: ' + String(e));
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────

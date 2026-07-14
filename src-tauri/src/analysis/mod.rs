@@ -46,6 +46,8 @@ pub struct AnalyzeStoryRequest {
     pub force_resummarize: bool,
     #[serde(default)]
     pub canopy_api_key:    String,
+    #[serde(default)]
+    pub platform:          String,  // "kdp" or "wide"
 }
 
 // ── Shared helpers ──────────────────────────────────────────────────────────

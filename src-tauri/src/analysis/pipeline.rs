@@ -637,12 +637,20 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
         vec![(genre_data.industry_ebook.clone(), 100)]
     };
 
+    let is_wide = request.platform == "wide";
+
     // ── Step 4: KDP Categories (both stores) ───────────────────────────────
-    emit(&app, "Step 4: Matching KDP categories...");
-    let base_description = format!("{}\n\n{}", genre_data.industry_ebook, genre_data.genre_signals);
-    let mut kdp_stores_json: Vec<serde_json::Value> = Vec::new();
     let mut kindle_top_categories: Vec<String> = Vec::new();
     let mut print_top_categories: Vec<String> = Vec::new();
+    let kdp_categories_section: String;
+    let mut kdp_stores_json: Vec<serde_json::Value> = Vec::new();
+
+    if is_wide {
+        emit(&app, "Step 4: Skipping KDP categories (Wide distribution mode).");
+        kdp_categories_section = serde_json::json!({ "stores": [] }).to_string();
+    } else {
+    emit(&app, "Step 4: Matching KDP categories...");
+    let base_description = format!("{}\n\n{}", genre_data.industry_ebook, genre_data.genre_signals);
 
     for (store, label, top_cats) in [
         ("Kindle", "Kindle eBook", &mut kindle_top_categories as &mut Vec<String>),
@@ -683,10 +691,12 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
 
         if crate::is_cancelled() { return err("Cancelled."); }
     }
-    let kdp_categories_section = serde_json::json!({ "stores": kdp_stores_json }).to_string();
+    kdp_categories_section = serde_json::json!({ "stores": kdp_stores_json }).to_string();
+    } // end of if !is_wide for KDP categories
     if crate::is_cancelled() { return err("Cancelled."); }
 
-    // ── Step 5: Generate search terms ──────────────────────────────────────
+    // ── Step 5: Generate search terms (KDP only) ───────────────────────────
+    if !is_wide {
     emit(&app, "Step 5: Generating competition search terms...");
     {
         let system = r#"You are a book market research expert. Generate short search phrases for competition analysis.
@@ -725,6 +735,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
             Err(e) => emit(&app, &format!("  ⚠ Search terms generation failed: {}", e)),
         }
     }
+    } // end of if !is_wide for search terms
     if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 6: BISAC Classification ───────────────────────────────────────
@@ -772,9 +783,13 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
     { let conn = database.0.lock().unwrap(); let _ = db::save_document(&conn, &request.folder, "bisac_classification", &bisac_section); }
     if crate::is_cancelled() { return err("Cancelled."); }
 
-    // ── Step 7: Keyword Search ────────────────────────────────────────
+    // ── Step 7: Keyword Search (KDP only) ────────────────────────────────────
+    let keyword_pool: Vec<KeywordResult> = if is_wide {
+        emit(&app, "Step 7: Skipping keyword search (Wide distribution mode).");
+        Vec::new()
+    } else {
     emit(&app, "Step 7: Keyword search...");
-    let keyword_pool: Vec<KeywordResult> = {
+    {
         let top_cats_for_seeds: Vec<String> = kindle_top_categories.iter().take(2).cloned().collect();
         let seeds = derive_keyword_seeds(&genre_data.industry_ebook, &top_cats_for_seeds);
         if seeds.is_empty() {
@@ -801,11 +816,16 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
         }).to_string();
         let _ = db::save_document(&conn, &request.folder, "keyword_search", &ks_json);
     }
+    }; // end keyword_pool
     if crate::is_cancelled() { return err("Cancelled."); }
 
-    // ── Step 8: KDP Keywords ───────────────────────────────────────────────
+    // ── Step 8: KDP Keywords (KDP only) ────────────────────────────────────
+    let (kdp_keyword_entries, kdp_keyword_strategy) = if is_wide {
+        emit(&app, "Step 8: Skipping KDP keywords (Wide distribution mode).");
+        (Vec::new(), String::new())
+    } else {
     emit(&app, "Step 8: Optimizing KDP keywords...");
-    let (kdp_keyword_entries, kdp_keyword_strategy) = {
+    {
         let res = call_keyword_optimizer_with_pool(&request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals, &keyword_pool).await;
 
         match res {
@@ -825,7 +845,8 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
                 (Vec::new(), String::new())
             }
         }
-    };
+    }
+    }; // end kdp_keyword_entries
     if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 9: Discovery Keywords ─────────────────────────────────────────

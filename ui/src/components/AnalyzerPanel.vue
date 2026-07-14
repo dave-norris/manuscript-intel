@@ -14,7 +14,7 @@ const storiesCtx = inject<{
 const analysisCtx = inject<{
   analysisState: Ref<AnalysisState | null>;
   isWorking: Ref<boolean>;
-  runAnalyze: (folder: string, forceResummarize: boolean) => Promise<void>;
+  runAnalyze: (folder: string, forceResummarize: boolean, platform: string) => Promise<void>;
   runCompetition: (folder: string, store: string) => Promise<void>;
   runMineReviews: (folder: string) => Promise<void>;
   runAuthorAnalysis: (folder: string) => Promise<void>;
@@ -36,7 +36,7 @@ const compStore = ref<'Kindle' | 'Audible'>('Kindle');
 
 function onAnalyze(): void {
   const folder = storiesCtx.activeFolder.value;
-  analysisCtx.runAnalyze(folder, forceResummarize.value);
+  analysisCtx.runAnalyze(folder, forceResummarize.value, platformCtx.platform.value);
 }
 
 function onCompetition(): void {

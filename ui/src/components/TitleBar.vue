@@ -3,7 +3,7 @@
 
 <template>
   <header id="titlebar" data-tauri-drag-region>
-    <span class="titlebar-label">Manuscript Intel</span>
+    <span class="titlebar-label" data-tauri-drag-region>Manuscript Intel</span>
   </header>
 </template>
 
@@ -25,5 +25,6 @@
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--text-muted);
+  pointer-events: none;
 }
 </style>

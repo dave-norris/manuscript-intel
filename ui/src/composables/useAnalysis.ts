@@ -65,17 +65,18 @@ function getSettings() {
   };
 }
 
-async function runAnalyze(folder: string, forceResummarize: boolean): Promise<void> {
+async function runAnalyze(folder: string, forceResummarize: boolean, platform: string): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
   const { provider, apiKey, model, canopyApiKey } = getSettings();
   if (!apiKey) { appendLog('✗ No API key set. Go to Settings.'); return; }
   if (!model) { appendLog('✗ No model selected. Go to Settings and fetch models.'); return; }
 
-  appendLog(`Running full analysis pipeline... [${provider}: ${model}]${forceResummarize ? ' (force re-summarize)' : ''}`);
+  const pipelineLabel = platform === 'wide' ? 'Wide distribution' : 'KDP';
+  appendLog(`Running ${pipelineLabel} analysis pipeline... [${provider}: ${model}]${forceResummarize ? ' (force re-summarize)' : ''}`);
   isWorking.value = true;
   try {
     const result = await invoke<GenreResult>('analyze_story', {
-      request: { folder, api_key: apiKey, model, provider, force_resummarize: forceResummarize, canopy_api_key: canopyApiKey },
+      request: { folder, api_key: apiKey, model, provider, force_resummarize: forceResummarize, canopy_api_key: canopyApiKey, platform },
     });
     if (result.success) {
       appendLog('✓ Analysis complete. View reports in the sidebar.');

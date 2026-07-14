@@ -750,6 +750,21 @@ html, body {
   gap: 6px;
   align-items: center;
 }
+.btn-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 4px;
+}
+.btn-close:hover {
+  color: var(--text);
+  background: var(--surface2);
+}
 .btn-danger {
   background: #c0392b;
   color: #fff;

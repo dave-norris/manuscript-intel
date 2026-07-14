@@ -772,6 +772,10 @@ $btn('btn-reports-delete').addEventListener('click', async () => {
   }
 });
 
+$btn('btn-reports-close').addEventListener('click', () => {
+  showPanel('analyzer');
+});
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 loadSettings();

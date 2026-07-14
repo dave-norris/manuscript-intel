@@ -1,0 +1,100 @@
+// ── Shared types for Manuscript Intel UI ──────────────────────────────────────
+
+export interface Story {
+  id: string;
+  name: string;
+  folder: string;
+  created: string;
+}
+
+export interface StoriesResult {
+  success: boolean;
+  stories: Story[];
+  error: string;
+}
+
+export interface GenreResult {
+  success: boolean;
+  report: string;
+  error: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  owned_by: string;
+  input_price: number | null;
+  output_price: number | null;
+}
+
+export interface ModelsResult {
+  success: boolean;
+  models: ModelInfo[];
+  error: string;
+}
+
+export interface AnalysisState {
+  has_folder: boolean;
+  summary_count: number;
+  has_genre_data: boolean;
+  has_full_report: boolean;
+  has_keywords: boolean;
+  has_search_terms: boolean;
+  has_competition: boolean;
+  has_categories: boolean;
+  has_genre_ranking: boolean;
+  has_mapped_verified: boolean;
+  has_bisac: boolean;
+  has_discovery_keywords: boolean;
+  has_keyword_search_results: boolean;
+}
+
+export interface Settings {
+  provider: string;
+  apiKey: string;
+  model: string;
+  canopyApiKey: string;
+}
+
+export interface DocMeta {
+  doc_type: string;
+  label: string;
+  generated_at: string;
+}
+
+export interface SavedReportMeta {
+  id: number;
+  doc_type: string;
+  version: number;
+  label: string;
+  saved_at: string;
+}
+
+export interface ReportEnvelope {
+  doc_type: string;
+  label: string;
+  format: string;
+  content: string;
+  generated_at: string;
+}
+
+export interface LogLine {
+  type: string;
+  icon: string;
+  text: string;
+}
+
+export interface WinningCatImportResult {
+  success: boolean;
+  imported: number;
+  skipped_other_department: number;
+  skipped_unparseable: number;
+  stale_count: number;
+  imported_at: string;
+  error: string;
+}
+
+export interface StaleCleanupResult {
+  success: boolean;
+  removed: number;
+  error: string;
+}

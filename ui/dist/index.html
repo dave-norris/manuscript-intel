@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Manuscript Intel</title>
-    <script type="module" crossorigin src="/assets/index-rUNjC4k3.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-x13e0Q-Q.css">
+    <script type="module" crossorigin src="/assets/index-ClK_Gnmk.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DmmAgiRV.css">
   </head>
   <body>
     <div id="app">
@@ -59,10 +59,10 @@
           <!-- Primary action buttons -->
           <div class="analyzer-actions">
             <div class="analyzer-primary">
-              <button class="btn btn-action-primary" id="btn-analyze" disabled>&#9654; Analyze</button>
+              <button class="btn btn-action-primary" id="btn-analyze" disabled title="Run the full analysis pipeline: chapter summaries, genre classification, KDP categories, BISAC codes, and keyword optimization">&#9654; Get Reports</button>
               <label class="force-resummarize-label"><input type="checkbox" id="force-resummarize" /> Force re-summarize</label>
               <div class="competition-wrapper">
-                <button class="btn btn-action-comp" id="btn-analyze-competition" disabled>&#9654; Analyze Competition</button>
+                <button class="btn btn-action-comp" id="btn-analyze-competition" disabled title="Search Amazon for competing books using your search terms, then produce a competition analysis report">&#9654; Analyze Competition</button>
                 <div class="store-selector" id="competition-store-row">
                   <label class="store-label">Competition Store</label>
                   <div class="store-options">
@@ -71,11 +71,15 @@
                   </div>
                 </div>
               </div>
-              <button class="btn btn-action-stop" id="btn-stop" style="display:none">&#x23F9; Stop</button>
+              <button class="btn btn-action-stop" id="btn-stop" style="display:none" title="Stop the current operation immediately">&#x23F9; Stop</button>
             </div>
             <div class="analyzer-secondary">
-              <button class="btn btn-sm" id="btn-mine-reviews" disabled>Mine Reviews</button>
-              <button class="btn btn-sm" id="btn-author-analysis" disabled>Author Analysis</button>
+              <button class="btn btn-sm" id="btn-mine-reviews" disabled title="Pull reviews from top competitor books and extract reader insights, language patterns, and gap opportunities">Mine Reviews</button>
+              <button class="btn btn-sm" id="btn-author-analysis" disabled title="Analyze competitor authors' catalogs — release cadence, pricing, series strategy">Author Analysis</button>
+            </div>
+            <div class="activity-indicator" id="activity-indicator" style="display:none">
+              <span class="spinner"></span>
+              <span class="activity-text">Working...</span>
             </div>
           </div>
 

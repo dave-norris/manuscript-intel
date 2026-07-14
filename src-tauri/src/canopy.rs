@@ -913,22 +913,27 @@ pub async fn mine_competitor_reviews(app: AppHandle, request: ReviewMiningReques
         emit_canopy(&app, &format!("  \"{}\"", title));
         // Get positive and negative reviews
         let mut book_reviews = Vec::new();
-        if let Ok(reviews) = client.get_reviews(asin, "US", 1, Some(5)).await {
-            book_reviews.extend(reviews.into_iter().take(5));
+        match client.get_reviews(asin, "US", 1, Some(5)).await {
+            Ok(reviews) => book_reviews.extend(reviews.into_iter().take(5)),
+            Err(e) => emit_canopy(&app, &format!("    ⚠ 5-star reviews failed: {}", e)),
         }
         sleep(Duration::from_millis(150)).await;
-        if let Ok(reviews) = client.get_reviews(asin, "US", 1, Some(1)).await {
-            book_reviews.extend(reviews.into_iter().take(3));
+        match client.get_reviews(asin, "US", 1, Some(1)).await {
+            Ok(reviews) => book_reviews.extend(reviews.into_iter().take(3)),
+            Err(e) => emit_canopy(&app, &format!("    ⚠ 1-star reviews failed: {}", e)),
         }
         sleep(Duration::from_millis(150)).await;
-        if let Ok(reviews) = client.get_reviews(asin, "US", 1, Some(3)).await {
-            book_reviews.extend(reviews.into_iter().take(3));
+        match client.get_reviews(asin, "US", 1, Some(3)).await {
+            Ok(reviews) => book_reviews.extend(reviews.into_iter().take(3)),
+            Err(e) => emit_canopy(&app, &format!("    ⚠ 3-star reviews failed: {}", e)),
         }
         sleep(Duration::from_millis(150)).await;
 
         if !book_reviews.is_empty() {
             emit_canopy(&app, &format!("    {} reviews collected.", book_reviews.len()));
             all_reviews.push((title.clone(), book_reviews));
+        } else {
+            emit_canopy(&app, "    ✗ No reviews returned for this book.");
         }
     }
 

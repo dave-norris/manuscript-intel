@@ -436,6 +436,7 @@ function disableGenreButtons(disabled: boolean): void {
     if (el) el.disabled = disabled;
   });
   ($('btn-stop') as HTMLElement).style.display = disabled ? 'flex' : 'none';
+  ($('activity-indicator') as HTMLElement).style.display = disabled ? 'flex' : 'none';
   if (!disabled) {
     const f = getActiveFolder();
     if (f) refreshAnalysisState(f);
@@ -653,18 +654,41 @@ async function loadReportsList(): Promise<void> {
       return;
     }
 
+    const reportDescriptions: Record<string, string> = {
+      'analysis': 'Combined analysis: categories, BISAC, keywords, and positioning — all in one report.',
+      'genres_and_categories': 'Genre ranking with KDP category matching for both Kindle and Paperback.',
+      'genre_analysis': 'Industry genre classification, KDP paths, comps, and reader demographic.',
+      'full_report': 'Genre analysis with competition status.',
+      'kdp_keywords': 'The 7 keyword strings optimized for KDP discoverability.',
+      'mi_search_terms': 'Short search phrases used for competition and review analysis.',
+      'competition_report': 'Market landscape: how competitive the niche is, who dominates, pricing.',
+      'category_finder': 'Category matching results with live discoverability scores.',
+      'genre_ranking': 'Each genre scored independently against the manuscript.',
+      'bisac_classification': 'BISAC subject codes for KDP Print and Ingram distribution.',
+      'review_mining': 'Reader insights extracted from competitor book reviews.',
+      'author_analysis': 'Competitor author catalog strategy: pricing, release cadence, series.',
+      'chapter_summaries': 'Genre signal extraction from each chapter of the manuscript.',
+      'discovery_keywords': 'Keyword phrases for non-Amazon platforms (Apple, Kobo, Google, etc.).',
+      'keyword_search': 'Amazon keyword volume and competition data from Canopy API.',
+      'mapped_categories': 'Verified KDP category paths with live bestseller stats.',
+    };
+
+    // Group reports by type, count them
+    const currentCount = docs.length;
+    const savedCount = saved.length;
+
     // Current reports
     if (docs.length > 0) {
       const header = document.createElement('div');
       header.className = 'sidebar-section-header';
-      header.textContent = 'Current';
+      header.innerHTML = `Current <span class="report-count">${currentCount}</span>`;
       list.appendChild(header);
 
       docs.forEach(doc => {
         const item = document.createElement('div');
         item.className = 'sidebar-report-item';
         item.textContent = doc.label;
-        item.title = new Date(doc.generated_at).toLocaleString();
+        item.title = reportDescriptions[doc.doc_type] || new Date(doc.generated_at).toLocaleString();
         item.addEventListener('click', () => openReport(folder, doc.doc_type, doc.label));
         list.appendChild(item);
       });
@@ -674,7 +698,7 @@ async function loadReportsList(): Promise<void> {
     if (saved.length > 0) {
       const header = document.createElement('div');
       header.className = 'sidebar-section-header';
-      header.textContent = 'Saved';
+      header.innerHTML = `Saved <span class="report-count">${savedCount}</span>`;
       list.appendChild(header);
 
       saved.forEach(s => {

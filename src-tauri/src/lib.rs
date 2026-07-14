@@ -1,10 +1,9 @@
+mod analysis;
 mod cancel;
-#[allow(dead_code)]
 mod canopy;
 mod commands;
 mod competition_analyzer;
 mod db;
-mod genre_analyzer;
 mod genre_taxonomy;
 mod models;
 mod stories;
@@ -30,21 +29,21 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::analyze_csv,
             commands::list_models,
-            genre_analyzer::pick_manuscript_folder,
-            genre_analyzer::generate_summaries,
-            genre_analyzer::run_everything,
-            genre_analyzer::analyze_genre,
-            genre_analyzer::run_full_analysis,
-            genre_analyzer::optimize_keywords,
-            genre_analyzer::generate_search_terms,
-            genre_analyzer::check_analysis_state,
-            genre_analyzer::find_categories_for_story,
-            genre_analyzer::match_categories_for_story,
-            genre_analyzer::classify_bisac_for_story,
-            genre_analyzer::find_genres_and_categories_for_story,
-            genre_analyzer::analyze_story,
-            genre_analyzer::rank_genres_for_story,
-            genre_analyzer::verify_mapped_categories,
+            analysis::chapters::generate_summaries,
+            analysis::genres::analyze_genre,
+            analysis::genres::rank_genres_for_story,
+            analysis::categories::find_categories_for_story,
+            analysis::categories::match_categories_for_story,
+            analysis::categories::verify_mapped_categories,
+            analysis::bisac::classify_bisac_for_story,
+            analysis::keywords::generate_search_terms,
+            analysis::keywords::optimize_keywords,
+            analysis::pipeline::pick_manuscript_folder,
+            analysis::pipeline::check_analysis_state,
+            analysis::pipeline::run_everything,
+            analysis::pipeline::run_full_analysis,
+            analysis::pipeline::find_genres_and_categories_for_story,
+            analysis::pipeline::analyze_story,
             genre_taxonomy::get_genre_taxonomy,
             db::list_genres_cmd,
             db::add_kdp_path_cmd,

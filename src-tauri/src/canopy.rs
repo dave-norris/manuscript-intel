@@ -317,50 +317,6 @@ impl CanopyClient {
 
 // ── Author ────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthorBook {
-    pub asin: String,
-    pub title: String,
-    pub price: Option<f64>,
-    pub rating: Option<f64>,
-    pub review_count: Option<u32>,
-    pub image_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuthorInfo {
-    pub name: String,
-    pub asin: String,
-    pub books: Vec<AuthorBook>,
-}
-
-impl CanopyClient {
-    /// Fetch an author's page and their book catalog.
-    pub fn get_author(&self, author_asin: &str, domain: &str, page: u32) -> Result<AuthorInfo, String> {
-        let page_str = page.to_string();
-        let resp = self.get("/api/amazon/author", &[
-            ("asin", author_asin), ("domain", domain), ("page", &page_str),
-        ])?;
-
-        let author = &resp["data"]["amazonAuthor"];
-        let name = author["name"].as_str().unwrap_or("").to_string();
-
-        let books: Vec<AuthorBook> = match author["bookResults"]["results"].as_array() {
-            Some(arr) => arr.iter().map(|b| AuthorBook {
-                asin: b["asin"].as_str().unwrap_or("").to_string(),
-                title: b["title"].as_str().unwrap_or("").to_string(),
-                price: b["price"]["value"].as_f64(),
-                rating: b["rating"].as_f64(),
-                review_count: b["ratingsTotal"].as_u64().map(|n| n as u32),
-                image_url: b["mainImageUrl"].as_str().map(|s| s.to_string()),
-            }).collect(),
-            None => Vec::new(),
-        };
-
-        Ok(AuthorInfo { name, asin: author_asin.to_string(), books })
-    }
-}
-
 // ── Category Taxonomy ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

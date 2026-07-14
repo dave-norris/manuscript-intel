@@ -478,6 +478,16 @@ function renderKdpCategoriesSection(data: any): string {
         <td>${sales}</td>
         <td>${esc((c.agreeing_genres || []).join(', '))}</td>
       </tr>`;
+      // Top bestsellers for this category
+      const books: any[] = c.top_books || [];
+      if (books.length) {
+        html += `<tr><td colspan="5" class="top-books-cell">`;
+        for (const b of books) {
+          const img = b.image_url ? `<img src="${esc(b.image_url)}" height="50" /> ` : '';
+          html += `<a href="https://www.amazon.com/dp/${esc(b.asin)}" class="top-book-link">${img}${esc(b.title)}</a>`;
+        }
+        html += `</td></tr>`;
+      }
     }
     html += `</tbody></table>`;
   }

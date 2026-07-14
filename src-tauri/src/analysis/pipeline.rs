@@ -673,6 +673,11 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                 "verified": q.verified,
                 "is_bonus": i >= 3,
                 "agreeing_genres": q.agreeing_genres,
+                "top_books": q.top_books.iter().map(|b| serde_json::json!({
+                    "title": b.title,
+                    "asin": b.asin,
+                    "image_url": b.image_url,
+                })).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
         }));
 

@@ -43,7 +43,7 @@ interface AnalysisState {
   has_genre_data: boolean;
   has_full_report: boolean;
   has_keywords: boolean;
-  has_pr_keywords: boolean;
+  has_search_terms: boolean;
   has_competition: boolean;
   has_categories: boolean;
   has_genre_ranking: boolean;
@@ -448,18 +448,76 @@ async function refreshAnalysisState(folder: string): Promise<void> {
   try {
     const s = await invoke<AnalysisState>('check_analysis_state', { folder });
     $btn('btn-analyze').disabled = false;
-    $btn('btn-analyze-competition').disabled = !s.has_pr_keywords;
-    $btn('btn-mine-reviews').disabled = !s.has_pr_keywords;
-    $btn('btn-author-analysis').disabled = !s.has_pr_keywords;
+    $btn('btn-analyze-competition').disabled = !s.has_search_terms;
+    $btn('btn-mine-reviews').disabled = !s.has_search_terms;
+    $btn('btn-author-analysis').disabled = !s.has_search_terms;
   } catch (e) { console.error('check_analysis_state:', e); }
 }
 
 // ── Analyzer output ───────────────────────────────────────────────────────────
 
+function classifyLogLine(msg: string): { type: string; icon: string; text: string } {
+  const trimmed = msg.trimStart();
+
+  // Success
+  if (trimmed.startsWith('✓')) {
+    return { type: 'log-success', icon: '✓', text: trimmed.slice(1).trim() };
+  }
+  // Error
+  if (trimmed.startsWith('✗')) {
+    return { type: 'log-error', icon: '✗', text: trimmed.slice(1).trim() };
+  }
+  // Warning
+  if (trimmed.startsWith('⚠')) {
+    return { type: 'log-warn', icon: '⚠', text: trimmed.slice(1).trim() };
+  }
+  // Sub-item arrow
+  if (trimmed.startsWith('→')) {
+    return { type: 'log-item', icon: '→', text: trimmed.slice(1).trim() };
+  }
+  // Step / Phase headers
+  if (/^(Step \d|Phase \d|Running |Analyzing |Mining |Syncing )/i.test(trimmed)) {
+    return { type: 'log-step', icon: '', text: trimmed };
+  }
+  // Completion summaries
+  if (/complete\.?$|complete —|done\.?$/i.test(trimmed)) {
+    return { type: 'log-done', icon: '', text: trimmed };
+  }
+  // Indented detail lines
+  if (msg.startsWith('    ') || msg.startsWith('\t\t')) {
+    return { type: 'log-detail', icon: '', text: trimmed };
+  }
+  // Default info
+  return { type: 'log-info', icon: '', text: trimmed };
+}
+
+function renderLogLine(msg: string): HTMLElement {
+  const { type, icon, text } = classifyLogLine(msg);
+  const line = document.createElement('div');
+  line.className = `log-line ${type}`;
+
+  // Render backtick-wrapped text as inline code
+  const rendered = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  if (icon) {
+    line.innerHTML = `<span class="log-icon">${icon}</span><span class="log-text">${rendered}</span>`;
+  } else {
+    line.innerHTML = `<span class="log-text">${rendered}</span>`;
+  }
+
+  return line;
+}
+
 function appendGenreLog(msg: string): void {
   const el = $('genre-log-output');
-  el.textContent += (el.textContent ? '\n' : '') + msg;
-  el.scrollTop = el.scrollHeight;
+  const pane = $('genre-log-pane');
+  const wasAtBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 30;
+
+  el.appendChild(renderLogLine(msg));
+
+  if (wasAtBottom) {
+    pane.scrollTop = pane.scrollHeight;
+  }
 }
 
 // ── Analyze handler ───────────────────────────────────────────────────────────
@@ -512,7 +570,7 @@ $btn('btn-analyze-competition').addEventListener('click', async () => {
 // ── Output actions ────────────────────────────────────────────────────────────
 
 $btn('btn-clear-genre-log').addEventListener('click', () => {
-  $('genre-log-output').textContent = '';
+  $('genre-log-output').innerHTML = '';
 });
 
 // ── New feature buttons ───────────────────────────────────────────────────────

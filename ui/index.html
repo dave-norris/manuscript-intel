@@ -85,7 +85,7 @@
               <button class="clear-log" id="btn-clear-genre-log">Clear</button>
             </div>
             <div class="output-pane" id="genre-log-pane">
-              <pre id="genre-log-output"></pre>
+              <div id="genre-log-output" class="log-stream"></div>
             </div>
           </div>
         </div>
@@ -173,7 +173,7 @@
           <div class="settings-form" style="margin-top:24px;border-top:1px solid var(--border);padding-top:20px">
             <label>Category Data</label>
             <p class="panel-desc" style="margin:0 0 8px">
-              Import the WinningCat Amazon category dataset to populate the KDP category map with real, ID-backed paths for Books and Kindle Store. Existing entries verified live in Publisher Rocket are never downgraded.
+              Import the WinningCat Amazon category dataset to populate the KDP category map with real, ID-backed paths for Books and Kindle Store. Existing verified entries are never downgraded.
             </p>
             <button class="btn btn-sm" id="btn-import-winningcat">Import WinningCat CSV…</button>
             <span id="winningcat-import-status" class="model-hint"></span>

@@ -564,6 +564,96 @@ html, body {
   white-space: pre-wrap; color: var(--text-muted); line-height: 1.6;
   user-select: text;
 }
+
+/* ── Modern log stream ── */
+.log-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  user-select: text;
+}
+
+.log-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 3px 10px;
+  border-radius: 4px;
+  animation: log-slide-in 0.2s ease-out;
+}
+
+@keyframes log-slide-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.log-icon {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.log-text {
+  flex: 1;
+  word-break: break-word;
+}
+
+.log-text code {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 11px;
+  color: var(--text);
+}
+
+/* Line types */
+.log-step {
+  color: var(--text);
+  font-weight: 600;
+  margin-top: 8px;
+  padding: 5px 10px;
+  background: rgba(232, 97, 44, 0.08);
+  border-left: 3px solid var(--accent);
+}
+
+.log-success .log-icon { color: var(--success); }
+.log-success .log-text { color: var(--success); }
+.log-success { background: rgba(76, 175, 125, 0.06); }
+
+.log-error .log-icon { color: var(--danger); }
+.log-error .log-text { color: var(--danger); }
+.log-error { background: rgba(207, 102, 121, 0.08); }
+
+.log-warn .log-icon { color: #f5a623; }
+.log-warn .log-text { color: #dda040; }
+.log-warn { background: rgba(245, 166, 35, 0.06); }
+
+.log-item {
+  color: var(--text);
+  padding-left: 20px;
+}
+.log-item .log-icon { color: var(--accent); }
+
+.log-detail {
+  color: var(--text-muted);
+  padding-left: 32px;
+  font-size: 11px;
+}
+
+.log-info {
+  color: var(--text-muted);
+}
+
+.log-done {
+  color: var(--text);
+  font-weight: 500;
+  margin-bottom: 4px;
+}
 #markdown-output, #csv-markdown-output {
   font-size: 13px; line-height: 1.7;
   white-space: pre-wrap; user-select: text;

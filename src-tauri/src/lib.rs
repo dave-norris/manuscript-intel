@@ -1,14 +1,11 @@
 mod cancel;
 #[allow(dead_code)]
 mod canopy;
-mod cdp;
 mod commands;
-mod category_finder;
 mod competition_analyzer;
 mod db;
 mod genre_analyzer;
 mod genre_taxonomy;
-mod keyword_search;
 mod models;
 mod stories;
 mod winningcat;
@@ -31,11 +28,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::check_rocket_status,
-            commands::launch_rocket,
-            commands::analyze_categories,
             commands::analyze_csv,
-            commands::find_categories,
             commands::list_models,
             genre_analyzer::pick_manuscript_folder,
             genre_analyzer::generate_summaries,
@@ -43,7 +36,7 @@ pub fn run() {
             genre_analyzer::analyze_genre,
             genre_analyzer::run_full_analysis,
             genre_analyzer::optimize_keywords,
-            genre_analyzer::generate_pr_keywords,
+            genre_analyzer::generate_search_terms,
             genre_analyzer::check_analysis_state,
             genre_analyzer::find_categories_for_story,
             genre_analyzer::match_categories_for_story,
@@ -63,8 +56,6 @@ pub fn run() {
             db::delete_saved_report_cmd,
             winningcat::import_winningcat_csv,
             winningcat::remove_stale_kdp_categories,
-            keyword_search::search_pr_keywords,
-            competition_analyzer::analyze_competition,
             cancel::cancel_operation,
             canopy::test_canopy_connection,
             canopy::analyze_categories_canopy,

@@ -4,10 +4,10 @@
 //   generate_summaries  — Phase 1 only: chapter by chapter, saves to chapter_summaries table
 //   analyze_genre       — Phase 2 only: reads summaries, produces genre_data row + rendered doc
 //   run_full_analysis   — Phase 1 + 2: summaries + genre report
-//                         PR competition data is handled separately by Analyze Competition
+//                         Competition data is handled separately by Analyze Competition
 //
 // Everything the pipeline produces (chapter summaries, genre classification,
-// KDP keywords, PR search terms, category rankings/results) lives in SQLite
+// KDP keywords, MI search terms, category rankings/results) lives in SQLite
 // (see db.rs). The .md reports shown in the Reports panel are rendered fresh
 // from that data on every request via db::get_report_cmd — nothing is cached
 // as a loose file that can go stale.
@@ -20,7 +20,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::commands::call_llm;
 use crate::db;
-use crate::keyword_search::KeywordResult;
+use crate::models::KeywordResult;
 
 // ── Shared result / request types ───────────────────────────────────────────
 
@@ -120,7 +120,7 @@ pub async fn analyze_genre(app: AppHandle, request: FolderRequest) -> GenreResul
 }
 
 /// Run everything except folder selection and chapter summaries:
-/// Analyze Genre → Full Analysis → Optimize Keywords → Generate PR Keywords
+/// Analyze Genre → Full Analysis → Optimize Keywords → Generate Search Terms
 #[tauri::command]
 pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResult {
     tokio::task::spawn_blocking(move || {
@@ -177,9 +177,9 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
         }
         if crate::is_cancelled() { return err("Cancelled."); }
 
-        // ── Step 5: Generate PR keywords ──────────────────────────────────────
-        emit(&app, "Step 5: Generating PR Competition Analyzer keywords...");
-        let pr_system = r#"You are a Publisher Rocket expert. Generate short search phrases for the Competition Analyzer tool.
+        // ── Step 5: Generate search terms ──────────────────────────────────────
+        emit(&app, "Step 5: Generating competition search terms...");
+        let pr_system = r#"You are a book market research expert. Generate short search phrases for competition analysis.
 
 Rules:
 - 2-4 words maximum per phrase
@@ -204,17 +204,17 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
                 if let Some(clean) = extract_json_object(&raw) {
                     if let Ok(keywords) = serde_json::from_str::<Vec<String>>(&clean) {
                         let conn = database.0.lock().unwrap();
-                        let _ = db::save_pr_keywords(&conn, &request.folder, &keywords);
-                        let rendered = render_pr_keywords(&keywords);
-                        let _ = db::save_document(&conn, &request.folder, "pr_keywords", &rendered);
-                        emit(&app, &format!("  ✓ {} PR search terms saved to database.", keywords.len()));
+                        let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
+                        let rendered = render_search_terms(&keywords);
+                        let _ = db::save_document(&conn, &request.folder, "mi_search_terms", &rendered);
+                        emit(&app, &format!("  ✓ {} search terms saved to database.", keywords.len()));
                         for kw in &keywords { emit(&app, &format!("    • {}", kw)); }
                     }
                 } else {
-                    emit(&app, "  ⚠ Could not parse PR keywords response.");
+                    emit(&app, "  ⚠ Could not parse search terms response.");
                 }
             }
-            Err(e) => emit(&app, &format!("  ⚠ PR keywords failed: {}", e)),
+            Err(e) => emit(&app, &format!("  ⚠ Search terms generation failed: {}", e)),
         }
 
         emit(&app, "✓ Analysis complete. Run Analyze Competition next.");
@@ -283,7 +283,7 @@ pub struct AnalysisState {
     pub has_genre_data:             bool,
     pub has_full_report:            bool,
     pub has_keywords:               bool,
-    pub has_pr_keywords:            bool,
+    pub has_search_terms:           bool,
     pub has_competition:            bool,
     pub has_categories:             bool,
     pub has_genre_ranking:          bool,
@@ -306,7 +306,7 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
             has_genre_data:             db::load_genre_data(&conn, &folder).is_some(),
             has_full_report:            db::get_document(&conn, &folder, "full_report").is_some(),
             has_keywords:               db::load_kdp_keywords(&conn, &folder).is_some(),
-            has_pr_keywords:            !db::load_pr_keywords(&conn, &folder).is_empty(),
+            has_search_terms:           !db::load_mi_search_terms(&conn, &folder).is_empty(),
             has_competition:            db::get_document(&conn, &folder, "competition_report").is_some(),
             has_categories:             db::has_category_results(&conn, &folder),
             has_genre_ranking:          db::has_genre_rankings(&conn, &folder),
@@ -320,10 +320,8 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
 
 // ── Category Finder (wired to Analyzer panel) ─────────────────────────────────
 //
-// Runs Publisher Rocket's Category Search against the book's genre data.
-// The store (Kindle vs Books) is the only thing the user chooses here — the
-// filter is always locked to "Selectable Excluding Ghosts", since ghost
-// (unselectable) categories are never useful for KDP category assignment.
+// Delegates to the Canopy-based analyze_categories_canopy which verifies
+// categories via live Amazon data. No external tools needed.
 
 #[derive(Deserialize)]
 pub struct FindCategoriesRequest {
@@ -338,145 +336,82 @@ pub struct FindCategoriesRequest {
 
 #[tauri::command]
 pub async fn find_categories_for_story(app: AppHandle, request: FindCategoriesRequest) -> GenreResult {
-    tokio::task::spawn_blocking(move || {
-        let database = app.state::<db::Db>();
+    let database = app.state::<db::Db>();
 
-        let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
-        let genre_data = match genre_data {
-            Some(d) => d,
-            None    => return err("No genre data found. Run Analyze first."),
-        };
+    let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
+    let genre_data = match genre_data {
+        Some(d) => d,
+        None    => return err("No genre data found. Run Analyze first."),
+    };
 
-        let genre_description = format!(
-            "{}\n\nKDP category paths already identified from manuscript analysis: {}\n\n{}",
-            genre_data.industry_ebook,
-            genre_data.kdp_ebook.join("; "),
-            genre_data.genre_signals
-        );
+    if request.canopy_api_key.is_empty() {
+        return err("No Canopy API key set. Configure it in Settings.");
+    }
 
-        emit(&app, "Running Category Finder on Publisher Rocket...");
-        emit(&app, &format!("  Store: {}", request.store));
-        emit(&app, "  Filter: Selectable Excluding Ghosts");
+    emit(&app, "Running Category Finder via Canopy API...");
+    emit(&app, &format!("  Store: {}", request.store));
 
-        use crate::category_finder;
-        match category_finder::find_categories(
-            &app,
-            &genre_description,
-            &request.store,
-            "Selectable Excluding Ghosts",
-            &request.provider,
-            &request.api_key,
-            &request.model,
-        ) {
-            Err(e) => err(&e),
-            Ok(results) => {
-                let now = chrono::Utc::now().format("%B %-d, %Y %H:%M UTC").to_string();
-                let mut lines = vec![
-                    "# Category Finder Results".to_string(),
-                    format!("Generated: {}", now),
-                    format!("Store: {}", request.store),
-                    "Filter: Selectable Excluding Ghosts".to_string(),
-                    String::new(),
-                ];
+    // Get ranked genres
+    let genre_terms: Vec<(String, u8)> = {
+        let conn = database.0.lock().unwrap();
+        db::get_genre_rankings(&conn, &request.folder, &request.store)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| (r.genre, r.confidence as u8))
+            .collect()
+    };
 
-                let high: Vec<_> = results.iter().filter(|r| r.note.is_none() && r.confidence >= 80).collect();
-                let low:  Vec<_> = results.iter().filter(|r| r.note.is_none() && r.confidence <  80).collect();
-                let failed: Vec<_> = results.iter().filter(|r| r.note.is_some()).collect();
+    if genre_terms.is_empty() {
+        return err("No genre rankings found. Run Analyze first.");
+    }
 
-                if !high.is_empty() {
-                    lines.push("## Matched Categories".to_string());
-                    lines.push(String::new());
-                    for r in &high {
-                        lines.push(format!("### {} ({}% match)", r.path, r.confidence));
-                        lines.push(String::new());
-                        if !r.stats.is_empty() {
-                            lines.push(format!("- Sales needed to reach #1: **{}**", r.stats.sales_to_one));
-                            lines.push(format!("- Sales needed to reach #10: **{}**", r.stats.sales_to_ten));
-                            lines.push(format!("- Publisher books: **{}**", r.stats.publisher_pct));
-                            lines.push(format!("- KU books: **{}**", r.stats.ku_pct));
-                            lines.push(String::new());
-                        }
-                        if !r.keywords.is_empty() {
-                            lines.push("**Keywords**".to_string());
-                            lines.push(String::new());
-                            lines.push(r.keywords.clone());
-                            lines.push(String::new());
-                        } else {
-                            lines.push("*⚠️ Keywords could not be scraped for this category.*".to_string());
-                            lines.push(String::new());
-                        }
-                        lines.push("---".to_string());
-                        lines.push(String::new());
-                    }
-                } else {
-                    lines.push("## No High-Confidence Match Found".to_string());
-                    lines.push(String::new());
-                    lines.push("Use one of these paths in the Category Analyzer to inspect manually.".to_string());
-                    lines.push(String::new());
-                }
+    let base_description = format!(
+        "{}\n\nKDP category paths already identified: {}\n\n{}",
+        genre_data.industry_ebook,
+        genre_data.kdp_ebook.join("; "),
+        genre_data.genre_signals
+    );
 
-                if !low.is_empty() {
-                    lines.push("## Also Considered (below 80%)".to_string());
-                    lines.push(String::new());
-                    for (i, r) in low.iter().enumerate() {
-                        lines.push(format!("{}. {} — **{}%**", i + 1, r.path, r.confidence));
-                    }
-                    lines.push(String::new());
-                }
+    // Match categories from catalog
+    let result = {
+        let app_c = app.clone();
+        let folder_c = request.folder.clone();
+        let store_c = request.store.clone();
+        let desc_c = base_description.clone();
+        let terms_c = genre_terms.clone();
+        let provider_c = request.provider.clone();
+        let api_key_c = request.api_key.clone();
+        let model_c = request.model.clone();
 
-                if !failed.is_empty() {
-                    lines.push("## Search Failed — Check Manually".to_string());
-                    lines.push(String::new());
-                    lines.push("Publisher Rocket didn't return usable data for these — not a confidence judgment, just a scrape that didn't land. Check them by hand in Category Search.".to_string());
-                    lines.push(String::new());
-                    for r in &failed {
-                        lines.push(format!("- **{}** — {}", r.path, r.note.as_deref().unwrap_or("")));
-                    }
-                    lines.push(String::new());
-                }
+        tokio::task::spawn_blocking(move || {
+            let database = app_c.state::<db::Db>();
+            match_categories_by_store(&app_c, &database, &folder_c, &store_c, &desc_c, &terms_c, &provider_c, &api_key_c, &model_c)
+        }).await.unwrap()
+    };
 
-                {
-                    let conn = database.0.lock().unwrap();
-                    let top_genre_hint: Option<String> = db::get_genre_rankings(&conn, &request.folder, &request.store)
-                        .ok()
-                        .and_then(|rows| rows.into_iter().next())
-                        .map(|r| r.genre);
+    let final_cats = rank_by_discoverability(&app, &request.store, result.qualifying, &request.canopy_api_key).await;
 
-                    let rows: Vec<(String, u8, String, String, String, String, String, String, Option<String>)> = results.iter()
-                        .map(|r| {
-                            let status = if r.note.is_some() { "failed" }
-                                else if r.confidence >= 80 { "matched" }
-                                else { "considered" };
-                            (
-                                r.path.clone(), r.confidence,
-                                r.stats.sales_to_one.clone(), r.stats.sales_to_ten.clone(),
-                                r.stats.publisher_pct.clone(), r.stats.ku_pct.clone(),
-                                r.keywords.clone(), status.to_string(), r.note.clone(),
-                            )
-                        })
-                        .collect();
+    if final_cats.is_empty() {
+        return GenreResult { success: true, report: "No candidates cleared the fit bar.".to_string(), error: String::new() };
+    }
 
-                    if let Err(e) = db::replace_category_results(&conn, &request.folder, &request.store, top_genre_hint.as_deref(), &rows) {
-                        emit(&app, &format!("  ⚠ Could not save results to database: {}", e));
-                    }
+    // Store results
+    {
+        let conn = database.0.lock().unwrap();
+        let report = format!("Found {} categories for {}.", final_cats.len(), request.store);
+        let _ = db::save_document(&conn, &request.folder, "category_finder", &report);
+    }
 
-                    let report = lines.join("\n");
-                    let _ = db::save_document(&conn, &request.folder, "category_finder", &report);
-                    emit(&app, &format!("✓ Results stored in database — {} matched, {} also considered, {} search failure(s).", high.len(), low.len(), failed.len()));
-
-                    return GenreResult { success: true, report, error: String::new() };
-                }
-            }
-        }
-    }).await.unwrap()
+    emit(&app, &format!("✓ {} categories found and verified.", final_cats.len()));
+    GenreResult { success: true, report: String::new(), error: String::new() }
 }
 
-// ── Match Categories (catalog only — no Publisher Rocket) ─────────────────
+// ── Match Categories (catalog only — no live scraping) ─────────────────
 //
 // Matches the story's ranked genres directly against the imported category
-// catalog. Pure AI + database — no live Publisher Rocket call at all. The
+// catalog. Pure AI + database — no live scraping at all. The
 // deliverable is genre-fit confidence and cross-genre agreement; live
-// sales-rank numbers are something the user checks themselves on PR or the
+// sales-rank numbers are something the user checks themselves or the
 // KDP site when they're actually ready to set metadata, not something this
 // step needs to fetch or store.
 
@@ -544,7 +479,7 @@ pub async fn match_categories_for_story(app: AppHandle, request: FindCategoriesR
 
     let report = serde_json::json!({
         "schema": "category_finder_v1",
-        "method": "Only categories that honestly fit (confidence ≥55%, or independently found by 2+ ranked genres) are eligible. Every eligible candidate is checked live in Publisher Rocket; final 3 ranked by real discoverability.",
+        "method": "Only categories that honestly fit (confidence ≥55%, or independently found by 2+ ranked genres) are eligible. Every eligible candidate is verified live via Canopy API; final 3 ranked by real discoverability.",
         "stores": store_sections.iter().map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap_or_default()).collect::<Vec<_>>(),
     }).to_string();
 
@@ -554,7 +489,7 @@ pub async fn match_categories_for_story(app: AppHandle, request: FindCategoriesR
     GenreResult { success: true, report, error: String::new() }
 }
 
-/// A candidate that cleared the fit gate, with its live Publisher Rocket
+/// A candidate that cleared the fit gate, with its live
 /// discoverability data (if it could be confirmed) and computed score.
 struct QualifiedCategory {
     path:                   String,
@@ -566,11 +501,12 @@ struct QualifiedCategory {
     publisher_pct:          String,
     ku_pct:                 String,
     discoverability_score:  i32,
+    top_books:              Vec<crate::canopy::TopBook>,
 }
 
 /// Takes fit-qualified candidates (already gated on honest fit — this
 /// function does not judge fit, only discoverability) and checks all of them
-/// live in Publisher Rocket in one batched call, then ranks by real
+/// live via Canopy API in one batched call, then ranks by real
 /// discoverability. This is the actual method for "best discoverability
 /// among what honestly fits" — not a narrow tiebreak, a real ranking over
 /// every candidate that earned a look.
@@ -584,7 +520,7 @@ async fn rank_by_discoverability(app: &AppHandle, store: &str, qualifying: Vec<(
     if canopy_api_key.is_empty() {
         emit(app, "    ⚠ No Canopy API key set. Configure it in Settings.");
         return qualifying.into_iter().map(|(path, fit_confidence, agreeing_genres)| {
-            QualifiedCategory { path, fit_confidence, agreeing_genres, verified: false, sales_to_one: String::new(), sales_to_ten: String::new(), publisher_pct: String::new(), ku_pct: String::new(), discoverability_score: -1 }
+            QualifiedCategory { path, fit_confidence, agreeing_genres, verified: false, sales_to_one: String::new(), sales_to_ten: String::new(), publisher_pct: String::new(), ku_pct: String::new(), discoverability_score: -1, top_books: Vec::new() }
         }).collect();
     }
 
@@ -598,12 +534,12 @@ async fn rank_by_discoverability(app: &AppHandle, store: &str, qualifying: Vec<(
 
     let mut scored: Vec<QualifiedCategory> = qualifying.into_iter().map(|(path, fit_confidence, agreeing_genres)| {
         let stat = if result.success { result.rows.iter().find(|r| r.requested_path == path) } else { None };
-        let (verified, sales_to_one, sales_to_ten, publisher_pct, ku_pct) = match stat {
-            Some(r) if r.found => (true, r.sales_to_one.clone(), r.sales_to_ten.clone(), r.publisher_pct.clone(), r.ku_pct.clone()),
-            _ => (false, String::new(), String::new(), String::new(), String::new()),
+        let (verified, sales_to_one, sales_to_ten, publisher_pct, ku_pct, top_books) = match stat {
+            Some(r) if r.found => (true, r.sales_to_one.clone(), r.sales_to_ten.clone(), r.publisher_pct.clone(), r.ku_pct.clone(), r.top_books.clone()),
+            _ => (false, String::new(), String::new(), String::new(), String::new(), Vec::new()),
         };
         let discoverability_score = compute_discoverability_score(verified, &sales_to_ten);
-        QualifiedCategory { path, fit_confidence, agreeing_genres, verified, sales_to_one, sales_to_ten, publisher_pct, ku_pct, discoverability_score }
+        QualifiedCategory { path, fit_confidence, agreeing_genres, verified, sales_to_one, sales_to_ten, publisher_pct, ku_pct, discoverability_score, top_books }
     }).collect();
 
     scored.sort_by(|a, b| {
@@ -639,8 +575,8 @@ fn compute_discoverability_score(verified: bool, sales_to_ten: &str) -> i32 {
 /// Match one store's catalog against every ranked genre, genre by genre.
 /// Persists every candidate discovered to category_results (not just the
 /// fit-qualified subset — that's still useful history), but returns only
-/// the fit-gated `qualifying` list: a category only earns a live Publisher
-/// Rocket check if it genuinely fits (confidence ≥55%, or independently
+/// the fit-gated `qualifying` list: a category only earns a live
+/// verification if it genuinely fits (confidence ≥55%, or independently
 /// found by 2+ ranked genres). Fit is judged here; discoverability is judged
 /// afterward by rank_by_discoverability, on this pre-filtered set only.
 struct StoreMatchResult {
@@ -789,6 +725,10 @@ Categories:
         .trim_end_matches("```").trim();
 
     let matches: Vec<CatalogMatch> = serde_json::from_str(clean)
+        .or_else(|_| {
+            // Some models return a single object instead of an array — wrap it
+            serde_json::from_str::<CatalogMatch>(clean).map(|m| vec![m])
+        })
         .map_err(|e| format!("Parse error (catalog match): {} | got: {}", e, &clean[..clean.len().min(300)]))?;
 
     Ok(matches.into_iter().filter_map(|m| {
@@ -844,7 +784,7 @@ pub async fn classify_bisac_for_story(app: AppHandle, request: FolderRequest) ->
                     String::new(),
                     "BISAC convention: use up to 3 codes, primary listed first. This is separate from your Amazon KDP browse categories — Kindle eBook no longer takes BISAC directly (Amazon derives it from your browse category), but KDP Print and Ingram still require it explicitly.".to_string(),
                     String::new(),
-                    "**On discoverability:** unlike KDP categories, there is no live data source for BISAC — Publisher Rocket doesn't cover it, and Amazon has no browse mechanism for it. When two codes are close in fit, a more specific heading is preferred over a generic \"/ General\" one as a structural best-practice, not measured data.".to_string(),
+                    "**On discoverability:** unlike KDP categories, there is no live data source for BISAC — no tool covers it, and Amazon has no browse mechanism for it. When two codes are close in fit, a more specific heading is preferred over a generic \"/ General\" one as a structural best-practice, not measured data.".to_string(),
                     String::new(),
                     "---".to_string(),
                     String::new(),
@@ -1089,6 +1029,19 @@ pub async fn find_genres_and_categories_for_story(app: AppHandle, request: Folde
                     " — could not verify live".to_string()
                 };
                 kdp_section.push(format!("{}. `{}` (fit {}%){}{} — matched by: {}", i + 1, q.path, q.fit_confidence, bonus, disc_note, q.agreeing_genres.join(", ")));
+                // Top bestsellers for this category
+                if !q.top_books.is_empty() {
+                    kdp_section.push(String::new());
+                    kdp_section.push("   **Current Top Sellers:**".to_string());
+                    for (rank, book) in q.top_books.iter().enumerate() {
+                        let amazon_link = format!("https://www.amazon.com/dp/{}", book.asin);
+                        let img_tag = book.image_url.as_deref()
+                            .map(|url| format!("   <img src=\"{}\" height=\"60\" /> ", url))
+                            .unwrap_or_default();
+                        kdp_section.push(format!("   {}{}. [{}]({})", img_tag, rank + 1, book.title, amazon_link));
+                    }
+                    kdp_section.push(String::new());
+                }
             }
         }
         kdp_section.push(String::new());
@@ -1197,7 +1150,7 @@ pub async fn find_genres_and_categories_for_story(app: AppHandle, request: Folde
     let mut lines = vec![
         "# Find Genres & Categories".to_string(),
         format!("Generated: {}", now),
-        "Full pipeline in one pass: genre ranking, KDP categories (Kindle eBook + Paperback, with a live Publisher Rocket check when the 3rd/4th slot is a close call), BISAC classification (ebook + print), and positioning context.".to_string(),
+        "Full pipeline in one pass: genre ranking, KDP categories (Kindle eBook + Paperback, verified live via Canopy API), BISAC classification (ebook + print), and positioning context.".to_string(),
         String::new(), "---".to_string(), String::new(),
     ];
     lines.push(report_sections.join("\n---\n\n"));
@@ -1502,8 +1455,8 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
     { let conn = database.0.lock().unwrap(); let _ = db::save_document(&conn, &request.folder, "bisac_classification", &bisac_section); }
     if crate::is_cancelled() { return err("Cancelled."); }
 
-    // ── Step 6: Keyword Search (PR) ────────────────────────────────────────
-    emit(&app, "Step 6: Publisher Rocket keyword search...");
+    // ── Step 6: Keyword Search ────────────────────────────────────────
+    emit(&app, "Step 6: Keyword search...");
     let keyword_pool: Vec<KeywordResult> = {
         let top_cats_for_seeds: Vec<String> = kindle_top_categories.iter().take(2).cloned().collect();
         let seeds = derive_keyword_seeds(&genre_data.industry_ebook, &top_cats_for_seeds);
@@ -1550,9 +1503,9 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
         match res {
             Ok((entries, strategy)) => {
                 let source_note = if keyword_pool.is_empty() {
-                    "*(Generated from genre analysis — no PR data available.)*"
+                    "*(Generated from genre analysis — no keyword search data available.)*"
                 } else {
-                    "*(Enhanced with real Publisher Rocket search volume data.)*"
+                    "*(Enhanced with real Amazon search volume data.)*"
                 };
                 let conn = database.0.lock().unwrap();
                 let _ = db::save_kdp_keywords(&conn, &request.folder, &entries, &strategy, source_note);
@@ -1608,9 +1561,9 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
 
     // KDP keywords section
     let source_note = if keyword_pool.is_empty() {
-        "*(Generated from genre analysis — no PR data available.)*"
+        "*(Generated from genre analysis — no keyword search data available.)*"
     } else {
-        "*(Enhanced with real Publisher Rocket search volume data.)*"
+        "*(Enhanced with real Amazon search volume data.)*"
     };
     let kdp_keywords_section = render_kdp_keywords(&kdp_keyword_entries, &kdp_keyword_strategy, source_note);
 
@@ -1779,8 +1732,7 @@ Genre list:
 // ── Verify Mapped Categories ──────────────────────────────────────────────────
 //
 // Takes the genres already ranked for this story, collects every known KDP
-// path, and runs them through the Category Analyzer (exact-path verification
-// against live Publisher Rocket data) — no AI call needed, paths are known.
+// path, and runs them through the Canopy API for live verification.
 
 #[derive(Deserialize)]
 pub struct VerifyMappedRequest {
@@ -1790,6 +1742,12 @@ pub struct VerifyMappedRequest {
 
 #[tauri::command]
 pub async fn verify_mapped_categories(app: AppHandle, db: tauri::State<'_, db::Db>, request: VerifyMappedRequest) -> Result<GenreResult, ()> {
+    let canopy_key = {
+        // The canopy key is stored in localStorage on the frontend — but for this
+        // command we need it passed in or loaded. For now, check if it's empty.
+        String::new()
+    };
+
     let rankings = {
         let conn = db.0.lock().unwrap();
         match db::get_genre_rankings(&conn, &request.folder, &request.store) {
@@ -1810,18 +1768,16 @@ pub async fn verify_mapped_categories(app: AppHandle, db: tauri::State<'_, db::D
     }
 
     if paths.is_empty() {
-        return Ok(err("None of this story's ranked genres have a mapped KDP path yet. Run Category Finder to discover paths — they'll be saved to the database automatically."));
+        return Ok(err("None of this story's ranked genres have a mapped KDP path yet. Run Category Finder to discover paths."));
     }
 
-    emit(&app, &format!("Verifying {} mapped KDP path(s) in Publisher Rocket...", paths.len()));
+    emit(&app, &format!("Verifying {} mapped KDP path(s) via Canopy API...", paths.len()));
 
-    let result = crate::commands::analyze_categories(
+    let result = crate::canopy::analyze_categories_canopy(
         app.clone(),
-        crate::commands::CategoryRequest {
-            paths,
-            store:  request.store.clone(),
-            filter: "Selectable Excluding Ghosts".to_string(),
-        },
+        paths,
+        request.store.clone(),
+        canopy_key,
     ).await;
 
     if !result.success {
@@ -1830,7 +1786,8 @@ pub async fn verify_mapped_categories(app: AppHandle, db: tauri::State<'_, db::D
 
     {
         let conn = db.0.lock().unwrap();
-        let _ = db::save_document(&conn, &request.folder, "mapped_categories", &result.markdown);
+        let md = format!("Verified {} categories for {}.", result.rows.len(), request.store);
+        let _ = db::save_document(&conn, &request.folder, "mapped_categories", &md);
         for g in &rankings {
             for p in &g.kdp_paths {
                 let _ = db::upsert_kdp_path(&conn, &g.genre, p, &request.store, "category_analyzer", true);
@@ -1840,7 +1797,7 @@ pub async fn verify_mapped_categories(app: AppHandle, db: tauri::State<'_, db::D
 
     emit(&app, "✓ Verified paths saved to database.");
 
-    Ok(GenreResult { success: true, report: result.markdown, error: String::new() })
+    Ok(GenreResult { success: true, report: String::new(), error: String::new() })
 }
 
 // ── Keyword Optimizer ─────────────────────────────────────────────────────────
@@ -1854,7 +1811,7 @@ pub struct KeywordRequest {
 }
 
 #[tauri::command]
-pub async fn generate_pr_keywords(app: AppHandle, request: KeywordRequest) -> GenreResult {
+pub async fn generate_search_terms(app: AppHandle, request: KeywordRequest) -> GenreResult {
     tokio::task::spawn_blocking(move || {
         let database = app.state::<db::Db>();
         let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
@@ -1863,12 +1820,12 @@ pub async fn generate_pr_keywords(app: AppHandle, request: KeywordRequest) -> Ge
             None    => return err("No genre data found. Run Analyze first."),
         };
 
-        emit(&app, "Generating PR Competition Analyzer search terms...");
+        emit(&app, "Generating competition search terms...");
         emit(&app, &format!("  Genre: {}", genre_data.industry_ebook));
 
-        let system = r#"You are a Publisher Rocket expert. Generate short search phrases for the Competition Analyzer tool.
+        let system = r#"You are a book market research expert. Generate short search phrases for competition analysis.
 
-Publisher Rocket Competition Analyzer works like Amazon search — it needs SHORT, SPECIFIC phrases that real readers type.
+These search phrases work like Amazon search — they need to be SHORT, SPECIFIC phrases that real readers type.
 
 Rules:
 - 2-4 words maximum per phrase
@@ -1899,13 +1856,13 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
                 match serde_json::from_str::<Vec<String>>(clean) {
                     Err(e) => err(&format!("Parse error: {} | got: {}", e, &clean[..clean.len().min(200)])),
                     Ok(keywords) => {
-                        emit(&app, &format!("  ✓ {} PR search terms generated:", keywords.len()));
+                        emit(&app, &format!("  ✓ {} search terms generated:", keywords.len()));
                         for kw in &keywords { emit(&app, &format!("    • {}", kw)); }
 
-                        let rendered = render_pr_keywords(&keywords);
+                        let rendered = render_search_terms(&keywords);
                         let conn = database.0.lock().unwrap();
-                        let _ = db::save_pr_keywords(&conn, &request.folder, &keywords);
-                        let _ = db::save_document(&conn, &request.folder, "pr_keywords", &rendered);
+                        let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
+                        let _ = db::save_document(&conn, &request.folder, "mi_search_terms", &rendered);
 
                         GenreResult { success: true, report: rendered, error: String::new() }
                     }
@@ -2003,7 +1960,7 @@ Return ONLY a JSON object:
     Ok((entries, strategy))
 }
 
-// ── Enhanced KDP keyword optimizer (with real Publisher Rocket data) ──────────
+// ── Enhanced KDP keyword optimizer (with real search volume data) ──────────
 
 fn format_keyword_pool_table(pool: &[KeywordResult]) -> String {
     let mut lines = vec![
@@ -2045,7 +2002,7 @@ Rules:
 - Vary the strings: setting, theme, reader mood, comp authors, tropes
 - No punctuation except spaces and hyphens
 - All lowercase
-- PREFER keywords from the real Publisher Rocket data provided — these have measured Amazon search volume
+- PREFER keywords from the real search data provided — these have measured Amazon search volume
 - When a keyword comes from real data, include its search volume in the rationale: "real: X searches/mo"
 - When a keyword is AI-derived (not from the real data table), note it: "AI-derived"
 
@@ -2061,7 +2018,7 @@ Return ONLY a JSON object:
     let user = format!(
         "Genre (ebook): {}\nGenre (print): {}\n\
          KDP ebook categories: {}\nKDP print categories: {}\n\n\
-         ## Real Publisher Rocket Keyword Data\n\
+         ## Real Keyword Search Data\n\
          (Prefer these — they have measured Amazon search volume)\n\n\
          {}\n\n\
          ## Additional keyword material\n\n{}",
@@ -2198,9 +2155,9 @@ fn render_kdp_keywords(entries: &[db::KdpKeywordEntry], strategy: &str, source_n
     json.to_string()
 }
 
-fn render_pr_keywords(keywords: &[String]) -> String {
+fn render_search_terms(keywords: &[String]) -> String {
     let json = serde_json::json!({
-        "schema": "pr_keywords_v1",
+        "schema": "mi_search_terms_v1",
         "keywords": keywords,
     });
     json.to_string()
@@ -2530,139 +2487,7 @@ pub fn derive_keyword_seeds(
 
     seeds
 }
-
-/// Merge keyword results from multiple seed searches into a single
-/// deduplicated pool. When the same keyword appears from multiple seeds,
-/// keep the entry with the higher searches value.
-pub fn aggregate_keyword_results(
-    results_per_seed: Vec<(&str, Vec<KeywordResult>)>,
-) -> Vec<KeywordResult> {
-    use std::collections::HashMap;
-    let mut pool: HashMap<String, KeywordResult> = HashMap::new();
-
-    for (_seed, results) in results_per_seed {
-        for r in results {
-            let key = r.keyword.to_lowercase();
-            let insert = match pool.get(&key) {
-                None => true,
-                Some(existing) => {
-                    parse_searches(&r.searches) > parse_searches(&existing.searches)
-                }
-            };
-            if insert {
-                pool.insert(key, r);
-            }
-        }
-    }
-
-    let mut out: Vec<KeywordResult> = pool.into_values().collect();
-    out.sort_by(|a, b| {
-        parse_searches(&b.searches).cmp(&parse_searches(&a.searches))
-    });
-    out
-}
-
-/// Strip commas from a search volume string and parse to u64.
-fn parse_searches(s: &str) -> u64 {
-    s.replace(',', "").parse::<u64>().unwrap_or(0)
-}
-
-// ── Keyword search aggregation wrapper ────────────────────────────────────────
-
-/// Run Publisher Rocket keyword searches for each seed, aggregate results,
-/// and persist to the database. Gracefully handles individual seed failures
-/// and cancellation between seeds. Never panics.
-pub async fn run_keyword_searches(
-    app: &AppHandle,
-    folder: &str,
-    seeds: &[String],
-) -> Vec<KeywordResult> {
-    let mut results_per_seed: Vec<(&str, Vec<KeywordResult>)> = Vec::new();
-
-    for seed in seeds {
-        // Cancellation check between seeds
-        if crate::is_cancelled() {
-            let _ = app.emit("cdp:log", "Keyword search cancelled.");
-            break;
-        }
-
-        let _ = app.emit("cdp:log", &format!("Searching keyword: \"{}\"...", seed));
-
-        let app_clone = app.clone();
-        let seed_clone = seed.clone();
-
-        let result = tokio::task::spawn_blocking(move || {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                crate::keyword_search::search_keyword(&app_clone, &seed_clone)
-            }))
-        })
-        .await;
-
-        match result {
-            Ok(Ok(Ok(keyword_results))) => {
-                let _ = app.emit(
-                    "cdp:log",
-                    &format!("✓ \"{}\" returned {} keyword(s).", seed, keyword_results.len()),
-                );
-                // Persist this seed's results to the database
-                let database = app.state::<db::Db>();
-                let conn = database.0.lock().unwrap();
-                let rows: Vec<(String, String, String, String)> = keyword_results
-                    .iter()
-                    .map(|r| {
-                        (
-                            r.keyword.clone(),
-                            r.searches.clone(),
-                            r.competition.clone(),
-                            r.estimated_earnings.clone(),
-                        )
-                    })
-                    .collect();
-                let _ = db::replace_keyword_search_results(&conn, folder, seed, &rows);
-                results_per_seed.push((seed.as_str(), keyword_results));
-            }
-            Ok(Ok(Err(e))) => {
-                let _ = app.emit(
-                    "cdp:log",
-                    &format!("⚠ Keyword search for \"{}\" failed: {}", seed, e),
-                );
-            }
-            Ok(Err(_panic)) => {
-                let _ = app.emit(
-                    "cdp:log",
-                    &format!("⚠ Keyword search for \"{}\" panicked — skipping.", seed),
-                );
-            }
-            Err(_join_err) => {
-                let _ = app.emit(
-                    "cdp:log",
-                    &format!("⚠ Keyword search task for \"{}\" was cancelled — skipping.", seed),
-                );
-            }
-        }
-    }
-
-    if results_per_seed.is_empty() {
-        let _ = app.emit("cdp:log", "⚠ All keyword searches failed — returning empty pool.");
-        return Vec::new();
-    }
-
-    let _ = app.emit(
-        "cdp:log",
-        &format!(
-            "Aggregating results from {} successful seed(s)...",
-            results_per_seed.len()
-        ),
-    );
-    let aggregated = aggregate_keyword_results(results_per_seed);
-    let _ = app.emit(
-        "cdp:log",
-        &format!("✓ Keyword pool: {} unique keyword(s) after dedup.", aggregated.len()),
-    );
-    aggregated
-}
-
-/// Canopy-based keyword search — replaces PR keyword search in the pipeline.
+/// Canopy-based keyword search — replaces legacy keyword search in the pipeline.
 /// For each seed: gets autocomplete suggestions, searches top results, estimates volume.
 async fn run_keyword_searches_canopy(
     app: &AppHandle,

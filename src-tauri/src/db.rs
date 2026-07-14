@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS kdp_categories (
     store          TEXT NOT NULL DEFAULT 'Kindle',
     amazon_node_id TEXT,
     source         TEXT NOT NULL DEFAULT 'manual',   -- 'manual' | 'winningcat' | 'category_finder'
-    verified_at    TEXT,                              -- last time confirmed live in Publisher Rocket
+    verified_at    TEXT,                              -- last time confirmed live
     created_at     TEXT NOT NULL,
     UNIQUE(path, store)
 );
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS kdp_keywords (
     source_note  TEXT
 );
 
-CREATE TABLE IF NOT EXISTS pr_keywords (
+CREATE TABLE IF NOT EXISTS mi_search_terms (
     story_folder  TEXT PRIMARY KEY,
     generated_at  TEXT NOT NULL,
     keywords_json TEXT NOT NULL   -- ["kw1","kw2",...]
@@ -219,6 +219,9 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
         );
         CREATE INDEX IF NOT EXISTS idx_saved_reports_folder ON saved_reports(story_folder, doc_type);"
     );
+
+    // Migration: rename pr_keywords → mi_search_terms for existing databases.
+    let _ = conn.execute("ALTER TABLE pr_keywords RENAME TO mi_search_terms", []);
 
     seed_if_empty(&conn)?;
     seed_bisac_if_empty(&conn)?;
@@ -355,7 +358,7 @@ pub fn kdp_paths_for_genre(conn: &Connection, genre_name: &str, store: &str) -> 
 /// Record (or update) a KDP category path and link it to a genre. Used both
 /// for manual corrections and for auto-growth from Category Finder results.
 /// Marks the path as verified (sets verified_at) when `verified` is true —
-/// i.e. when it came from a live, successful Publisher Rocket lookup.
+/// i.e. when it came from a live, successful category lookup.
 pub fn upsert_kdp_path(
     conn: &Connection,
     genre_name: &str,
@@ -480,9 +483,9 @@ pub fn kdp_category_count(conn: &Connection, store: &str) -> i64 {
 
 /// Keyword search over the imported category catalog — case-insensitive
 /// substring match per term, deduplicated, capped at `limit`. This is the
-/// direct replacement for Category Finder's live top-level PR scraping: once
+/// direct replacement for Category Finder's live top-level scraping: once
 /// the catalog is populated (WinningCat import, or prior discoveries), this
-/// is a plain SQL query instead of driving Publisher Rocket's UI at all.
+/// is a plain SQL query instead of scraping any external UI at all.
 pub fn search_kdp_categories(conn: &Connection, store: &str, terms: &[String], limit: usize) -> Vec<(String, String)> {
     if terms.is_empty() { return Vec::new(); }
     let mut seen = std::collections::HashSet::new();
@@ -519,7 +522,7 @@ pub fn search_kdp_categories(conn: &Connection, store: &str, terms: &[String], l
 /// Import a category path + node ID from an external catalog (WinningCat)
 /// without linking it to any genre yet — that happens later via Category
 /// Finder discovery or manual mapping. Preserves the source label if a path
-/// was already verified live against Publisher Rocket (category_finder /
+/// was already verified live (category_finder /
 /// category_analyzer outrank a catalog import), but always refreshes the
 /// node ID and last_seen_at since those are authoritative either way.
 pub fn import_kdp_category(conn: &Connection, path: &str, store: &str, node_id: &str) -> Result<(), String> {
@@ -818,12 +821,12 @@ pub fn load_kdp_keywords(conn: &Connection, story_folder: &str) -> Option<(Vec<K
     })
 }
 
-// ── PR search-term keywords ─────────────────────────────────────────
+// ── MI search-term keywords ─────────────────────────────────────────
 
-pub fn save_pr_keywords(conn: &Connection, story_folder: &str, keywords: &[String]) -> Result<(), String> {
+pub fn save_mi_search_terms(conn: &Connection, story_folder: &str, keywords: &[String]) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT INTO pr_keywords (story_folder, generated_at, keywords_json)
+        "INSERT INTO mi_search_terms (story_folder, generated_at, keywords_json)
          VALUES (?1, ?2, ?3)
          ON CONFLICT(story_folder) DO UPDATE SET generated_at = excluded.generated_at, keywords_json = excluded.keywords_json",
         params![story_folder, now, serde_json::to_string(keywords).unwrap_or_default()],
@@ -831,9 +834,9 @@ pub fn save_pr_keywords(conn: &Connection, story_folder: &str, keywords: &[Strin
     Ok(())
 }
 
-pub fn load_pr_keywords(conn: &Connection, story_folder: &str) -> Vec<String> {
+pub fn load_mi_search_terms(conn: &Connection, story_folder: &str) -> Vec<String> {
     conn.query_row(
-        "SELECT keywords_json FROM pr_keywords WHERE story_folder = ?1",
+        "SELECT keywords_json FROM mi_search_terms WHERE story_folder = ?1",
         params![story_folder], |r| r.get::<_, String>(0)
     ).ok()
      .and_then(|json| serde_json::from_str(&json).ok())
@@ -876,7 +879,7 @@ pub fn has_keyword_search_results(conn: &Connection, story_folder: &str) -> bool
     ).unwrap_or(false)
 }
 
-// ── Publisher Rocket Keyword Search results (real search volume / competition) ──
+// ── Keyword Search results (real search volume / competition) ──
 
 #[derive(serde::Serialize, Clone, Debug)]
 #[allow(dead_code)]
@@ -926,7 +929,7 @@ pub const DOC_TYPES: &[(&str, &str)] = &[
     ("genre_analysis",      "Genre Analysis"),
     ("full_report",         "Full Report"),
     ("kdp_keywords",        "KDP Keywords"),
-    ("pr_keywords",         "PR Keywords"),
+    ("pr_keywords",         "Search Terms"),
     ("competition_report",  "Competition Analysis"),
     ("category_finder",     "Category Finder"),
     ("genre_ranking",       "Genre Ranking"),
@@ -1132,6 +1135,7 @@ pub fn has_bisac_classifications(conn: &Connection, story_folder: &str) -> bool 
 /// — we split on " > " and take the first segment. This replaces the old
 /// hardcoded TOP_LEVEL_CATEGORIES list so the AI only considers categories
 /// that actually exist in the user's catalog.
+#[allow(dead_code)]
 pub fn top_level_kdp_categories(conn: &Connection, store: &str) -> Vec<String> {
     let mut stmt = match conn.prepare(
         "SELECT DISTINCT path FROM kdp_categories WHERE store = ?1"

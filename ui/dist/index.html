@@ -3,15 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Publisher Rocket Reader</title>
-    <script type="module" crossorigin src="/assets/index-DzJWRUYy.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-vO8aqyIc.css">
+    <title>Manuscript Intel</title>
+    <script type="module" crossorigin src="/assets/index-BT0Yvo9Z.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-F_ui_OOO.css">
   </head>
   <body>
     <div id="app">
 
       <div id="titlebar" data-tauri-drag-region>
-        <h1>Publisher Rocket Reader</h1>
+        <h1>Manuscript Intel</h1>
       </div>
 
       <nav id="sidebar">
@@ -86,7 +86,7 @@
               <button class="clear-log" id="btn-clear-genre-log">Clear</button>
             </div>
             <div class="output-pane" id="genre-log-pane">
-              <pre id="genre-log-output"></pre>
+              <div id="genre-log-output" class="log-stream"></div>
             </div>
           </div>
         </div>
@@ -174,7 +174,7 @@
           <div class="settings-form" style="margin-top:24px;border-top:1px solid var(--border);padding-top:20px">
             <label>Category Data</label>
             <p class="panel-desc" style="margin:0 0 8px">
-              Import the WinningCat Amazon category dataset to populate the KDP category map with real, ID-backed paths for Books and Kindle Store. Existing entries verified live in Publisher Rocket are never downgraded.
+              Import the WinningCat Amazon category dataset to populate the KDP category map with real, ID-backed paths for Books and Kindle Store. Existing verified entries are never downgraded.
             </p>
             <button class="btn btn-sm" id="btn-import-winningcat">Import WinningCat CSV…</button>
             <span id="winningcat-import-status" class="model-hint"></span>

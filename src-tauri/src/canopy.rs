@@ -416,11 +416,19 @@ impl CanopyClient {
 // ── Category Stats (derived) ──────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopBook {
+    pub title: String,
+    pub asin: String,
+    pub image_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CategoryStats {
     pub sales_to_one: String,
     pub sales_to_ten: String,
     pub publisher_pct: String,
     pub ku_pct: String,
+    pub top_books: Vec<TopBook>,
 }
 
 impl CanopyClient {
@@ -435,8 +443,16 @@ impl CanopyClient {
                 sales_to_ten: "N/A".to_string(),
                 publisher_pct: "N/A".to_string(),
                 ku_pct: "N/A".to_string(),
+                top_books: Vec::new(),
             });
         }
+
+        // Capture top 3 books for the report
+        let top_books: Vec<TopBook> = bestsellers.iter().take(3).map(|b| TopBook {
+            title: b.title.clone(),
+            asin: b.asin.clone(),
+            image_url: b.image_url.clone(),
+        }).collect();
 
         // Get sales estimates for rank 1 and rank 10
         let sales_one = if let Some(b) = bestsellers.first() {
@@ -485,7 +501,7 @@ impl CanopyClient {
             format!("{:.0}%", 100.0 * ku_count as f64 / checked as f64)
         } else { "N/A".to_string() };
 
-        Ok(CategoryStats { sales_to_one: sales_one, sales_to_ten: sales_ten, publisher_pct, ku_pct })
+        Ok(CategoryStats { sales_to_one: sales_one, sales_to_ten: sales_ten, publisher_pct, ku_pct, top_books })
     }
 }
 
@@ -570,6 +586,7 @@ pub async fn analyze_categories_canopy(
                         sales_to_ten: String::new(),
                         publisher_pct: String::new(),
                         ku_pct: String::new(),
+                        top_books: Vec::new(),
                     });
                     continue;
                 }
@@ -589,6 +606,7 @@ pub async fn analyze_categories_canopy(
                         sales_to_ten: stats.sales_to_ten,
                         publisher_pct: stats.publisher_pct,
                         ku_pct: stats.ku_pct,
+                        top_books: stats.top_books,
                     });
                 }
                 Err(e) => {
@@ -601,6 +619,7 @@ pub async fn analyze_categories_canopy(
                         sales_to_ten: String::new(),
                         publisher_pct: String::new(),
                         ku_pct: String::new(),
+                        top_books: Vec::new(),
                     });
                 }
             }
@@ -652,9 +671,9 @@ fn run_competition_canopy(app: &AppHandle, database: &db::Db, req: &CompetitionC
         Err(e) => return CompetitionResult { success: false, report: String::new(), error: e },
     };
 
-    let keywords = { let conn = database.0.lock().unwrap(); db::load_pr_keywords(&conn, &req.folder) };
+    let keywords = { let conn = database.0.lock().unwrap(); db::load_mi_search_terms(&conn, &req.folder) };
     if keywords.is_empty() {
-        return CompetitionResult { success: false, report: String::new(), error: "No PR search terms found. Run Analyze first.".to_string() };
+        return CompetitionResult { success: false, report: String::new(), error: "No search terms found. Run Analyze first.".to_string() };
     }
 
     let domain = store_to_domain(&req.store);
@@ -776,9 +795,9 @@ Be direct, concise, no filler."#;
 }
 
 
-// ── Keyword Search via Canopy (replaces PR Keyword Search) ────────────────────
+// ── Keyword Search via Canopy ────────────────────
 
-use crate::keyword_search::{KeywordResult, KeywordSearchResponse};
+use crate::models::{KeywordResult, KeywordSearchResponse};
 
 #[derive(Deserialize)]
 pub struct KeywordSearchCanopyRequest {
@@ -935,8 +954,8 @@ pub async fn mine_competitor_reviews(app: AppHandle, request: ReviewMiningReques
             Err(e) => return ReviewMiningResult { success: false, report: String::new(), error: e },
         };
 
-        // Get PR keywords to find comp books
-        let keywords = { let conn = database.0.lock().unwrap(); db::load_pr_keywords(&conn, &request.folder) };
+        // Get search terms to find comp books
+        let keywords = { let conn = database.0.lock().unwrap(); db::load_mi_search_terms(&conn, &request.folder) };
         if keywords.is_empty() {
             return ReviewMiningResult { success: false, report: String::new(), error: "No keywords found. Run Analyze first.".to_string() };
         }
@@ -1067,7 +1086,7 @@ pub async fn analyze_comp_authors(app: AppHandle, request: AuthorAnalysisRequest
             Err(e) => return AuthorAnalysisResult { success: false, report: String::new(), error: e },
         };
 
-        let keywords = { let conn = database.0.lock().unwrap(); db::load_pr_keywords(&conn, &request.folder) };
+        let keywords = { let conn = database.0.lock().unwrap(); db::load_mi_search_terms(&conn, &request.folder) };
         if keywords.is_empty() {
             return AuthorAnalysisResult { success: false, report: String::new(), error: "No keywords found. Run Analyze first.".to_string() };
         }
@@ -1085,7 +1104,7 @@ pub async fn analyze_comp_authors(app: AppHandle, request: AuthorAnalysisRequest
                     if let Some(author) = &sr.author {
                         if !author.is_empty() && seen_authors.insert(author.to_lowercase()) {
                             // Get the product to find author ASIN if available
-                            if let Ok(product) = client.get_product(&sr.asin, "US") {
+                            if let Ok(_product) = client.get_product(&sr.asin, "US") {
                                 // Use the author name; we'll search by product ASIN since author ASIN isn't always exposed
                                 author_asins.push((sr.asin.clone(), author.clone()));
                             }
@@ -1105,7 +1124,7 @@ pub async fn analyze_comp_authors(app: AppHandle, request: AuthorAnalysisRequest
 
         // For each author, search for more of their books
         let mut author_data: Vec<serde_json::Value> = Vec::new();
-        for (book_asin, author_name) in &authors_to_analyze {
+        for (_book_asin, author_name) in &authors_to_analyze {
             emit_canopy(&app, &format!("  → {}", author_name));
 
             // Search for more books by this author

@@ -35,11 +35,11 @@ export function renderReport(envelope: ReportEnvelope, storyName: string): strin
 
 // ── Schema dispatcher ─────────────────────────────────────────────────────────
 
-function renderBySchema(data: any, _docType: string): string {
+function renderBySchema(data: any, docType: string): string {
   const schema = data.schema || '';
 
   if (schema === 'kdp_keywords_v1') return renderKdpKeywords(data);
-  if (schema === 'pr_keywords_v1') return renderPrKeywords(data);
+  if (schema === 'mi_search_terms_v1') return renderSearchTerms(data);
   if (schema === 'genre_analysis_v1') return renderGenreAnalysis(data);
   if (schema === 'full_report_v1') return renderFullReport(data);
   if (schema === 'category_finder_v1') return renderCategoryFinder(data);
@@ -53,6 +53,11 @@ function renderBySchema(data: any, _docType: string): string {
   if (schema === 'keyword_search_v1') return renderKeywordSearch(data);
   if (schema === 'genre_ranking_v1') return renderGenreRanking(data);
   if (schema === 'discovery_keywords_v1') return renderDiscoveryKeywords(data);
+
+  // Detect BISAC classification by structure or doc_type
+  if (docType === 'bisac_classification' || (data.ebook && Array.isArray(data.ebook))) {
+    return renderBisacSection(data);
+  }
 
   // Unknown schema — dump as formatted JSON
   return `<pre class="report-json">${esc(JSON.stringify(data, null, 2))}</pre>`;
@@ -112,15 +117,15 @@ function renderKdpKeywords(data: any): string {
   return html;
 }
 
-// ── PR Keywords ───────────────────────────────────────────────────────────────
+// ── Search Terms ───────────────────────────────────────────────────────────────
 
-function renderPrKeywords(data: any): string {
+function renderSearchTerms(data: any): string {
   const keywords: string[] = data.keywords || [];
 
   let html = `
     <section class="report-section">
-      <h3>PR Competition Analyzer Keywords</h3>
-      <p class="report-hint">These short phrases are for Publisher Rocket's Competition Analyzer. They are NOT the same as your KDP keyword strings.</p>
+      <h3>Competition Search Terms</h3>
+      <p class="report-hint">These short phrases are used for competition analysis — finding competing books in the same niche on Amazon. They are NOT the same as your KDP keyword strings.</p>
       <table class="report-table">
         <thead><tr><th>#</th><th>Search Phrase</th></tr></thead>
         <tbody>
@@ -136,7 +141,7 @@ function renderPrKeywords(data: any): string {
 // ── Genre Analysis ────────────────────────────────────────────────────────────
 
 function renderGenreAnalysis(data: any): string {
-  let html = `<p class="report-note">Classifications are based on AI training data. Verify KDP paths in Publisher Rocket.</p>`;
+  let html = `<p class="report-note">Classifications are based on AI training data. Verify KDP paths via Canopy or Amazon.</p>`;
 
   // Industry classification
   html += `<section class="report-section"><h3>Industry Genre Classification</h3>`;
@@ -190,7 +195,7 @@ function renderFullReport(data: any): string {
     html += renderGenreAnalysis(data.genre_analysis);
   }
   if (!data.competition_done) {
-    html += `<p class="report-note">Run <strong>Analyze Competition</strong> to add Publisher Rocket market data.</p>`;
+    html += `<p class="report-note">Run <strong>Analyze Competition</strong> to add market data.</p>`;
   }
   return html;
 }
@@ -484,15 +489,16 @@ function renderKdpCategoriesSection(data: any): string {
 
 function renderBisacSection(data: any): string {
   let html = `<section class="report-section"><h3>BISAC Classification</h3>`;
+  html += `<p class="report-hint">Verify against BISG's free lookup (bisg.org/complete-bisac-subject-headings-list) before submitting. Kindle eBook no longer takes BISAC directly on KDP — this matters for KDP Print and wide/Ingram distribution.</p>`;
 
   const ebook: any[] = data.ebook || [];
   html += `<h4>Ebook</h4>`;
   if (!ebook.length) {
     html += `<p class="muted">No confident BISAC match.</p>`;
   } else {
-    html += `<table class="report-table"><thead><tr><th>Code</th><th>Heading</th><th>Confidence</th></tr></thead><tbody>`;
+    html += `<table class="report-table"><thead><tr><th>Code</th><th>Heading</th><th>Confidence</th><th>Reasoning</th></tr></thead><tbody>`;
     for (const b of ebook) {
-      html += `<tr><td><code>${esc(b.code)}</code></td><td>${esc(b.heading)}</td><td>${b.confidence}%</td></tr>`;
+      html += `<tr><td><code>${esc(b.code)}</code></td><td>${esc(b.heading)}</td><td>${b.confidence}%</td><td>${esc(b.reason || '')}</td></tr>`;
     }
     html += `</tbody></table>`;
   }
@@ -505,9 +511,9 @@ function renderBisacSection(data: any): string {
     if (!print.length) {
       html += `<p class="muted">No confident BISAC match.</p>`;
     } else {
-      html += `<table class="report-table"><thead><tr><th>Code</th><th>Heading</th><th>Confidence</th></tr></thead><tbody>`;
+      html += `<table class="report-table"><thead><tr><th>Code</th><th>Heading</th><th>Confidence</th><th>Reasoning</th></tr></thead><tbody>`;
       for (const b of print) {
-        html += `<tr><td><code>${esc(b.code)}</code></td><td>${esc(b.heading)}</td><td>${b.confidence}%</td></tr>`;
+        html += `<tr><td><code>${esc(b.code)}</code></td><td>${esc(b.heading)}</td><td>${b.confidence}%</td><td>${esc(b.reason || '')}</td></tr>`;
       }
       html += `</tbody></table>`;
     }

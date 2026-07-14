@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Concept 2: Quill pen transforming into a rising chart line -->
+  <defs>
+    <linearGradient id="quillGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#1E40AF"/>
+      <stop offset="50%" style="stop-color:#6366F1"/>
+      <stop offset="100%" style="stop-color:#A78BFA"/>
+    </linearGradient>
+    <linearGradient id="chartGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#6366F1"/>
+      <stop offset="100%" style="stop-color:#10B981"/>
+    </linearGradient>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1E1B4B"/>
+      <stop offset="100%" style="stop-color:#312E81"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="230" fill="url(#bgGrad)"/>
+
+  <!-- Quill pen body -->
+  <path d="M120 420 L140 380 L180 340 Q200 310, 220 280 Q240 250, 250 230 Q260 210, 265 195 L270 180 Q280 150, 300 120 Q320 90, 360 70 Q340 110, 330 140 Q320 160, 310 185 L305 200"
+        fill="none" stroke="url(#quillGrad)" stroke-width="8" stroke-linecap="round"/>
+
+  <!-- Quill feather detail -->
+  <path d="M360 70 Q380 60, 400 55 Q380 80, 360 90 Q340 100, 330 110"
+        fill="#A78BFA" opacity="0.6"/>
+  <path d="M360 70 Q370 50, 385 40 Q375 65, 360 80"
+        fill="#C4B5FD" opacity="0.5"/>
+
+  <!-- Nib -->
+  <path d="M120 420 L130 405 L140 380 L125 395 Z" fill="#F59E0B"/>
+
+  <!-- Chart line emerging from quill tip area, going up-right -->
+  <path d="M160 370 L220 340 L260 350 L310 290 L360 260 L400 180"
+        fill="none" stroke="url(#chartGrad)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Data points on chart -->
+  <circle cx="160" cy="370" r="7" fill="#6366F1"/>
+  <circle cx="220" cy="340" r="7" fill="#7C3AED"/>
+  <circle cx="260" cy="350" r="7" fill="#8B5CF6"/>
+  <circle cx="310" cy="290" r="7" fill="#059669"/>
+  <circle cx="360" cy="260" r="7" fill="#10B981"/>
+  <circle cx="400" cy="180" r="8" fill="#10B981"/>
+
+  <!-- Arrow tip at chart end -->
+  <polygon points="400,180 390,195 405,192" fill="#10B981"/>
+
+  <!-- Subtle grid lines -->
+  <line x1="100" y1="430" x2="430" y2="430" stroke="#4C1D95" stroke-width="1" opacity="0.3"/>
+  <line x1="100" y1="370" x2="430" y2="370" stroke="#4C1D95" stroke-width="1" opacity="0.2"/>
+  <line x1="100" y1="310" x2="430" y2="310" stroke="#4C1D95" stroke-width="1" opacity="0.2"/>
+  <line x1="100" y1="250" x2="430" y2="250" stroke="#4C1D95" stroke-width="1" opacity="0.2"/>
+</svg>

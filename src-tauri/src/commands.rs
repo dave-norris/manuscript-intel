@@ -1,4 +1,4 @@
-// commands.rs — Tauri command handlers
+// commands.rs — Tauri command handlers and async LLM client
 
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
@@ -44,17 +44,7 @@ pub async fn analyze_csv(
     app: AppHandle,
     request: CsvRequest,
 ) -> AnalyzerResult {
-    tokio::task::spawn_blocking(move || {
-        run_csv_analyzer(&app, request)
-    }).await.unwrap()
-}
-
-fn emit_log(app: &AppHandle, msg: &str) {
-    let _ = app.emit("cdp:log", msg);
-}
-
-fn run_csv_analyzer(app: &AppHandle, req: CsvRequest) -> AnalyzerResult {
-    emit_log(app, &format!("Running CSV Analyzer for keyword: {} [{}]...", req.keyword, req.model));
+    let _ = app.emit("cdp:log", &format!("Running CSV Analyzer for keyword: {} [{}]...", request.keyword, request.model));
 
     let system = r#"You are a publishing strategist helping an indie author analyze Amazon keyword competition data.
 
@@ -71,22 +61,22 @@ Format your response with exactly these sections:
 
 Keep each section concise. No padding."#;
 
-    let user = format!("Keyword: {}\n\nRaw CSV data:\n\n{}", req.keyword, req.csv_content);
+    let user = format!("Keyword: {}\n\nRaw CSV data:\n\n{}", request.keyword, request.csv_content);
 
-    match call_llm(&req.provider, &req.api_key, &req.model, system, &user, 1500) {
+    match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 1500).await {
         Ok(markdown) => {
-            emit_log(app, "✓ CSV analysis complete.");
+            let _ = app.emit("cdp:log", "✓ CSV analysis complete.");
             AnalyzerResult { success: true, markdown, error: String::new(), rows: Vec::new() }
         }
         Err(e) => AnalyzerResult { success: false, markdown: String::new(), error: e, rows: Vec::new() },
     }
 }
 
-// ── AI client ─────────────────────────────────────────────────────────────────
+// ── AI client (async) ─────────────────────────────────────────────────────────
 
-/// Call the LLM, routing to the correct provider endpoint.
-/// provider: "claude" or "tokenmix"
-pub fn call_llm(
+/// Call the LLM asynchronously. Cancellable via tokio::select! — dropping the
+/// future closes the HTTP connection immediately.
+pub async fn call_llm(
     provider: &str,
     api_key: &str,
     model: &str,
@@ -95,12 +85,12 @@ pub fn call_llm(
     max_tokens: u32,
 ) -> Result<String, String> {
     match provider {
-        "tokenmix" => call_tokenmix(api_key, model, system, user, max_tokens),
-        _ => call_claude(api_key, model, system, user, max_tokens),
+        "tokenmix" => call_tokenmix(api_key, model, system, user, max_tokens).await,
+        _ => call_claude(api_key, model, system, user, max_tokens).await,
     }
 }
 
-fn call_claude(
+async fn call_claude(
     api_key: &str,
     model: &str,
     system: &str,
@@ -114,19 +104,23 @@ fn call_claude(
         "messages": [{"role": "user", "content": user}]
     });
 
-    let resp = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
-        .unwrap()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let resp = client
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", api_key)
         .header("anthropic-version", "2023-06-01")
         .header("content-type", "application/json")
         .json(&body)
         .send()
+        .await
         .map_err(|e| format!("Claude request failed: {}", e))?;
 
     let json: Value = resp.json()
+        .await
         .map_err(|e| format!("Claude response parse failed: {}", e))?;
 
     if let Some(err) = json.get("error") {
@@ -139,7 +133,7 @@ fn call_claude(
         .ok_or_else(|| "Claude: empty response".to_string())
 }
 
-fn call_tokenmix(
+async fn call_tokenmix(
     api_key: &str,
     model: &str,
     system: &str,
@@ -155,18 +149,22 @@ fn call_tokenmix(
         ]
     });
 
-    let resp = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
-        .unwrap()
+        .map_err(|e| format!("HTTP client error: {}", e))?;
+
+    let resp = client
         .post("https://api.tokenmix.ai/v1/chat/completions")
         .header("Authorization", format!("Bearer {}", api_key))
         .header("content-type", "application/json")
         .json(&body)
         .send()
+        .await
         .map_err(|e| format!("TokenMix request failed: {}", e))?;
 
     let json: Value = resp.json()
+        .await
         .map_err(|e| format!("TokenMix response parse failed: {}", e))?;
 
     if let Some(err) = json.get("error") {
@@ -182,7 +180,7 @@ fn call_tokenmix(
         .ok_or_else(|| "TokenMix: empty response".to_string())
 }
 
-// ── List models ───────────────────────────────────────────────────────────────
+// ── List models (async) ───────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 pub struct ModelsResult {
@@ -201,26 +199,30 @@ pub struct ModelInfo {
 
 #[tauri::command]
 pub async fn list_models(provider: String, api_key: String) -> ModelsResult {
-    tokio::task::spawn_blocking(move || {
-        match provider.as_str() {
-            "tokenmix" => fetch_tokenmix_models(&api_key),
-            "claude" => fetch_claude_models(),
-            _ => ModelsResult {
-                success: false, models: Vec::new(),
-                error: format!("Unknown provider: {}", provider),
-            },
-        }
-    }).await.unwrap()
+    match provider.as_str() {
+        "tokenmix" => fetch_tokenmix_models(&api_key).await,
+        "claude" => fetch_claude_models(),
+        _ => ModelsResult {
+            success: false, models: Vec::new(),
+            error: format!("Unknown provider: {}", provider),
+        },
+    }
 }
 
-fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
-    let resp = match reqwest::blocking::Client::builder()
+async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
+    let client = match reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
-        .unwrap()
+    {
+        Ok(c) => c,
+        Err(e) => return ModelsResult { success: false, models: Vec::new(), error: format!("Client error: {}", e) },
+    };
+
+    let resp = match client
         .get("https://api.tokenmix.ai/v1/models")
         .header("Authorization", format!("Bearer {}", api_key))
         .send()
+        .await
     {
         Ok(r) => r,
         Err(e) => return ModelsResult {
@@ -229,7 +231,7 @@ fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
         },
     };
 
-    let json: Value = match resp.json() {
+    let json: Value = match resp.json().await {
         Ok(v) => v,
         Err(e) => return ModelsResult {
             success: false, models: Vec::new(),
@@ -268,9 +270,9 @@ fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
         .filter(|m| !m.id.is_empty())
         .collect();
 
-    // If no pricing was found in the standard models response, try /v1/models/pricing
+    // If no pricing was found, try /v1/models/pricing
     let models = if models.iter().all(|m| m.input_price.is_none()) {
-        if let Ok(pricing_models) = fetch_tokenmix_pricing(api_key) {
+        if let Ok(pricing_models) = fetch_tokenmix_pricing(&client, api_key).await {
             models.into_iter().map(|mut m| {
                 if let Some(pm) = pricing_models.iter().find(|p| p.id == m.id) {
                     m.input_price = pm.input_price;
@@ -288,16 +290,15 @@ fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
     ModelsResult { success: true, models, error: String::new() }
 }
 
-/// Try the /v1/models/pricing endpoint (some relays expose this separately)
-fn fetch_tokenmix_pricing(api_key: &str) -> Result<Vec<ModelInfo>, ()> {
-    let resp = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build().unwrap()
+async fn fetch_tokenmix_pricing(client: &reqwest::Client, api_key: &str) -> Result<Vec<ModelInfo>, ()> {
+    let resp = client
         .get("https://api.tokenmix.ai/v1/models/pricing")
         .header("Authorization", format!("Bearer {}", api_key))
-        .send().map_err(|_| ())?;
+        .send()
+        .await
+        .map_err(|_| ())?;
 
-    let json: Value = resp.json().map_err(|_| ())?;
+    let json: Value = resp.json().await.map_err(|_| ())?;
 
     let models = json["data"].as_array()
         .unwrap_or(&Vec::new())

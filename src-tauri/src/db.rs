@@ -66,7 +66,6 @@ CREATE TABLE IF NOT EXISTS category_results (
     sales_to_ten  TEXT,
     publisher_pct TEXT,
     ku_pct        TEXT,
-    keywords      TEXT,
     status        TEXT NOT NULL,   -- 'matched' | 'considered' | 'failed'
     note          TEXT,
     generated_at  TEXT NOT NULL
@@ -220,8 +219,13 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
         CREATE INDEX IF NOT EXISTS idx_saved_reports_folder ON saved_reports(story_folder, doc_type);"
     );
 
-    // Migration: rename pr_keywords → mi_search_terms for existing databases.
-    let _ = conn.execute("ALTER TABLE pr_keywords RENAME TO mi_search_terms", []);
+    // Migration: move data from old pr_keywords table into mi_search_terms.
+    // The schema already creates mi_search_terms, so we just copy any data and drop the old table.
+    let _ = conn.execute_batch(
+        "INSERT OR IGNORE INTO mi_search_terms (story_folder, generated_at, keywords_json)
+         SELECT story_folder, generated_at, keywords_json FROM pr_keywords;
+         DROP TABLE IF EXISTS pr_keywords;"
+    );
 
     seed_if_empty(&conn)?;
     seed_bisac_if_empty(&conn)?;
@@ -576,14 +580,14 @@ pub fn replace_category_results(
     story_folder: &str,
     store: &str,
     top_genre_hint: Option<&str>,
-    results: &[(String, u8, String, String, String, String, String, String, Option<String>)],
-    // (path, confidence, sales_to_one, sales_to_ten, publisher_pct, ku_pct, keywords, status, note)
+    results: &[(String, u8, String, String, String, String, String, Option<String>)],
+    // (path, confidence, sales_to_one, sales_to_ten, publisher_pct, ku_pct, status, note)
 ) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute("DELETE FROM category_results WHERE story_folder = ?1", params![story_folder])
         .map_err(|e| e.to_string())?;
 
-    for (path, confidence, sales_to_one, sales_to_ten, publisher_pct, ku_pct, keywords, status, note) in results {
+    for (path, confidence, sales_to_one, sales_to_ten, publisher_pct, ku_pct, status, note) in results {
         let category_id: Option<i64> = if status != "failed" {
             let _ = conn.execute(
                 "INSERT INTO kdp_categories (path, store, source, verified_at, created_at)
@@ -618,10 +622,10 @@ pub fn replace_category_results(
         conn.execute(
             "INSERT INTO category_results
              (story_folder, category_id, raw_path, store, confidence, sales_to_one, sales_to_ten,
-              publisher_pct, ku_pct, keywords, status, note, generated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+              publisher_pct, ku_pct, status, note, generated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![story_folder, category_id, path, store, confidence, sales_to_one, sales_to_ten,
-                     publisher_pct, ku_pct, keywords, status, note, now],
+                     publisher_pct, ku_pct, status, note, now],
         ).map_err(|e| e.to_string())?;
     }
 
@@ -693,9 +697,8 @@ pub fn delete_chapter_summaries(conn: &Connection, story_folder: &str) -> Result
 // ── Genre classification (industry genre + KDP paths + comps + notes) ──────────────
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
+
 pub struct GenreDataRow {
-    pub generated_at:       String,
     pub industry_ebook:     String,
     pub industry_print:     String,
     pub genre_signals:      String,
@@ -765,7 +768,6 @@ pub fn load_genre_data(conn: &Connection, story_folder: &str) -> Option<GenreDat
         |r| {
             let parse = |s: String| serde_json::from_str::<Vec<String>>(&s).unwrap_or_default();
             Ok(GenreDataRow {
-                generated_at:       r.get(0)?,
                 industry_ebook:     r.get(1)?,
                 industry_print:     r.get(2)?,
                 genre_signals:      r.get(3)?,
@@ -881,15 +883,6 @@ pub fn has_keyword_search_results(conn: &Connection, story_folder: &str) -> bool
 
 // ── Keyword Search results (real search volume / competition) ──
 
-#[derive(serde::Serialize, Clone, Debug)]
-#[allow(dead_code)]
-pub struct KeywordSearchRow {
-    pub keyword:     String,
-    pub searches:    String,
-    pub competition: String,
-    pub earnings:    String,
-}
-
 /// Replace all stored results for this story+seed — latest search wins, same
 /// "supersede, don't accumulate" model used everywhere else in this app.
 pub fn replace_keyword_search_results(
@@ -911,25 +904,16 @@ pub fn replace_keyword_search_results(
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn get_keyword_search_results(conn: &Connection, story_folder: &str, seed: &str) -> Vec<KeywordSearchRow> {
-    let mut stmt = match conn.prepare(
-        "SELECT keyword, searches, competition, earnings FROM keyword_search_results
-         WHERE story_folder = ?1 AND seed = ?2 ORDER BY id"
-    ) { Ok(s) => s, Err(_) => return Vec::new() };
-    stmt.query_map(params![story_folder, seed], |r| {
-        Ok(KeywordSearchRow { keyword: r.get(0)?, searches: r.get(1)?, competition: r.get(2)?, earnings: r.get(3)? })
-    }).and_then(|rows| rows.collect::<Result<Vec<_>, _>>()).unwrap_or_default()
-}
 
 // ── Story documents (rendered markdown cache, read by the Reports panel) ─────
 
 pub const DOC_TYPES: &[(&str, &str)] = &[
+    ("analysis",            "Full Analysis"),
     ("genres_and_categories","Find Genres & Categories"),
     ("genre_analysis",      "Genre Analysis"),
     ("full_report",         "Full Report"),
     ("kdp_keywords",        "KDP Keywords"),
-    ("pr_keywords",         "Search Terms"),
+    ("mi_search_terms",     "Search Terms"),
     ("competition_report",  "Competition Analysis"),
     ("category_finder",     "Category Finder"),
     ("genre_ranking",       "Genre Ranking"),
@@ -1101,26 +1085,6 @@ pub fn replace_bisac_classifications(
     Ok(())
 }
 
-#[derive(serde::Serialize, Clone, Debug)]
-#[allow(dead_code)]
-pub struct BisacClassificationRow {
-    pub code:       String,
-    pub heading:    String,
-    pub confidence: i64,
-    pub reason:     String,
-}
-
-#[allow(dead_code)]
-pub fn get_bisac_classifications(conn: &Connection, story_folder: &str, format: &str) -> Vec<BisacClassificationRow> {
-    let mut stmt = match conn.prepare(
-        "SELECT code, heading, confidence, reason FROM bisac_classifications
-         WHERE story_folder = ?1 AND format = ?2 ORDER BY confidence DESC"
-    ) { Ok(s) => s, Err(_) => return Vec::new() };
-    stmt.query_map(params![story_folder, format], |r| {
-        Ok(BisacClassificationRow { code: r.get(0)?, heading: r.get(1)?, confidence: r.get(2)?, reason: r.get(3)? })
-    }).and_then(|rows| rows.collect::<Result<Vec<_>, _>>()).unwrap_or_default()
-}
-
 pub fn has_bisac_classifications(conn: &Connection, story_folder: &str) -> bool {
     conn.query_row(
         "SELECT 1 FROM bisac_classifications WHERE story_folder = ?1 LIMIT 1",
@@ -1202,13 +1166,6 @@ pub fn list_saved_reports(conn: &Connection, story_folder: &str) -> Vec<SavedRep
 }
 
 /// Get the content of a specific saved report by ID.
-#[allow(dead_code)]
-pub fn get_saved_report(conn: &Connection, id: i64) -> Option<String> {
-    conn.query_row(
-        "SELECT content FROM saved_reports WHERE id = ?1",
-        params![id], |r| r.get(0)
-    ).ok()
-}
 
 /// Delete a saved report version by ID.
 pub fn delete_saved_report(conn: &Connection, id: i64) -> Result<(), String> {

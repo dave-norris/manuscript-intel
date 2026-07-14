@@ -15,30 +15,28 @@ use crate::db;
 
 #[tauri::command]
 pub async fn generate_summaries(app: AppHandle, request: FolderRequest) -> GenreResult {
-    tokio::task::spawn_blocking(move || {
-        let folder = PathBuf::from(&request.folder);
-        if !folder.exists() { return err("Folder does not exist."); }
+    let folder = PathBuf::from(&request.folder);
+    if !folder.exists() { return err("Folder does not exist."); }
 
-        crate::reset_cancel();
-        let chapters = collect_chapters(&folder);
-        if chapters.is_empty() { return err("No .md files found."); }
+    crate::reset_cancel();
+    let chapters = collect_chapters(&folder);
+    if chapters.is_empty() { return err("No .md files found."); }
 
-        emit(&app, &format!("Found {} chapter file(s). Starting summaries...", chapters.len()));
+    emit(&app, &format!("Found {} chapter file(s). Starting summaries...", chapters.len()));
 
-        let database = app.state::<db::Db>();
-        let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder, &request.provider, &request.api_key, &request.model);
+    let database = app.state::<db::Db>();
+    let (done, skipped) = phase1_summaries(&app, &database, &chapters, &request.folder, &request.provider, &request.api_key, &request.model).await;
 
-        GenreResult {
-            success: true,
-            report:  format!("\u{2713} {} summarized, {} already done.", done, skipped),
-            error:   String::new(),
-        }
-    }).await.unwrap()
+    GenreResult {
+        success: true,
+        report:  format!("\u{2713} {} summarized, {} already done.", done, skipped),
+        error:   String::new(),
+    }
 }
 
 // ── Phase 1 implementation ───────────────────────────────────────────────────
 
-pub(crate) fn phase1_summaries(
+pub(crate) async fn phase1_summaries(
     app: &AppHandle,
     database: &db::Db,
     chapters: &[PathBuf],
@@ -74,7 +72,7 @@ pub(crate) fn phase1_summaries(
         let word_count = content.split_whitespace().count();
         emit(app, &format!("    {} words", word_count));
 
-        match summarize_chapter(provider, api_key, model, &fname, &truncate_words(&content, 8000)) {
+        match summarize_chapter(provider, api_key, model, &fname, &truncate_words(&content, 8000)).await {
             Ok(signals) => {
                 let title = extract_title(&content).unwrap_or_else(|| fname.clone());
                 let conn = database.0.lock().unwrap();
@@ -94,7 +92,7 @@ pub(crate) fn phase1_summaries(
 
 // ── AI call ──────────────────────────────────────────────────────────────────
 
-pub(crate) fn summarize_chapter(
+pub(crate) async fn summarize_chapter(
     provider: &str,
     api_key: &str,
     model: &str,
@@ -123,7 +121,7 @@ Write 2-3 dense paragraphs. Be specific."#;
         provider, api_key, model, system,
         &format!("Chapter: {}\n\n---\n\n{}", filename, content),
         600,
-    )
+    ).await
 }
 
 // ── File helpers (manuscript source files only — these stay on disk) ──────────

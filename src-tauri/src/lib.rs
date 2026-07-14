@@ -1,3 +1,5 @@
+#![deny(dead_code)]
+
 mod analysis;
 mod cancel;
 mod canopy;
@@ -11,7 +13,7 @@ mod winningcat;
 
 use tauri::Manager;
 
-pub use cancel::{is_cancelled, reset as reset_cancel};
+pub use cancel::{is_cancelled, reset as reset_cancel, notify as cancel_notify};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

@@ -97,21 +97,7 @@ pub async fn find_categories_for_story(app: AppHandle, request: FindCategoriesRe
     );
 
     // Match categories from catalog
-    let result = {
-        let app_c = app.clone();
-        let folder_c = request.folder.clone();
-        let store_c = request.store.clone();
-        let desc_c = base_description.clone();
-        let terms_c = genre_terms.clone();
-        let provider_c = request.provider.clone();
-        let api_key_c = request.api_key.clone();
-        let model_c = request.model.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let database = app_c.state::<db::Db>();
-            match_categories_by_store(&app_c, &database, &folder_c, &store_c, &desc_c, &terms_c, &provider_c, &api_key_c, &model_c)
-        }).await.unwrap()
-    };
+    let result = match_categories_by_store(&app, &database, &request.folder, &request.store, &base_description, &genre_terms, &request.provider, &request.api_key, &request.model).await;
 
     let final_cats = rank_by_discoverability(&app, &request.store, result.qualifying, &request.canopy_api_key).await;
 
@@ -168,19 +154,7 @@ pub async fn match_categories_for_story(app: AppHandle, request: FindCategoriesR
         }
         emit(&app, &format!("=== {} ===", store));
 
-        let app_c = app.clone();
-        let folder_c = request.folder.clone();
-        let store_c = store.to_string();
-        let desc_c = base_description.clone();
-        let terms_c = genre_terms.clone();
-        let provider_c = request.provider.clone();
-        let api_key_c = request.api_key.clone();
-        let model_c = request.model.clone();
-
-        let result = tokio::task::spawn_blocking(move || {
-            let database = app_c.state::<db::Db>();
-            match_categories_by_store(&app_c, &database, &folder_c, &store_c, &desc_c, &terms_c, &provider_c, &api_key_c, &model_c)
-        }).await.unwrap();
+        let result = match_categories_by_store(&app, &database, &request.folder, store, &base_description, &genre_terms, &request.provider, &request.api_key, &request.model).await;
 
         let final_cats = rank_by_discoverability(&app, store, result.qualifying, &request.canopy_api_key).await;
         if !final_cats.is_empty() { any_data = true; }
@@ -333,7 +307,7 @@ fn compute_discoverability_score(verified: bool, sales_to_ten: &str) -> i32 {
 
 /// Match one store's catalog against every ranked genre, genre by genre.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn match_categories_by_store(
+pub(crate) async fn match_categories_by_store(
     app: &AppHandle, database: &db::Db, folder: &str, store: &str,
     base_description: &str, genre_terms: &[(String, u8)],
     provider: &str, api_key: &str, model: &str,
@@ -358,7 +332,7 @@ pub(crate) fn match_categories_by_store(
         emit(app, &format!("      {} candidates found.", candidates.len()));
 
         let desc = format!("{}\n\nScore specifically against this one genre: {}", base_description, genre_name);
-        let picks = match ai_match_from_catalog(provider, api_key, model, &desc, &candidates, 2) {
+        let picks = match ai_match_from_catalog(provider, api_key, model, &desc, &candidates, 2).await {
             Ok(p) => p,
             Err(e) => { emit(app, &format!("      ⚠ AI error for this genre: {}", e)); Vec::new() }
         };
@@ -381,9 +355,9 @@ pub(crate) fn match_categories_by_store(
     // Persist every discovered candidate
     if !ranked_paths.is_empty() {
         let conn = database.0.lock().unwrap();
-        let rows: Vec<(String, u8, String, String, String, String, String, String, Option<String>)> = ranked_paths.iter().map(|path| {
+        let rows: Vec<(String, u8, String, String, String, String, String, Option<String>)> = ranked_paths.iter().map(|path| {
             let conf = path_conf[path];
-            (path.clone(), conf, String::new(), String::new(), String::new(), String::new(), String::new(), "matched".to_string(), None)
+            (path.clone(), conf, String::new(), String::new(), String::new(), String::new(), "matched".to_string(), None)
         }).collect();
         let top_genre = genre_terms.first().map(|(g, _)| g.clone());
         let _ = db::replace_category_results(&conn, folder, store, top_genre.as_deref(), &rows);
@@ -438,7 +412,7 @@ pub(crate) fn render_store_match_section(store: &str, per_genre: &[(String, u8, 
     json.to_string()
 }
 
-pub(crate) fn ai_match_from_catalog(provider: &str, api_key: &str, model: &str, description: &str, candidates: &[(String, String)], max_picks: usize)
+pub(crate) async fn ai_match_from_catalog(provider: &str, api_key: &str, model: &str, description: &str, candidates: &[(String, String)], max_picks: usize)
     -> Result<Vec<(String, u8, String)>, String>
 {
     let numbered = candidates.iter().enumerate()
@@ -459,7 +433,7 @@ Categories:
         max_picks, numbered
     );
 
-    let raw = call_llm(provider, api_key, model, &system, description, 500)?;
+    let raw = call_llm(provider, api_key, model, &system, description, 500).await?;
     let clean = raw.trim()
         .trim_start_matches("```json").trim_start_matches("```")
         .trim_end_matches("```").trim();

@@ -23,18 +23,17 @@ pub struct KeywordRequest {
 
 #[tauri::command]
 pub async fn generate_search_terms(app: AppHandle, request: KeywordRequest) -> GenreResult {
-    tokio::task::spawn_blocking(move || {
-        let database = app.state::<db::Db>();
-        let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
-        let genre_data = match genre_data {
-            Some(d) => d,
-            None    => return err("No genre data found. Run Analyze first."),
-        };
+    let database = app.state::<db::Db>();
+    let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
+    let genre_data = match genre_data {
+        Some(d) => d,
+        None    => return err("No genre data found. Run Analyze first."),
+    };
 
-        emit(&app, "Generating competition search terms...");
-        emit(&app, &format!("  Genre: {}", genre_data.industry_ebook));
+    emit(&app, "Generating competition search terms...");
+    emit(&app, &format!("  Genre: {}", genre_data.industry_ebook));
 
-        let system = r#"You are a book market research expert. Generate short search phrases for competition analysis.
+    let system = r#"You are a book market research expert. Generate short search phrases for competition analysis.
 
 These search phrases work like Amazon search — they need to be SHORT, SPECIFIC phrases that real readers type.
 
@@ -48,77 +47,74 @@ Rules:
 Return ONLY a JSON array of strings. No markdown, no preamble. Example:
 ["christian historical fiction", "first century rome", "biblical mystery", "faith romance clean"]"#;
 
-        let user = format!(
-            "Book genre: {}\nKDP categories: {}\nGenre signals:\n{}",
-            genre_data.industry_ebook,
-            genre_data.kdp_ebook.iter()
-                .map(|p| p.split('>').last().unwrap_or(p).trim().to_string())
-                .collect::<Vec<_>>().join(", "),
-            &genre_data.genre_signals[..genre_data.genre_signals.len().min(500)]
-        );
+    let user = format!(
+        "Book genre: {}\nKDP categories: {}\nGenre signals:\n{}",
+        genre_data.industry_ebook,
+        genre_data.kdp_ebook.iter()
+            .map(|p| p.split('>').last().unwrap_or(p).trim().to_string())
+            .collect::<Vec<_>>().join(", "),
+        &genre_data.genre_signals[..genre_data.genre_signals.len().min(500)]
+    );
 
-        match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 300) {
-            Err(e) => err(&format!("AI error: {}", e)),
-            Ok(raw) => {
-                let clean = raw.trim()
-                    .trim_start_matches("```json").trim_start_matches("```")
-                    .trim_end_matches("```").trim();
+    match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 300).await {
+        Err(e) => err(&format!("AI error: {}", e)),
+        Ok(raw) => {
+            let clean = raw.trim()
+                .trim_start_matches("```json").trim_start_matches("```")
+                .trim_end_matches("```").trim();
 
-                match serde_json::from_str::<Vec<String>>(clean) {
-                    Err(e) => err(&format!("Parse error: {} | got: {}", e, &clean[..clean.len().min(200)])),
-                    Ok(keywords) => {
-                        emit(&app, &format!("  ✓ {} search terms generated:", keywords.len()));
-                        for kw in &keywords { emit(&app, &format!("    • {}", kw)); }
+            match serde_json::from_str::<Vec<String>>(clean) {
+                Err(e) => err(&format!("Parse error: {} | got: {}", e, &clean[..clean.len().min(200)])),
+                Ok(keywords) => {
+                    emit(&app, &format!("  ✓ {} search terms generated:", keywords.len()));
+                    for kw in &keywords { emit(&app, &format!("    • {}", kw)); }
 
-                        let rendered = render_search_terms(&keywords);
-                        let conn = database.0.lock().unwrap();
-                        let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
-                        let _ = db::save_document(&conn, &request.folder, "mi_search_terms", &rendered);
+                    let rendered = render_search_terms(&keywords);
+                    let conn = database.0.lock().unwrap();
+                    let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
+                    let _ = db::save_document(&conn, &request.folder, "mi_search_terms", &rendered);
 
-                        GenreResult { success: true, report: rendered, error: String::new() }
-                    }
+                    GenreResult { success: true, report: rendered, error: String::new() }
                 }
             }
         }
-    }).await.unwrap()
+    }
 }
 
 #[tauri::command]
 pub async fn optimize_keywords(app: AppHandle, request: KeywordRequest) -> GenreResult {
-    tokio::task::spawn_blocking(move || {
-        let database = app.state::<db::Db>();
-        let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
-        let genre_data = match genre_data {
-            Some(d) => d,
-            None    => return err("No genre data found. Run Full Analysis first."),
-        };
+    let database = app.state::<db::Db>();
+    let genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
+    let genre_data = match genre_data {
+        Some(d) => d,
+        None    => return err("No genre data found. Run Full Analysis first."),
+    };
 
-        emit(&app, "Extracting keyword material...");
-        let source_note = if !genre_data.genre_signals.is_empty() {
-            "*(Generated from genre analysis.)*"
-        } else {
-            "*(Generated from genre analysis. Run Analyze Competition for PR-sourced keywords.)*"
-        };
+    emit(&app, "Extracting keyword material...");
+    let source_note = if !genre_data.genre_signals.is_empty() {
+        "*(Generated from genre analysis.)*"
+    } else {
+        "*(Generated from genre analysis. Run Analyze Competition for PR-sourced keywords.)*"
+    };
 
-        emit(&app, &format!("Asking {} to optimize keywords...", &request.model));
+    emit(&app, &format!("Asking {} to optimize keywords...", &request.model));
 
-        match call_keyword_optimizer(&request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals) {
-            Err(e) => err(&format!("AI error: {}", e)),
-            Ok((entries, strategy)) => {
-                let rendered = render_kdp_keywords(&entries, &strategy, source_note);
-                let conn = database.0.lock().unwrap();
-                let _ = db::save_kdp_keywords(&conn, &request.folder, &entries, &strategy, source_note);
-                let _ = db::save_document(&conn, &request.folder, "kdp_keywords", &rendered);
-                emit(&app, "✓ KDP keywords saved to database.");
-                GenreResult { success: true, report: rendered, error: String::new() }
-            }
+    match call_keyword_optimizer(&request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals).await {
+        Err(e) => err(&format!("AI error: {}", e)),
+        Ok((entries, strategy)) => {
+            let rendered = render_kdp_keywords(&entries, &strategy, source_note);
+            let conn = database.0.lock().unwrap();
+            let _ = db::save_kdp_keywords(&conn, &request.folder, &entries, &strategy, source_note);
+            let _ = db::save_document(&conn, &request.folder, "kdp_keywords", &rendered);
+            emit(&app, "✓ KDP keywords saved to database.");
+            GenreResult { success: true, report: rendered, error: String::new() }
         }
-    }).await.unwrap()
+    }
 }
 
 // ── Core logic ───────────────────────────────────────────────────────────────
 
-pub(crate) fn call_keyword_optimizer(provider: &str, api_key: &str, model: &str, genre_data: &db::GenreDataRow, keywords_text: &str)
+pub(crate) async fn call_keyword_optimizer(provider: &str, api_key: &str, model: &str, genre_data: &db::GenreDataRow, keywords_text: &str)
     -> Result<(Vec<db::KdpKeywordEntry>, String), String>
 {
     let system = r#"You are an Amazon KDP keyword strategist helping an indie author maximize book discoverability.
@@ -150,7 +146,7 @@ Return ONLY a JSON object:
         keywords_text
     );
 
-    let raw = call_llm(provider, api_key, model, system, &user, 1000)?;
+    let raw = call_llm(provider, api_key, model, system, &user, 1000).await?;
     let clean = extract_json_object(&raw)
         .ok_or_else(|| format!("No JSON object found in response: {}", &raw[..raw.len().min(200)]))?;
 
@@ -187,7 +183,7 @@ pub(crate) fn format_keyword_pool_table(pool: &[KeywordResult]) -> String {
     lines.join("\n")
 }
 
-pub(crate) fn call_keyword_optimizer_with_pool(
+pub(crate) async fn call_keyword_optimizer_with_pool(
     provider: &str,
     api_key: &str,
     model: &str,
@@ -196,7 +192,7 @@ pub(crate) fn call_keyword_optimizer_with_pool(
     keyword_pool: &[KeywordResult],
 ) -> Result<(Vec<db::KdpKeywordEntry>, String), String> {
     if keyword_pool.is_empty() {
-        return call_keyword_optimizer(provider, api_key, model, genre_data, keywords_text);
+        return call_keyword_optimizer(provider, api_key, model, genre_data, keywords_text).await;
     }
 
     let pool_table = format_keyword_pool_table(keyword_pool);
@@ -238,7 +234,7 @@ Return ONLY a JSON object:
         pool_table, keywords_text
     );
 
-    let raw = call_llm(provider, api_key, model, system, &user, 1200)?;
+    let raw = call_llm(provider, api_key, model, system, &user, 1200).await?;
     let clean = extract_json_object(&raw)
         .ok_or_else(|| format!("No JSON object found in response: {}", &raw[..raw.len().min(200)]))?;
 
@@ -262,7 +258,7 @@ Return ONLY a JSON object:
 }
 
 /// Generate 10 discovery keyword phrases for non-Amazon platforms.
-pub(crate) fn generate_discovery_keywords(
+pub(crate) async fn generate_discovery_keywords(
     provider: &str,
     api_key: &str,
     model: &str,
@@ -296,7 +292,7 @@ Return ONLY a JSON object:
         genre_data.genre_signals
     );
 
-    let raw = call_llm(provider, api_key, model, system, &user, 1200)?;
+    let raw = call_llm(provider, api_key, model, system, &user, 1200).await?;
     let clean = extract_json_object(&raw)
         .ok_or_else(|| format!("No JSON in discovery response: {}", &raw[..raw.len().min(200)]))?;
     let v: serde_json::Value = serde_json::from_str(&clean)
@@ -368,82 +364,77 @@ pub(crate) async fn run_keyword_searches_canopy(
 ) -> Vec<KeywordResult> {
     let mut all_results: Vec<KeywordResult> = Vec::new();
 
+    let client = match crate::canopy::CanopyClient::new(canopy_api_key) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = app.emit("cdp:log", &format!("⚠ Could not create Canopy client: {}", e));
+            return all_results;
+        }
+    };
+
     for seed in seeds {
         if crate::is_cancelled() { break; }
 
-        let app_c = app.clone();
-        let seed_c = seed.clone();
-        let key_c = canopy_api_key.to_string();
-        let folder_c = folder.to_string();
+        let _ = app.emit("cdp:log", &format!("Keyword search (Canopy): \"{}\"", seed));
 
-        let result = tokio::task::spawn_blocking(move || {
-            let client = crate::canopy::CanopyClient::new(&key_c)?;
-            let _ = app_c.emit("cdp:log", &format!("Keyword search (Canopy): \"{}\"", seed_c));
+        // Get suggestions
+        let suggestions = client.autocomplete(seed, "US", Some("digital-text")).await
+            .unwrap_or_else(|_| vec![seed.clone()]);
+        let mut keywords: Vec<String> = vec![seed.clone()];
+        for s in suggestions.into_iter().take(10) {
+            if !keywords.contains(&s) { keywords.push(s); }
+        }
 
-            // Get suggestions
-            let suggestions = client.autocomplete(&seed_c, "US", Some("digital-text"))
-                .unwrap_or_else(|_| vec![seed_c.clone()]);
-            let mut keywords: Vec<String> = vec![seed_c.clone()];
-            for s in suggestions.into_iter().take(10) {
-                if !keywords.contains(&s) { keywords.push(s); }
+        let mut results: Vec<KeywordResult> = Vec::new();
+        for kw in &keywords {
+            let search = match client.search(kw, "US", Some("digital-text"), 1).await {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if search.is_empty() {
+                results.push(KeywordResult { keyword: kw.clone(), searches: "0".to_string(), competition: "Low".to_string(), estimated_earnings: "$0".to_string() });
+                continue;
             }
-
-            let mut results: Vec<KeywordResult> = Vec::new();
-            for kw in &keywords {
-                let search = match client.search(kw, "US", Some("digital-text"), 1) {
-                    Ok(r) => r,
-                    Err(_) => continue,
-                };
-                if search.is_empty() {
-                    results.push(KeywordResult { keyword: kw.clone(), searches: "0".to_string(), competition: "Low".to_string(), estimated_earnings: "$0".to_string() });
-                    continue;
+            let organic: Vec<_> = search.iter().filter(|r| !r.is_sponsored).take(3).collect();
+            let mut daily_sales: Vec<f64> = Vec::new();
+            for sr in &organic {
+                if sr.asin.is_empty() { continue; }
+                if let Ok(s) = client.get_sales(&sr.asin, "US").await {
+                    if let Some(d) = s.estimated_daily_sales { daily_sales.push(d); }
                 }
-                let organic: Vec<_> = search.iter().filter(|r| !r.is_sponsored).take(3).collect();
-                let mut daily_sales: Vec<f64> = Vec::new();
-                for sr in &organic {
-                    if sr.asin.is_empty() { continue; }
-                    if let Ok(s) = client.get_sales(&sr.asin, "US") {
-                        if let Some(d) = s.estimated_daily_sales { daily_sales.push(d); }
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(80));
-                }
-                let avg = if daily_sales.is_empty() { 0.0 } else { daily_sales.iter().sum::<f64>() / daily_sales.len() as f64 };
-                let monthly_searches = (avg * 30.0 * 33.0) as u64;
-                let avg_reviews: f64 = {
-                    let counts: Vec<f64> = search.iter().filter_map(|r| r.review_count.map(|c| c as f64)).collect();
-                    if counts.is_empty() { 0.0 } else { counts.iter().sum::<f64>() / counts.len() as f64 }
-                };
-                let sponsored_count = search.iter().filter(|r| r.is_sponsored).count();
-                let competition = if avg_reviews > 500.0 || sponsored_count > 5 { "High" }
-                    else if avg_reviews > 100.0 || sponsored_count > 2 { "Medium" }
-                    else { "Low" };
-                let est_earnings = avg * 30.0 * 0.3 * 2.80;
-                results.push(KeywordResult {
-                    keyword: kw.clone(),
-                    searches: format!("{}", monthly_searches),
-                    competition: competition.to_string(),
-                    estimated_earnings: format!("${:.0}", est_earnings),
-                });
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
             }
+            let avg = if daily_sales.is_empty() { 0.0 } else { daily_sales.iter().sum::<f64>() / daily_sales.len() as f64 };
+            let monthly_searches = (avg * 30.0 * 33.0) as u64;
+            let avg_reviews: f64 = {
+                let counts: Vec<f64> = search.iter().filter_map(|r| r.review_count.map(|c| c as f64)).collect();
+                if counts.is_empty() { 0.0 } else { counts.iter().sum::<f64>() / counts.len() as f64 }
+            };
+            let sponsored_count = search.iter().filter(|r| r.is_sponsored).count();
+            let competition = if avg_reviews > 500.0 || sponsored_count > 5 { "High" }
+                else if avg_reviews > 100.0 || sponsored_count > 2 { "Medium" }
+                else { "Low" };
+            let est_earnings = avg * 30.0 * 0.3 * 2.80;
+            results.push(KeywordResult {
+                keyword: kw.clone(),
+                searches: format!("{}", monthly_searches),
+                competition: competition.to_string(),
+                estimated_earnings: format!("${:.0}", est_earnings),
+            });
+        }
 
-            // Persist
-            let database = app_c.state::<crate::db::Db>();
+        // Persist
+        {
+            let database = app.state::<crate::db::Db>();
             let conn = database.0.lock().unwrap();
             let rows: Vec<(String, String, String, String)> = results.iter()
                 .map(|r| (r.keyword.clone(), r.searches.clone(), r.competition.clone(), r.estimated_earnings.clone()))
                 .collect();
-            let _ = crate::db::replace_keyword_search_results(&conn, &folder_c, &seed_c, &rows);
-
-            Ok::<Vec<KeywordResult>, String>(results)
-        }).await.unwrap();
-
-        match result {
-            Ok(kws) => {
-                let _ = app.emit("cdp:log", &format!("✓ \"{}\" → {} keyword(s).", seed, kws.len()));
-                all_results.extend(kws);
-            }
-            Err(e) => { let _ = app.emit("cdp:log", &format!("⚠ \"{}\" failed: {}", seed, e)); }
+            let _ = crate::db::replace_keyword_search_results(&conn, folder, seed, &rows);
         }
+
+        let _ = app.emit("cdp:log", &format!("✓ \"{}\" → {} keyword(s).", seed, results.len()));
+        all_results.extend(results);
     }
 
     all_results

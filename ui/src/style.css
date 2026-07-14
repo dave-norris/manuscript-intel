@@ -260,42 +260,40 @@ html, body {
 .analyzer-actions {
   margin-bottom: 14px;
 }
-.analyzer-primary {
+
+/* ── Platform tabs ── */
+.platform-tabs {
   display: flex;
+  gap: 0;
+  margin-bottom: 14px;
+  border-bottom: 2px solid var(--border);
+}
+.platform-tab {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 16px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.platform-tab:hover {
+  color: var(--text);
+}
+.platform-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.analyzer-buttons {
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
   align-items: center;
 }
-.btn-action-primary {
-  flex: 1;
-  background: var(--accent);
-  font-size: 13px;
-  font-weight: 700;
-  padding: 9px 14px;
-  text-align: left;
-}
-.btn-action-primary:hover { background: #c87820; }
-.btn-action-primary:disabled { background: var(--surface2); color: var(--text-muted); }
-.btn-action-comp {
-  flex: 1;
-  background: #5a2d82;
-  font-size: 13px;
-  font-weight: 700;
-  padding: 9px 14px;
-  text-align: left;
-}
-.btn-action-comp:hover { background: #421f61; }
-.btn-action-comp:disabled { background: var(--surface2); color: var(--text-muted); }
-.btn-action-cat {
-  flex: 1;
-  background: #1e4a6a;
-  font-size: 13px;
-  font-weight: 700;
-  padding: 9px 14px;
-  text-align: left;
-}
-.btn-action-cat:hover { background: #163652; }
-.btn-action-cat:disabled { background: var(--surface2); color: var(--text-muted); }
 .btn-action-stop {
   background: var(--danger);
   color: white;
@@ -1041,6 +1039,9 @@ html, body {
 .sidebar-report-item {
   padding: 6px 10px;
   font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   color: var(--text);
   cursor: pointer;
   border-radius: var(--radius);
@@ -1056,15 +1057,6 @@ html, body {
   padding: 8px 10px;
   font-size: 11px;
   color: var(--text-muted);
-}
-
-/* ── Analyzer secondary buttons ── */
-.analyzer-secondary {
-  display: flex;
-  gap: 8px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border);
 }
 
 /* ── Activity indicator ── */

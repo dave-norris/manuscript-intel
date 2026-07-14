@@ -417,6 +417,43 @@ function showPanel(name: string): void {
   });
 }
 
+// ── Platform tabs (KDP / Wide) ────────────────────────────────────────────────
+
+const KDP_REPORT_TYPES = new Set([
+  'analysis', 'genre_analysis', 'full_report', 'kdp_keywords', 'mi_search_terms',
+  'competition_report', 'category_finder', 'genre_ranking', 'bisac_classification',
+  'review_mining', 'author_analysis', 'chapter_summaries', 'keyword_search',
+  'mapped_categories', 'genres_and_categories',
+]);
+const WIDE_REPORT_TYPES = new Set([
+  'genre_analysis', 'bisac_classification', 'discovery_keywords',
+  'genre_ranking', 'chapter_summaries',
+]);
+
+function getSelectedPlatform(): string {
+  return localStorage.getItem('platform') || 'kdp';
+}
+
+function setPlatform(platform: string): void {
+  localStorage.setItem('platform', platform);
+  document.querySelectorAll<HTMLButtonElement>('.platform-tab').forEach(t => {
+    t.classList.toggle('active', t.dataset.platform === platform);
+  });
+  // Show/hide KDP-only elements
+  document.querySelectorAll<HTMLElement>('.kdp-only').forEach(el => {
+    el.style.display = platform === 'kdp' ? '' : 'none';
+  });
+  // Refresh reports list to filter by platform
+  loadReportsList();
+}
+
+document.querySelectorAll<HTMLButtonElement>('.platform-tab').forEach(tab => {
+  tab.addEventListener('click', () => setPlatform(tab.dataset.platform!));
+});
+
+// Initialize platform on load
+setPlatform(getSelectedPlatform());
+
 document.querySelectorAll<HTMLButtonElement>('.nav-item').forEach(btn => {
   btn.addEventListener('click', () => showPanel(btn.dataset.panel!));
 });
@@ -649,66 +686,62 @@ async function loadReportsList(): Promise<void> {
     const docs = await invoke<DocMeta[]>('list_reports_cmd', { folder });
     const saved = await invoke<SavedReportMeta[]>('list_saved_reports_cmd', { folder });
 
-    if (docs.length === 0 && saved.length === 0) {
-      list.innerHTML = '<div class="sidebar-hint">No reports yet.</div>';
-      return;
-    }
-
     const reportDescriptions: Record<string, string> = {
-      'analysis': 'Combined analysis: categories, BISAC, keywords, and positioning — all in one report.',
-      'genres_and_categories': 'Genre ranking with KDP category matching for both Kindle and Paperback.',
+      'analysis': 'Combined analysis: categories, BISAC, keywords, and positioning.',
+      'genres_and_categories': 'Genre ranking with KDP category matching for Kindle and Paperback.',
       'genre_analysis': 'Industry genre classification, KDP paths, comps, and reader demographic.',
       'full_report': 'Genre analysis with competition status.',
       'kdp_keywords': 'The 7 keyword strings optimized for KDP discoverability.',
       'mi_search_terms': 'Short search phrases used for competition and review analysis.',
-      'competition_report': 'Market landscape: how competitive the niche is, who dominates, pricing.',
+      'competition_report': 'Market landscape: how competitive the niche is, who dominates.',
       'category_finder': 'Category matching results with live discoverability scores.',
       'genre_ranking': 'Each genre scored independently against the manuscript.',
       'bisac_classification': 'BISAC subject codes for KDP Print and Ingram distribution.',
       'review_mining': 'Reader insights extracted from competitor book reviews.',
-      'author_analysis': 'Competitor author catalog strategy: pricing, release cadence, series.',
+      'author_analysis': 'Competitor author catalog strategy: pricing, release cadence.',
       'chapter_summaries': 'Genre signal extraction from each chapter of the manuscript.',
-      'discovery_keywords': 'Keyword phrases for non-Amazon platforms (Apple, Kobo, Google, etc.).',
-      'keyword_search': 'Amazon keyword volume and competition data from Canopy API.',
+      'discovery_keywords': 'Keyword phrases for non-Amazon platforms.',
+      'keyword_search': 'Amazon keyword volume and competition data.',
       'mapped_categories': 'Verified KDP category paths with live bestseller stats.',
     };
 
-    // Group reports by type, count them
-    const currentCount = docs.length;
-    const savedCount = saved.length;
-
-    // Current reports
-    if (docs.length > 0) {
-      const header = document.createElement('div');
-      header.className = 'sidebar-section-header';
-      header.innerHTML = `Current <span class="report-count">${currentCount}</span>`;
-      list.appendChild(header);
-
-      docs.forEach(doc => {
-        const item = document.createElement('div');
-        item.className = 'sidebar-report-item';
-        item.textContent = doc.label;
-        item.title = reportDescriptions[doc.doc_type] || new Date(doc.generated_at).toLocaleString();
-        item.addEventListener('click', () => openReport(folder, doc.doc_type, doc.label));
-        list.appendChild(item);
-      });
+    if (docs.length === 0 && saved.length === 0) {
+      list.innerHTML = '<div class="sidebar-hint">No reports yet. Click Get Reports.</div>';
+      return;
     }
 
-    // Saved versions
-    if (saved.length > 0) {
-      const header = document.createElement('div');
-      header.className = 'sidebar-section-header';
-      header.innerHTML = `Saved <span class="report-count">${savedCount}</span>`;
-      list.appendChild(header);
+    const typeMap: Record<string, { doc: DocMeta | null; savedCount: number }> = {};
+    for (const doc of docs) {
+      typeMap[doc.doc_type] = { doc, savedCount: 0 };
+    }
+    for (const s of saved) {
+      if (!typeMap[s.doc_type]) typeMap[s.doc_type] = { doc: null, savedCount: 0 };
+      typeMap[s.doc_type].savedCount++;
+    }
 
-      saved.forEach(s => {
-        const item = document.createElement('div');
-        item.className = 'sidebar-report-item';
-        item.textContent = s.label;
-        item.title = `Saved ${new Date(s.saved_at).toLocaleString()}`;
-        item.addEventListener('click', () => openSavedReport(s.id, s.label));
-        list.appendChild(item);
-      });
+    // Filter by selected platform
+    const platform = getSelectedPlatform();
+    const visibleTypes = platform === 'kdp' ? KDP_REPORT_TYPES : WIDE_REPORT_TYPES;
+
+    for (const [docType, info] of Object.entries(typeMap)) {
+      if (!visibleTypes.has(docType)) continue;
+      const label = info.doc?.label || saved.find(s => s.doc_type === docType)?.label || docType;
+      const totalCount = (info.doc ? 1 : 0) + info.savedCount;
+
+      const item = document.createElement('div');
+      item.className = 'sidebar-report-item';
+      item.title = reportDescriptions[docType] || '';
+      item.innerHTML = `<span class="report-item-label">${label}</span>${totalCount > 1 ? `<span class="report-count">${totalCount}</span>` : ''}`;
+
+      if (info.doc) {
+        item.addEventListener('click', () => openReport(folder, docType, label));
+      } else {
+        const firstSaved = saved.find(s => s.doc_type === docType);
+        if (firstSaved) {
+          item.addEventListener('click', () => openSavedReport(firstSaved.id, label));
+        }
+      }
+      list.appendChild(item);
     }
   } catch (e) {
     list.innerHTML = `<div class="sidebar-hint">Error: ${String(e)}</div>`;

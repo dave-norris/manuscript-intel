@@ -609,21 +609,6 @@ $btn('btn-author-analysis').addEventListener('click', async () => {
   finally { disableGenreButtons(false); }
 });
 
-$btn('btn-sync-categories').addEventListener('click', async () => {
-  const canopyKey = localStorage.getItem('canopyApiKey') || '';
-  if (!canopyKey) { appendGenreLog('✗ No Canopy API key. Go to Settings.'); return; }
-  appendGenreLog('Syncing categories from Amazon...');
-  try {
-    const kindle = await invoke<{ success: boolean; imported: number; error: string }>('sync_categories_canopy', { canopyApiKey: canopyKey, store: 'Kindle' });
-    if (kindle.success) { appendGenreLog(`  ✓ Kindle: ${kindle.imported} categories synced.`); }
-    else { appendGenreLog('  ✗ Kindle: ' + kindle.error); }
-    const books = await invoke<{ success: boolean; imported: number; error: string }>('sync_categories_canopy', { canopyApiKey: canopyKey, store: 'Books' });
-    if (books.success) { appendGenreLog(`  ✓ Books: ${books.imported} categories synced.`); }
-    else { appendGenreLog('  ✗ Books: ' + books.error); }
-    appendGenreLog('✓ Category sync complete.');
-  } catch (e) { appendGenreLog('✗ ' + String(e)); }
-});
-
 // ── Log listeners ─────────────────────────────────────────────────────────────
 
 listen<string>('genre:log', (event) => { appendGenreLog(event.payload); });

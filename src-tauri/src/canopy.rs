@@ -317,31 +317,9 @@ impl CanopyClient {
 
 // ── Author ────────────────────────────────────────────────────────────────────
 
-// ── Category Taxonomy ─────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CategoryNode {
-    pub id: String,
-    pub name: String,
-    pub path: String,
-    pub children: Vec<CategoryNode>,
-}
+// ── Category Products ─────────────────────────────────────────────────────────
 
 impl CanopyClient {
-    /// Fetch the full category taxonomy for a domain.
-    pub fn get_categories(&self, domain: &str) -> Result<Vec<CategoryNode>, String> {
-        let resp = self.get("/api/amazon/categories", &[("domain", domain)])?;
-        let items = &resp["data"]["amazonProductCategoryTaxonomy"];
-
-        let arr = items.as_array().ok_or("No category taxonomy in response")?;
-        Ok(arr.iter().map(|item| CategoryNode {
-            id: item["id"].as_str().unwrap_or("").to_string(),
-            name: item["name"].as_str().unwrap_or("").to_string(),
-            path: item["breadcrumbPath"].as_str().unwrap_or("").to_string(),
-            children: Vec::new(), // Root-level only from this endpoint
-        }).collect())
-    }
-
     /// Fetch products listed in a specific category (paginated, deeper than bestsellers).
     /// Also returns subcategories that can be drilled into.
     pub fn get_category_products(&self, category_id: &str, domain: &str, page: u32) -> Result<Vec<BestsellerEntry>, String> {
@@ -1144,56 +1122,6 @@ Be specific and data-driven."#;
             }
             Err(e) => AuthorAnalysisResult { success: false, report: String::new(), error: format!("AI error: {}", e) },
         }
-    }).await.unwrap()
-}
-
-// ── Live Category Sync ────────────────────────────────────────────────────────
-
-#[derive(Serialize)]
-pub struct CategorySyncResult {
-    pub success:  bool,
-    pub imported: usize,
-    pub error:    String,
-}
-
-/// Pull category taxonomy directly from Amazon via Canopy and import into the DB,
-/// replacing the need for WinningCat CSV imports.
-#[tauri::command]
-pub async fn sync_categories_canopy(app: AppHandle, canopy_api_key: String, store: String) -> CategorySyncResult {
-    tokio::task::spawn_blocking(move || {
-        let client = match CanopyClient::new(&canopy_api_key) {
-            Ok(c) => c,
-            Err(e) => return CategorySyncResult { success: false, imported: 0, error: e },
-        };
-
-        let domain = store_to_domain(&store);
-        emit_canopy(&app, &format!("Syncing {} category taxonomy from Amazon via Canopy...", store));
-
-        let categories = match client.get_categories(domain) {
-            Ok(c) => c,
-            Err(e) => return CategorySyncResult { success: false, imported: 0, error: format!("Failed to fetch categories: {}", e) },
-        };
-
-        // Flatten the tree and import leaf nodes into the DB
-        let database = app.state::<db::Db>();
-        let conn = database.0.lock().unwrap();
-        let mut imported = 0usize;
-
-        fn import_nodes(conn: &rusqlite::Connection, nodes: &[CategoryNode], store: &str, imported: &mut usize) {
-            for node in nodes {
-                if !node.id.is_empty() && !node.path.is_empty() {
-                    if db::import_kdp_category(conn, &node.path, store, &node.id).is_ok() {
-                        *imported += 1;
-                    }
-                }
-                import_nodes(conn, &node.children, store, imported);
-            }
-        }
-
-        import_nodes(&conn, &categories, &store, &mut imported);
-        emit_canopy(&app, &format!("✓ Synced {} categories into the catalog.", imported));
-
-        CategorySyncResult { success: true, imported, error: String::new() }
     }).await.unwrap()
 }
 

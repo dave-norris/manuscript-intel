@@ -62,7 +62,6 @@ pub fn run() {
             canopy::search_keywords_canopy,
             canopy::mine_competitor_reviews,
             canopy::analyze_comp_authors,
-            canopy::sync_categories_canopy,
             canopy::deep_category_analysis,
             stories::list_stories,
             stories::add_story,

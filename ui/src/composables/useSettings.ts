@@ -6,6 +6,8 @@ const provider = ref(localStorage.getItem('provider') || 'tokenmix');
 const apiKey = ref(localStorage.getItem('apiKey') || '');
 const model = ref(localStorage.getItem('model') || '');
 const canopyApiKey = ref(localStorage.getItem('canopyApiKey') || '');
+const dataforseoLogin = ref(localStorage.getItem('dataforseoLogin') || '');
+const dataforseoPassword = ref(localStorage.getItem('dataforseoPassword') || '');
 const models = ref<ModelInfo[]>([]);
 
 async function fetchModels(): Promise<{ success: boolean; error: string }> {
@@ -37,6 +39,8 @@ function saveSettings(): void {
   localStorage.setItem('apiKey', apiKey.value.trim());
   localStorage.setItem('model', model.value);
   localStorage.setItem('canopyApiKey', canopyApiKey.value.trim());
+  localStorage.setItem('dataforseoLogin', dataforseoLogin.value.trim());
+  localStorage.setItem('dataforseoPassword', dataforseoPassword.value.trim());
 }
 
 async function testCanopy(): Promise<{ success: boolean; error: string }> {
@@ -52,15 +56,32 @@ async function testCanopy(): Promise<{ success: boolean; error: string }> {
   }
 }
 
+async function testDataforseo(): Promise<{ success: boolean; error: string }> {
+  const login = dataforseoLogin.value.trim();
+  const password = dataforseoPassword.value.trim();
+  if (!login || !password) {
+    return { success: false, error: 'Enter login and password first.' };
+  }
+  try {
+    const result = await invoke<{ success: boolean; error: string }>('test_dataforseo_connection', { login, password });
+    return result;
+  } catch (e) {
+    return { success: false, error: String(e) };
+  }
+}
+
 export function useSettings() {
   return {
     provider,
     apiKey,
     model,
     canopyApiKey,
+    dataforseoLogin,
+    dataforseoPassword,
     models,
     fetchModels,
     saveSettings,
     testCanopy,
+    testDataforseo,
   };
 }

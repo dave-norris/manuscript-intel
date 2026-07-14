@@ -18,7 +18,7 @@ use super::categories::{match_categories_by_store, rank_by_discoverability};
 use super::bisac::ai_pick_bisac;
 use super::keywords::{
     call_keyword_optimizer, call_keyword_optimizer_with_pool,
-    derive_keyword_seeds, run_keyword_searches_canopy,
+    derive_keyword_seeds, run_keyword_searches_canopy, run_keyword_searches_dataforseo,
     generate_discovery_keywords, render_kdp_keywords, render_search_terms,
 };
 
@@ -789,19 +789,21 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
         Vec::new()
     } else {
     emit(&app, "Step 7: Keyword search...");
-    {
-        let top_cats_for_seeds: Vec<String> = kindle_top_categories.iter().take(2).cloned().collect();
+    let top_cats_for_seeds: Vec<String> = kindle_top_categories.iter().take(2).cloned().collect();
         let seeds = derive_keyword_seeds(&genre_data.industry_ebook, &top_cats_for_seeds);
         if seeds.is_empty() {
             emit(&app, "  ⚠ No seeds derived — skipping keyword search.");
             Vec::new()
         } else {
             emit(&app, &format!("  Seeds: {:?}", seeds));
-            if request.canopy_api_key.is_empty() {
-                emit(&app, "  ⚠ No Canopy API key — skipping keyword search.");
-                Vec::new()
-            } else {
+            if !request.dataforseo_login.is_empty() && !request.dataforseo_password.is_empty() {
+                run_keyword_searches_dataforseo(&app, &request.folder, &seeds, &request.dataforseo_login, &request.dataforseo_password).await
+            } else if !request.canopy_api_key.is_empty() {
+                emit(&app, "⚠ DataForSEO credentials not set — falling back to Canopy for keyword search. Add DataForSEO login/password in Settings for real Amazon search volume data.");
                 run_keyword_searches_canopy(&app, &request.folder, &seeds, &request.canopy_api_key).await
+            } else {
+                emit(&app, "  ⚠ No DataForSEO or Canopy credentials — skipping keyword search.");
+                Vec::new()
             }
         }
     };
@@ -816,7 +818,6 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
         }).to_string();
         let _ = db::save_document(&conn, &request.folder, "keyword_search", &ks_json);
     }
-    }; // end keyword_pool
     if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 8: KDP Keywords (KDP only) ────────────────────────────────────
@@ -856,16 +857,39 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
 
         match res {
             Ok(entries) => {
+                // Enrich with Google search volume from DataForSEO if credentials available
+                let enriched = if !request.dataforseo_login.is_empty() && !request.dataforseo_password.is_empty() && !entries.is_empty() {
+                    emit(&app, "  Enriching with Google search volume via DataForSEO...");
+                    let phrases: Vec<String> = entries.iter().map(|e| e.phrase.clone()).collect();
+                    let client = crate::dataforseo::DataForSeoClient::new(&request.dataforseo_login, &request.dataforseo_password);
+                    match client {
+                        Ok(c) => match c.google_search_volume(&phrases).await {
+                            Ok(volumes) => {
+                                entries.into_iter().map(|mut e| {
+                                    if let Some(v) = volumes.iter().find(|v| v.keyword.to_lowercase() == e.phrase.to_lowercase()) {
+                                        e.rationale = format!("{}/mo Google — {}", v.search_volume, e.rationale);
+                                    }
+                                    e
+                                }).collect()
+                            }
+                            Err(err) => { emit(&app, &format!("  ⚠ DataForSEO volume lookup failed: {}", err)); entries }
+                        }
+                        Err(err) => { emit(&app, &format!("  ⚠ DataForSEO client error: {}", err)); entries }
+                    }
+                } else {
+                    entries
+                };
+
                 let conn = database.0.lock().unwrap();
-                let _ = db::save_discovery_keywords(&conn, &request.folder, &entries);
+                let _ = db::save_discovery_keywords(&conn, &request.folder, &enriched);
                 // Save as standalone report
                 let dk_json = serde_json::json!({
                     "schema": "discovery_keywords_v1",
-                    "keywords": entries.iter().map(|e| serde_json::json!({ "phrase": e.phrase, "rationale": e.rationale })).collect::<Vec<_>>(),
+                    "keywords": enriched.iter().map(|e| serde_json::json!({ "phrase": e.phrase, "rationale": e.rationale })).collect::<Vec<_>>(),
                 }).to_string();
                 let _ = db::save_document(&conn, &request.folder, "discovery_keywords", &dk_json);
-                emit(&app, &format!("  ✓ {} discovery keywords saved.", entries.len()));
-                entries
+                emit(&app, &format!("  ✓ {} discovery keywords saved.", enriched.len()));
+                enriched
             }
             Err(e) => {
                 emit(&app, &format!("  ⚠ Discovery keywords failed: {} — continuing.", e));

@@ -9,10 +9,13 @@ const settingsCtx = inject<{
   apiKey: Ref<string>;
   model: Ref<string>;
   canopyApiKey: Ref<string>;
+  dataforseoLogin: Ref<string>;
+  dataforseoPassword: Ref<string>;
   models: Ref<ModelInfo[]>;
   fetchModels: () => Promise<{ success: boolean; error: string }>;
   saveSettings: () => void;
   testCanopy: () => Promise<{ success: boolean; error: string }>;
+  testDataforseo: () => Promise<{ success: boolean; error: string }>;
 }>('settings')!;
 
 const showPanel = inject<(name: string) => void>('showPanel')!;
@@ -20,6 +23,7 @@ const showPanel = inject<(name: string) => void>('showPanel')!;
 const savedMsg = ref('');
 const modelFetchStatus = ref('');
 const canopyTestStatus = ref('');
+const dataforseoTestStatus = ref('');
 const winningcatStatus = ref('');
 const staleStatus = ref('');
 const showStaleRow = ref(false);
@@ -56,6 +60,12 @@ async function onTestCanopy(): Promise<void> {
   canopyTestStatus.value = 'Testing...';
   const result = await settingsCtx.testCanopy();
   canopyTestStatus.value = result.success ? '✓ Connected' : '✗ ' + result.error;
+}
+
+async function onTestDataforseo(): Promise<void> {
+  dataforseoTestStatus.value = 'Testing...';
+  const result = await settingsCtx.testDataforseo();
+  dataforseoTestStatus.value = result.success ? '✓ Connected' : '✗ ' + result.error;
 }
 
 async function onImportWinningCat(): Promise<void> {
@@ -163,6 +173,27 @@ async function onRemoveStale(): Promise<void> {
       />
       <button class="btn btn-sm" @click="onTestCanopy">Test Connection</button>
       <div class="canopy-test-status">{{ canopyTestStatus }}</div>
+    </div>
+
+    <!-- DataForSEO section -->
+    <div class="settings-section-divider"></div>
+    <h3 class="section-title">DataForSEO</h3>
+    <div class="settings-form">
+      <p class="panel-desc">Used for keyword search volume data (Amazon + Google). Get credentials at <strong>app.dataforseo.com</strong>.</p>
+      <label>Login (email)</label>
+      <input
+        type="text"
+        v-model="settingsCtx.dataforseoLogin.value"
+        placeholder="your@email.com"
+      />
+      <label>Password</label>
+      <input
+        type="password"
+        v-model="settingsCtx.dataforseoPassword.value"
+        placeholder="DataForSEO API password"
+      />
+      <button class="btn btn-sm" @click="onTestDataforseo">Test Connection</button>
+      <div class="canopy-test-status">{{ dataforseoTestStatus }}</div>
     </div>
 
     <!-- WinningCat section -->

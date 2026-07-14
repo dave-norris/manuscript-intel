@@ -48,6 +48,10 @@ pub struct AnalyzeStoryRequest {
     pub canopy_api_key:    String,
     #[serde(default)]
     pub platform:          String,  // "kdp" or "wide"
+    #[serde(default)]
+    pub dataforseo_login:  String,
+    #[serde(default)]
+    pub dataforseo_password: String,
 }
 
 // ── Shared helpers ──────────────────────────────────────────────────────────

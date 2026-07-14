@@ -5,6 +5,7 @@ mod cancel;
 mod canopy;
 mod commands;
 mod competition_analyzer;
+mod dataforseo;
 mod db;
 mod genre_taxonomy;
 mod models;
@@ -65,6 +66,9 @@ pub fn run() {
             canopy::mine_competitor_reviews,
             canopy::analyze_comp_authors,
             canopy::deep_category_analysis,
+            dataforseo::test_dataforseo_connection,
+            dataforseo::search_amazon_keywords,
+            dataforseo::search_google_keywords,
             stories::list_stories,
             stories::add_story,
             stories::update_story,

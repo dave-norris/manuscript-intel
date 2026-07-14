@@ -76,7 +76,7 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
   isWorking.value = true;
   try {
     const result = await invoke<GenreResult>('analyze_story', {
-      request: { folder, api_key: apiKey, model, provider, force_resummarize: forceResummarize, canopy_api_key: canopyApiKey, platform },
+      request: { folder, api_key: apiKey, model, provider, force_resummarize: forceResummarize, canopy_api_key: canopyApiKey, platform, dataforseo_login: localStorage.getItem('dataforseoLogin') || '', dataforseo_password: localStorage.getItem('dataforseoPassword') || '' },
     });
     if (result.success) {
       appendLog('✓ Analysis complete. View reports in the sidebar.');

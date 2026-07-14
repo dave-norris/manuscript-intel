@@ -467,3 +467,69 @@ pub(crate) fn render_search_terms(keywords: &[String]) -> String {
     });
     json.to_string()
 }
+
+/// DataForSEO-based keyword search — uses Amazon Related Keywords API.
+/// For each seed: gets related keywords with real Amazon search volume.
+pub(crate) async fn run_keyword_searches_dataforseo(
+    app: &AppHandle,
+    folder: &str,
+    seeds: &[String],
+    dataforseo_login: &str,
+    dataforseo_password: &str,
+) -> Vec<KeywordResult> {
+    let client = match crate::dataforseo::DataForSeoClient::new(dataforseo_login, dataforseo_password) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = app.emit("cdp:log", &format!("⚠ DataForSEO client error: {}", e));
+            return Vec::new();
+        }
+    };
+
+    let mut all_results: Vec<KeywordResult> = Vec::new();
+
+    for seed in seeds {
+        if crate::is_cancelled() { break; }
+        let _ = app.emit("cdp:log", &format!("DataForSEO keyword search: \"{}\"", seed));
+
+        match client.amazon_related_keywords(seed, 20).await {
+            Ok(keywords) => {
+                let _ = app.emit("cdp:log", &format!("  ✓ {} keywords found.", keywords.len()));
+                for kw in keywords {
+                    let competition = if kw.search_volume > 50000 { "High" }
+                        else if kw.search_volume > 5000 { "Medium" }
+                        else { "Low" };
+
+                    all_results.push(KeywordResult {
+                        keyword: kw.keyword,
+                        searches: format!("{}", kw.search_volume),
+                        competition: competition.to_string(),
+                        estimated_earnings: String::new(),
+                    });
+                }
+            }
+            Err(e) => {
+                let _ = app.emit("cdp:log", &format!("  ⚠ DataForSEO error: {}", e));
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    // Persist results to DB
+    if !all_results.is_empty() {
+        let database = app.state::<crate::db::Db>();
+        let conn = database.0.lock().unwrap();
+        for seed in seeds {
+            let rows: Vec<(String, String, String, String)> = all_results.iter()
+                .filter(|r| r.keyword.to_lowercase().contains(&seed.to_lowercase()) || seeds.len() == 1)
+                .map(|r| (r.keyword.clone(), r.searches.clone(), r.competition.clone(), r.estimated_earnings.clone()))
+                .collect();
+            if !rows.is_empty() {
+                let _ = crate::db::replace_keyword_search_results(&conn, folder, seed, &rows);
+            }
+        }
+    }
+
+    let _ = app.emit("cdp:log", &format!("✓ DataForSEO: {} total keywords.", all_results.len()));
+    all_results
+}

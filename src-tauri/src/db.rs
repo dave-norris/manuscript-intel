@@ -760,7 +760,7 @@ pub fn save_genre_data(
 
 pub fn load_genre_data(conn: &Connection, story_folder: &str) -> Option<GenreDataRow> {
     conn.query_row(
-        "SELECT generated_at, industry_ebook, industry_print, genre_signals, reader_demographic,
+        "SELECT industry_ebook, industry_print, genre_signals, reader_demographic,
                 bookstore_shelving, kdp_ebook_json, kdp_print_json, comps_ebook_json,
                 comps_print_json, marketing_notes_json
          FROM genre_data WHERE story_folder = ?1",
@@ -768,16 +768,16 @@ pub fn load_genre_data(conn: &Connection, story_folder: &str) -> Option<GenreDat
         |r| {
             let parse = |s: String| serde_json::from_str::<Vec<String>>(&s).unwrap_or_default();
             Ok(GenreDataRow {
-                industry_ebook:     r.get(1)?,
-                industry_print:     r.get(2)?,
-                genre_signals:      r.get(3)?,
-                reader_demographic: r.get(4)?,
-                bookstore_shelving: r.get(5)?,
-                kdp_ebook:          parse(r.get(6)?),
-                kdp_print:          parse(r.get(7)?),
-                comps_ebook:        parse(r.get(8)?),
-                comps_print:        parse(r.get(9)?),
-                marketing_notes:    parse(r.get(10)?),
+                industry_ebook:     r.get(0)?,
+                industry_print:     r.get(1)?,
+                genre_signals:      r.get(2)?,
+                reader_demographic: r.get(3)?,
+                bookstore_shelving: r.get(4)?,
+                kdp_ebook:          parse(r.get(5)?),
+                kdp_print:          parse(r.get(6)?),
+                comps_ebook:        parse(r.get(7)?),
+                comps_print:        parse(r.get(8)?),
+                marketing_notes:    parse(r.get(9)?),
             })
         },
     ).ok()

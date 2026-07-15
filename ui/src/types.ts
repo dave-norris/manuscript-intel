@@ -17,6 +17,7 @@ export interface GenreResult {
   success: boolean;
   report: string;
   error: string;
+  run_ts: string;
 }
 
 export interface ModelInfo {

@@ -31,6 +31,7 @@ pub async fn generate_summaries(app: AppHandle, request: FolderRequest) -> Genre
         success: true,
         report:  format!("\u{2713} {} summarized, {} already done.", done, skipped),
         error:   String::new(),
+        run_ts:  String::new(),
     }
 }
 

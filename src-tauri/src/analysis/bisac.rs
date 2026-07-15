@@ -76,7 +76,7 @@ pub async fn classify_bisac_for_story(app: AppHandle, request: FolderRequest) ->
             let _ = db::save_document(&conn, &request.folder, "bisac_classification", &report);
             emit(&app, &format!("✓ BISAC classification saved to database — {} code(s).", picks.len()));
 
-            GenreResult { success: true, report, error: String::new() }
+            GenreResult { success: true, report, error: String::new(), run_ts: String::new() }
         }
     }
 }

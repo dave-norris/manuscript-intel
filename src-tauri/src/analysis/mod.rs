@@ -25,6 +25,8 @@ pub struct GenreResult {
     pub success: bool,
     pub report:  String,
     pub error:   String,
+    #[serde(default)]
+    pub run_ts:  String,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +54,8 @@ pub struct AnalyzeStoryRequest {
     pub dataforseo_login:  String,
     #[serde(default)]
     pub dataforseo_password: String,
+    #[serde(default)]
+    pub run_time:          String,  // local datetime from when user clicked the button
 }
 
 // ── Shared helpers ──────────────────────────────────────────────────────────
@@ -61,7 +65,7 @@ pub fn emit(app: &AppHandle, msg: &str) {
 }
 
 pub fn err(msg: &str) -> GenreResult {
-    GenreResult { success: false, report: String::new(), error: msg.to_string() }
+    GenreResult { success: false, report: String::new(), error: msg.to_string(), run_ts: String::new() }
 }
 
 /// Extract a JSON array or object from text that may have markdown fencing or preamble.

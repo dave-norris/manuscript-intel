@@ -108,7 +108,7 @@ pub async fn rank_genres_for_story(app: AppHandle, request: FolderRequest) -> Ge
             let _ = db::save_document(&conn, &request.folder, "genre_ranking", &report);
             emit(&app, &format!("\u{2713} Ranking saved to database \u{2014} {} genre(s) ranked.", ranked.len()));
 
-            GenreResult { success: true, report, error: String::new() }
+            GenreResult { success: true, report, error: String::new(), run_ts: String::new() }
         }
     }
 }
@@ -170,7 +170,7 @@ pub(crate) async fn phase2_analyze(
             emit(app, "  \u{2713} Genre data saved to database.");
             let rendered = render_genre_analysis_md(&g);
             let _ = db::save_document(&conn, story_folder, "genre_analysis", &rendered);
-            GenreResult { success: true, report: rendered, error: String::new() }
+            GenreResult { success: true, report: rendered, error: String::new(), run_ts: String::new() }
         }
     }
 }

@@ -96,6 +96,7 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
 
     crate::reset_cancel();
     let database = app.state::<db::Db>();
+    let run_ts = chrono::Utc::now().to_rfc3339();
 
     // ── Step 1: Ensure summaries exist ────────────────────────────────────
     let mut summaries = { let conn = database.0.lock().unwrap(); db::load_chapter_summaries(&conn, &request.folder) };
@@ -126,7 +127,7 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
         None    => return err("genre_data missing after analysis."),
     };
     let full_report = render_full_report(&genre_data, false);
-    { let conn = database.0.lock().unwrap(); let _ = db::save_document(&conn, &request.folder, "full_report", &full_report); }
+    { let conn = database.0.lock().unwrap(); let _ = db::save_document_at(&conn, &request.folder, "full_report", &full_report, &run_ts); }
     emit(&app, "  ✓ Full report saved to database.");
     if crate::is_cancelled() { return err("Cancelled."); }
 
@@ -137,7 +138,7 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
             let conn = database.0.lock().unwrap();
             let _ = db::save_kdp_keywords(&conn, &request.folder, &entries, &strategy, "*(Generated from genre analysis.)*");
             let rendered = render_kdp_keywords(&entries, &strategy, "*(Generated from genre analysis.)*");
-            let _ = db::save_document(&conn, &request.folder, "kdp_keywords", &rendered);
+            let _ = db::save_document_at(&conn, &request.folder, "kdp_keywords", &rendered, &run_ts);
             emit(&app, "  ✓ KDP keywords saved to database.");
         }
         Err(e) => emit(&app, &format!("  ⚠ Keyword optimization failed: {}", e)),
@@ -173,7 +174,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
                     let conn = database.0.lock().unwrap();
                     let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
                     let rendered = render_search_terms(&keywords);
-                    let _ = db::save_document(&conn, &request.folder, "mi_search_terms", &rendered);
+                    let _ = db::save_document_at(&conn, &request.folder, "mi_search_terms", &rendered, &run_ts);
                     emit(&app, &format!("  ✓ {} search terms saved to database.", keywords.len()));
                     for kw in &keywords { emit(&app, &format!("    • {}", kw)); }
                 }
@@ -186,7 +187,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
 
     emit(&app, "✓ Analysis complete. Run Analyze Competition next.");
 
-    GenreResult { success: true, report: full_report, error: String::new() }
+    GenreResult { success: true, report: full_report, error: String::new(), run_ts: run_ts.clone() }
 }
 
 // ── run_full_analysis ─────────────────────────────────────────────────────────
@@ -197,6 +198,7 @@ pub async fn run_full_analysis(app: AppHandle, request: FolderRequest) -> GenreR
     if !folder.exists() { return err("Folder does not exist."); }
 
     let database = app.state::<db::Db>();
+    let run_ts = chrono::Utc::now().to_rfc3339();
 
     // ── Phase 1 ──────────────────────────────────────────────────────────
     let mut summaries = { let conn = database.0.lock().unwrap(); db::load_chapter_summaries(&conn, &request.folder) };
@@ -234,10 +236,10 @@ pub async fn run_full_analysis(app: AppHandle, request: FolderRequest) -> GenreR
     // ── Build full report ─────────────────────────────────────────────────
     emit(&app, "Building full report...");
     let full_report = render_full_report(&genre_data, true);
-    { let conn = database.0.lock().unwrap(); let _ = db::save_document(&conn, &request.folder, "full_report", &full_report); }
+    { let conn = database.0.lock().unwrap(); let _ = db::save_document_at(&conn, &request.folder, "full_report", &full_report, &run_ts); }
     emit(&app, "✓ Full report saved to database.");
 
-    GenreResult { success: true, report: full_report, error: String::new() }
+    GenreResult { success: true, report: full_report, error: String::new(), run_ts: run_ts.clone() }
 }
 
 // ── find_genres_and_categories_for_story ──────────────────────────────────────
@@ -253,6 +255,7 @@ pub async fn find_genres_and_categories_for_story(app: AppHandle, request: Folde
 
 async fn find_genres_and_categories_inner(app: AppHandle, request: FolderRequest) -> GenreResult {
     let database = app.state::<db::Db>();
+    let run_ts = chrono::Utc::now().to_rfc3339();
 
     // ── Ensure genre_data exists ──
     let mut genre_data = { let conn = database.0.lock().unwrap(); db::load_genre_data(&conn, &request.folder) };
@@ -316,7 +319,7 @@ async fn find_genres_and_categories_inner(app: AppHandle, request: FolderRequest
             for r in &ranked { s.push(format!("## {} — {}%", r.genre, r.confidence)); s.push(String::new()); s.push(r.reason.clone()); s.push(String::new()); }
             s.join("\n")
         };
-        let _ = db::save_document(&conn, &request.folder, "genre_ranking", &genre_ranking_md);
+        let _ = db::save_document_at(&conn, &request.folder, "genre_ranking", &genre_ranking_md, &run_ts);
 
         ranked
     };
@@ -475,10 +478,10 @@ async fn find_genres_and_categories_inner(app: AppHandle, request: FolderRequest
     lines.push(report_sections.join("\n---\n\n"));
     let report = lines.join("\n");
 
-    { let conn = database.0.lock().unwrap(); let _ = db::save_document(&conn, &request.folder, "genres_and_categories", &report); }
+    { let conn = database.0.lock().unwrap(); let _ = db::save_document_at(&conn, &request.folder, "genres_and_categories", &report, &run_ts); }
     emit(&app, "✓ Genres & Categories report saved to database.");
 
-    GenreResult { success: true, report, error: String::new() }
+    GenreResult { success: true, report, error: String::new(), run_ts: run_ts.clone() }
 }
 
 // ── Combined Report Assembly ──────────────────────────────────────────────────
@@ -521,6 +524,7 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
 
 async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> GenreResult {
     let database = app.state::<db::Db>();
+    let run_ts = if request.run_time.is_empty() { chrono::Utc::now().to_rfc3339() } else { request.run_time.clone() };
 
     // ── Step 1: Summaries ──────────────────────────────────────────────────
     emit(&app, "Step 1: Chapter summaries...");
@@ -554,7 +558,7 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                 })).collect::<Vec<_>>(),
                 "total_words": summaries.iter().map(|s| s.word_count).sum::<i64>(),
             }).to_string();
-            let _ = db::save_document(&conn, &request.folder, "chapter_summaries", &cs_json);
+            let _ = db::save_document_at(&conn, &request.folder, "chapter_summaries", &cs_json, &run_ts);
         }
     }
     if crate::is_cancelled() { return err("Cancelled."); }
@@ -615,7 +619,7 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
                 "genre": r.genre, "confidence": r.confidence, "reason": r.reason,
             })).collect::<Vec<_>>(),
         }).to_string();
-        let _ = db::save_document(&conn, &request.folder, "genre_ranking", &ranking_json);
+        let _ = db::save_document_at(&conn, &request.folder, "genre_ranking", &ranking_json, &run_ts);
 
         ranked
     };
@@ -725,7 +729,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
                         let conn = database.0.lock().unwrap();
                         let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
                         let rendered = render_search_terms(&keywords);
-                        let _ = db::save_document(&conn, &request.folder, "mi_search_terms", &rendered);
+                        let _ = db::save_document_at(&conn, &request.folder, "mi_search_terms", &rendered, &run_ts);
                         emit(&app, &format!("  ✓ {} search terms saved.", keywords.len()));
                     }
                 } else {
@@ -780,7 +784,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
         bisac_json.to_string()
     };
     // Save BISAC as standalone report
-    { let conn = database.0.lock().unwrap(); let _ = db::save_document(&conn, &request.folder, "bisac_classification", &bisac_section); }
+    { let conn = database.0.lock().unwrap(); let _ = db::save_document_at(&conn, &request.folder, "bisac_classification", &bisac_section, &run_ts); }
     if crate::is_cancelled() { return err("Cancelled."); }
 
     // ── Step 7: Keyword Search (KDP only) ────────────────────────────────────
@@ -816,7 +820,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
                 "keyword": k.keyword, "searches": k.searches, "competition": k.competition, "earnings": k.estimated_earnings,
             })).collect::<Vec<_>>(),
         }).to_string();
-        let _ = db::save_document(&conn, &request.folder, "keyword_search", &ks_json);
+        let _ = db::save_document_at(&conn, &request.folder, "keyword_search", &ks_json, &run_ts);
     }
     if crate::is_cancelled() { return err("Cancelled."); }
 
@@ -887,7 +891,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
                     "schema": "discovery_keywords_v1",
                     "keywords": enriched.iter().map(|e| serde_json::json!({ "phrase": e.phrase, "rationale": e.rationale })).collect::<Vec<_>>(),
                 }).to_string();
-                let _ = db::save_document(&conn, &request.folder, "discovery_keywords", &dk_json);
+                let _ = db::save_document_at(&conn, &request.folder, "discovery_keywords", &dk_json, &run_ts);
                 emit(&app, &format!("  ✓ {} discovery keywords saved.", enriched.len()));
                 enriched
             }
@@ -939,10 +943,10 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
         &positioning_section,
     );
 
-    { let conn = database.0.lock().unwrap(); let _ = db::save_document(&conn, &request.folder, "analysis", &report); }
+    { let conn = database.0.lock().unwrap(); let _ = db::save_document_at(&conn, &request.folder, "analysis", &report, &run_ts); }
     emit(&app, "✓ Full analysis report saved.");
 
-    GenreResult { success: true, report, error: String::new() }
+    GenreResult { success: true, report, error: String::new(), run_ts: run_ts.clone() }
 }
 
 // ── KDP Paste Section Renderer ─────────────────────────────────────────────────

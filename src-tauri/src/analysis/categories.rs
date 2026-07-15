@@ -102,7 +102,7 @@ pub async fn find_categories_for_story(app: AppHandle, request: FindCategoriesRe
     let final_cats = rank_by_discoverability(&app, &request.store, result.qualifying, &request.canopy_api_key).await;
 
     if final_cats.is_empty() {
-        return GenreResult { success: true, report: "No candidates cleared the fit bar.".to_string(), error: String::new() };
+        return GenreResult { success: true, report: "No candidates cleared the fit bar.".to_string(), error: String::new(), run_ts: String::new() };
     }
 
     // Store results
@@ -113,7 +113,7 @@ pub async fn find_categories_for_story(app: AppHandle, request: FindCategoriesRe
     }
 
     emit(&app, &format!("✓ {} categories found and verified.", final_cats.len()));
-    GenreResult { success: true, report: String::new(), error: String::new() }
+    GenreResult { success: true, report: String::new(), error: String::new(), run_ts: String::new() }
 }
 
 #[tauri::command]
@@ -175,7 +175,7 @@ pub async fn match_categories_for_story(app: AppHandle, request: FindCategoriesR
     { let conn = database.0.lock().unwrap(); let _ = db::save_document(&conn, &request.folder, "category_finder", &report); }
     emit(&app, "✓ Best-for-discoverability catalog match (both stores) saved to database.");
 
-    GenreResult { success: true, report, error: String::new() }
+    GenreResult { success: true, report, error: String::new(), run_ts: String::new() }
 }
 
 #[tauri::command]
@@ -235,7 +235,7 @@ pub async fn verify_mapped_categories(app: AppHandle, db: tauri::State<'_, db::D
 
     emit(&app, "✓ Verified paths saved to database.");
 
-    Ok(GenreResult { success: true, report: String::new(), error: String::new() })
+    Ok(GenreResult { success: true, report: String::new(), error: String::new(), run_ts: String::new() })
 }
 
 // ── Core logic ───────────────────────────────────────────────────────────────

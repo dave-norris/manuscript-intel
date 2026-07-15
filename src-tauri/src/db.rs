@@ -955,10 +955,14 @@ pub const DOC_TYPES: &[(&str, &str)] = &[
 
 pub fn save_document(conn: &Connection, story_folder: &str, doc_type: &str, content: &str) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
+    save_document_at(conn, story_folder, doc_type, content, &now)
+}
+
+pub fn save_document_at(conn: &Connection, story_folder: &str, doc_type: &str, content: &str, timestamp: &str) -> Result<(), String> {
     conn.execute(
         "INSERT INTO story_documents (story_folder, doc_type, content, generated_at)
          VALUES (?1, ?2, ?3, ?4)",
-        params![story_folder, doc_type, content, now],
+        params![story_folder, doc_type, content, timestamp],
     ).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -1015,9 +1019,10 @@ pub async fn list_reports_cmd(db: tauri::State<'_, Db>, folder: String) -> Resul
 }
 
 #[tauri::command]
-pub async fn save_activity_log_cmd(db: tauri::State<'_, Db>, folder: String, content: String) -> Result<(), String> {
+pub async fn save_activity_log_cmd(db: tauri::State<'_, Db>, folder: String, content: String, timestamp: String) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    save_document(&conn, &folder, "activity_log", &content)
+    let ts = if timestamp.is_empty() { chrono::Utc::now().to_rfc3339() } else { timestamp };
+    save_document_at(&conn, &folder, "activity_log", &content, &ts)
 }
 
 #[tauri::command]

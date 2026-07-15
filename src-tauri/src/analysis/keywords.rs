@@ -74,7 +74,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble. Example:
                     let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
                     let _ = db::save_document(&conn, &request.folder, "mi_search_terms", &rendered);
 
-                    GenreResult { success: true, report: rendered, error: String::new() }
+                    GenreResult { success: true, report: rendered, error: String::new(), run_ts: String::new() }
                 }
             }
         }
@@ -107,7 +107,7 @@ pub async fn optimize_keywords(app: AppHandle, request: KeywordRequest) -> Genre
             let _ = db::save_kdp_keywords(&conn, &request.folder, &entries, &strategy, source_note);
             let _ = db::save_document(&conn, &request.folder, "kdp_keywords", &rendered);
             emit(&app, "✓ KDP keywords saved to database.");
-            GenreResult { success: true, report: rendered, error: String::new() }
+            GenreResult { success: true, report: rendered, error: String::new(), run_ts: String::new() }
         }
     }
 }

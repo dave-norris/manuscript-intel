@@ -71,13 +71,21 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
   if (!apiKey) { appendLog('✗ No API key set. Go to Settings.'); return; }
   if (!model) { appendLog('✗ No model selected. Go to Settings and fetch models.'); return; }
 
+  // Clear log for this run
+  clearLog();
+
+  // Capture the run time — the exact moment the user clicked the button
+  const runTime = new Date().toISOString();
+
   const pipelineLabel = platform === 'wide' ? 'Wide distribution' : 'KDP';
   appendLog(`Running ${pipelineLabel} analysis pipeline... [${provider}: ${model}]${forceResummarize ? ' (force re-summarize)' : ''}`);
   isWorking.value = true;
+  let runTs = '';
   try {
     const result = await invoke<GenreResult>('analyze_story', {
-      request: { folder, api_key: apiKey, model, provider, force_resummarize: forceResummarize, canopy_api_key: canopyApiKey, platform, dataforseo_login: localStorage.getItem('dataforseoLogin') || '', dataforseo_password: localStorage.getItem('dataforseoPassword') || '' },
+      request: { folder, api_key: apiKey, model, provider, force_resummarize: forceResummarize, canopy_api_key: canopyApiKey, platform, dataforseo_login: localStorage.getItem('dataforseoLogin') || '', dataforseo_password: localStorage.getItem('dataforseoPassword') || '', run_time: runTime },
     });
+    runTs = result.run_ts || runTime;
     if (result.success) {
       appendLog('✓ Analysis complete. View reports in the sidebar.');
     } else {
@@ -87,7 +95,7 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
     appendLog('✗ ' + String(e));
   } finally {
     isWorking.value = false;
-    saveLog(folder);
+    saveLog(folder, runTs);
   }
 }
 
@@ -206,7 +214,7 @@ async function runMarketIntel(folder: string): Promise<void> {
 
   appendLog('✓ Market Intel complete. View reports in the sidebar.');
   isWorking.value = false;
-  saveLog(folder);
+  saveLog(folder, new Date().toISOString());
 }
 
 async function cancelOperation(): Promise<void> {
@@ -214,16 +222,15 @@ async function cancelOperation(): Promise<void> {
   await invoke('cancel_operation');
 }
 
-async function saveLog(folder: string): Promise<void> {
+async function saveLog(folder: string, timestamp: string): Promise<void> {
   if (!folder || logLines.value.length === 0) return;
-  const timestamp = new Date().toISOString();
   const content = JSON.stringify({
     schema: 'activity_log_v1',
     timestamp,
     lines: logLines.value,
   });
   try {
-    await invoke('save_activity_log_cmd', { folder, content });
+    await invoke('save_activity_log_cmd', { folder, content, timestamp });
   } catch (e) {
     console.error('Failed to save activity log:', e);
   }

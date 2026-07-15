@@ -87,6 +87,7 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
     appendLog('✗ ' + String(e));
   } finally {
     isWorking.value = false;
+    saveLog(folder);
   }
 }
 
@@ -205,11 +206,27 @@ async function runMarketIntel(folder: string): Promise<void> {
 
   appendLog('✓ Market Intel complete. View reports in the sidebar.');
   isWorking.value = false;
+  saveLog(folder);
 }
 
 async function cancelOperation(): Promise<void> {
   appendLog('Stopping after current step...');
   await invoke('cancel_operation');
+}
+
+async function saveLog(folder: string): Promise<void> {
+  if (!folder || logLines.value.length === 0) return;
+  const timestamp = new Date().toISOString();
+  const content = JSON.stringify({
+    schema: 'activity_log_v1',
+    timestamp,
+    lines: logLines.value,
+  });
+  try {
+    await invoke('save_activity_log_cmd', { folder, content });
+  } catch (e) {
+    console.error('Failed to save activity log:', e);
+  }
 }
 
 // Set up Tauri event listeners (runs once at module load)

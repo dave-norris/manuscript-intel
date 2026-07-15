@@ -51,6 +51,7 @@ pub fn run() {
             db::list_genres_cmd,
             db::add_kdp_path_cmd,
             db::list_reports_cmd,
+            db::save_activity_log_cmd,
             db::get_report_cmd,
             db::save_report_version_cmd,
             db::list_saved_reports_cmd,

@@ -924,6 +924,7 @@ pub const DOC_TYPES: &[(&str, &str)] = &[
     ("chapter_summaries",   "Chapter Summaries"),
     ("discovery_keywords",  "Discovery Keywords"),
     ("keyword_search",      "Keyword Search Results"),
+    ("activity_log",        "Activity Log"),
 ];
 
 pub fn save_document(conn: &Connection, story_folder: &str, doc_type: &str, content: &str) -> Result<(), String> {
@@ -987,6 +988,12 @@ pub fn list_documents(conn: &Connection, story_folder: &str) -> Vec<DocMeta> {
 pub async fn list_reports_cmd(db: tauri::State<'_, Db>, folder: String) -> Result<Vec<DocMeta>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     Ok(list_documents(&conn, &folder))
+}
+
+#[tauri::command]
+pub async fn save_activity_log_cmd(db: tauri::State<'_, Db>, folder: String, content: String) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    save_document(&conn, &folder, "activity_log", &content)
 }
 
 #[tauri::command]

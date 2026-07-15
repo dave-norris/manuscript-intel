@@ -4,12 +4,12 @@ export const KDP_REPORT_TYPES = new Set([
   'analysis', 'genre_analysis', 'full_report', 'kdp_keywords', 'mi_search_terms',
   'competition_report', 'category_finder', 'genre_ranking', 'bisac_classification',
   'review_mining', 'author_analysis', 'chapter_summaries', 'keyword_search',
-  'mapped_categories', 'genres_and_categories',
+  'mapped_categories', 'genres_and_categories', 'activity_log',
 ]);
 
 export const WIDE_REPORT_TYPES = new Set([
   'genre_analysis', 'bisac_classification', 'discovery_keywords',
-  'genre_ranking', 'chapter_summaries',
+  'genre_ranking', 'chapter_summaries', 'activity_log',
 ]);
 
 const platform = ref<'kdp' | 'wide'>(

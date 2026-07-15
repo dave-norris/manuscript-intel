@@ -53,6 +53,7 @@ function renderBySchema(data: any, docType: string): string {
   if (schema === 'keyword_search_v1') return renderKeywordSearch(data);
   if (schema === 'genre_ranking_v1') return renderGenreRanking(data);
   if (schema === 'discovery_keywords_v1') return renderDiscoveryKeywords(data);
+  if (schema === 'activity_log_v1') return renderActivityLog(data);
 
   // Detect BISAC classification by structure or doc_type
   if (docType === 'bisac_classification' || (data.ebook && Array.isArray(data.ebook))) {
@@ -682,6 +683,29 @@ function markdownToHtml(md: string): string {
     .replace(/<p>(<hr>)<\/p>/g, '$1')
     .replace(/<p>(<blockquote>)/g, '$1')
     .replace(/(<\/blockquote>)<\/p>/g, '$1');
+}
+
+function renderActivityLog(data: any): string {
+  const lines: any[] = data.lines || [];
+  if (!lines.length) return '<p class="muted">No log entries.</p>';
+
+  const timestamp = data.timestamp ? new Date(data.timestamp).toLocaleString() : '';
+  let html = '';
+  if (timestamp) {
+    html += `<p class="report-hint">Recorded: ${esc(timestamp)}</p>`;
+  }
+
+  html += `<div class="log-stream">`;
+  for (const line of lines) {
+    const typeClass = esc(line.type || 'log-info');
+    const icon = line.icon || '';
+    const text = esc(line.text || '').replace(/`([^`]+)`/g, '<code>$1</code>');
+    html += `<div class="log-line ${typeClass}">`;
+    if (icon) html += `<span class="log-icon">${esc(icon)}</span>`;
+    html += `<span class="log-text">${text}</span></div>`;
+  }
+  html += `</div>`;
+  return html;
 }
 
 function esc(s: string): string {

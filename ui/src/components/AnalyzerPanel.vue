@@ -15,9 +15,7 @@ const analysisCtx = inject<{
   analysisState: Ref<AnalysisState | null>;
   isWorking: Ref<boolean>;
   runAnalyze: (folder: string, forceResummarize: boolean, platform: string) => Promise<void>;
-  runCompetition: (folder: string, store: string) => Promise<void>;
-  runMineReviews: (folder: string) => Promise<void>;
-  runAuthorAnalysis: (folder: string) => Promise<void>;
+  runMarketIntel: (folder: string) => Promise<void>;
   cancelOperation: () => Promise<void>;
 }>('analysis')!;
 
@@ -30,7 +28,6 @@ const platformCtx = inject<{
 // ── Local state ───────────────────────────────────────────────────────────────
 
 const forceResummarize = ref(false);
-const compStore = ref<'Kindle' | 'Audible'>('Kindle');
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -39,19 +36,9 @@ function onAnalyze(): void {
   analysisCtx.runAnalyze(folder, forceResummarize.value, platformCtx.platform.value);
 }
 
-function onCompetition(): void {
+function onMarketIntel(): void {
   const folder = storiesCtx.activeFolder.value;
-  analysisCtx.runCompetition(folder, compStore.value);
-}
-
-function onMineReviews(): void {
-  const folder = storiesCtx.activeFolder.value;
-  analysisCtx.runMineReviews(folder);
-}
-
-function onAuthorAnalysis(): void {
-  const folder = storiesCtx.activeFolder.value;
-  analysisCtx.runAuthorAnalysis(folder);
+  analysisCtx.runMarketIntel(folder);
 }
 
 function onStop(): void {
@@ -83,46 +70,19 @@ function onStop(): void {
     <!-- Action buttons -->
     <div class="analyzer-buttons">
       <button
-        class="btn btn-run-all"
+        class="btn"
         title="Run full analysis pipeline: chapters, genres, categories, keywords, BISAC"
         :disabled="analysisCtx.isWorking.value || !storiesCtx.activeFolder.value"
         @click="onAnalyze"
       >Get Reports</button>
 
-      <div v-if="platformCtx.isKdp.value" class="competition-wrapper">
-        <button
-          class="btn btn-run-all-comp"
-          title="Analyze competition using Canopy API data"
-          :disabled="analysisCtx.isWorking.value || !analysisCtx.analysisState.value?.has_search_terms"
-          @click="onCompetition"
-        >Analyze Competition</button>
-        <div class="store-selector">
-          <label class="store-option">
-            <input v-model="compStore" type="radio" name="comp-store" value="Kindle" />
-            Kindle
-          </label>
-          <label class="store-option">
-            <input v-model="compStore" type="radio" name="comp-store" value="Audible" />
-            Audible
-          </label>
-        </div>
-      </div>
-
       <button
         v-if="platformCtx.isKdp.value"
         class="btn btn-secondary"
-        title="Mine competitor reviews for reader language insights"
+        title="Run market intelligence via Canopy API: competition analysis, review mining, and author catalog analysis. Requires Canopy API key."
         :disabled="analysisCtx.isWorking.value || !analysisCtx.analysisState.value?.has_search_terms"
-        @click="onMineReviews"
-      >Mine Reviews</button>
-
-      <button
-        v-if="platformCtx.isKdp.value"
-        class="btn btn-secondary"
-        title="Analyze competitor author catalogs for strategy insights"
-        :disabled="analysisCtx.isWorking.value || !analysisCtx.analysisState.value?.has_search_terms"
-        @click="onAuthorAnalysis"
-      >Author Analysis</button>
+        @click="onMarketIntel"
+      >Market Intel</button>
 
       <button
         v-if="analysisCtx.isWorking.value"
@@ -232,23 +192,6 @@ function onStop(): void {
   cursor: not-allowed;
 }
 
-.btn-run-all {
-  font-size: 14px;
-  padding: 10px 16px;
-  font-weight: 700;
-}
-
-.btn-run-all:hover {
-  background: #c87820;
-}
-
-.btn-run-all-comp {
-  font-size: 14px;
-  padding: 10px 16px;
-  font-weight: 700;
-  background: var(--accent);
-}
-
 .btn-secondary {
   background: var(--surface2);
   border: 1px solid var(--border);
@@ -273,59 +216,6 @@ function onStop(): void {
 
 .btn-action-stop:hover {
   background: #a04050;
-}
-
-.competition-wrapper {
-  position: relative;
-}
-
-.competition-wrapper .store-selector {
-  display: none;
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 10;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 8px 12px;
-  margin-top: 4px;
-  white-space: nowrap;
-}
-
-.competition-wrapper:hover .store-selector,
-.competition-wrapper:focus-within .store-selector {
-  display: flex;
-  gap: 8px;
-}
-
-.store-option {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 12px;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--text-muted);
-  transition: border-color 0.15s, color 0.15s, background 0.15s;
-  user-select: none;
-}
-
-.store-option:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-.store-option input[type="radio"] {
-  display: none;
-}
-
-.store-option:has(input:checked) {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
 }
 
 .analyzer-options {

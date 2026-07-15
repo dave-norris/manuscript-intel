@@ -188,6 +188,57 @@ impl DataForSeoClient {
         Ok(results)
     }
 
+    /// Batch version — sends multiple seeds in one API call (up to 100 tasks per request).
+    /// More efficient than calling amazon_related_keywords per seed.
+    pub async fn amazon_related_keywords_batch(&self, seeds: &[String], limit: u32) -> Result<Vec<AmazonKeyword>, String> {
+        if seeds.is_empty() { return Ok(Vec::new()); }
+
+        // Build array of tasks — one per seed, all in one request
+        let tasks: Vec<Value> = seeds.iter().map(|seed| {
+            serde_json::json!({
+                "keyword": seed,
+                "language_name": "English",
+                "location_code": 2840,
+                "limit": limit,
+                "include_seed_keyword": true,
+            })
+        }).collect();
+
+        let resp = self.post("/dataforseo_labs/amazon/related_keywords/live", &tasks).await?;
+
+        let mut results = Vec::new();
+        if let Some(tasks_arr) = resp["tasks"].as_array() {
+            for task in tasks_arr {
+                if let Some(items) = task["result"].as_array() {
+                    for item in items {
+                        if let Some(seed_info) = item["seed_keyword_data"].as_object() {
+                            if let Some(ki) = seed_info.get("keyword_info") {
+                                results.push(AmazonKeyword {
+                                    keyword: ki["keyword"].as_str().unwrap_or("").to_string(),
+                                    search_volume: ki["search_volume"].as_u64().unwrap_or(0),
+                                });
+                            }
+                        }
+                        if let Some(related) = item["items"].as_array() {
+                            for rel in related {
+                                if let Some(ki) = rel["keyword_data"].as_object() {
+                                    if let Some(info) = ki.get("keyword_info") {
+                                        results.push(AmazonKeyword {
+                                            keyword: info["keyword"].as_str().unwrap_or("").to_string(),
+                                            search_volume: info["search_volume"].as_u64().unwrap_or(0),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
     /// Simple connection test — try to get volume for one keyword.
     pub async fn test_connection(&self) -> Result<(), String> {
         let keywords = vec!["test".to_string()];

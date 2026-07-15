@@ -469,7 +469,7 @@ pub(crate) fn render_search_terms(keywords: &[String]) -> String {
 }
 
 /// DataForSEO-based keyword search — uses Amazon Related Keywords API.
-/// For each seed: gets related keywords with real Amazon search volume.
+/// Sends all seeds in one batch API call for efficiency.
 pub(crate) async fn run_keyword_searches_dataforseo(
     app: &AppHandle,
     folder: &str,
@@ -485,51 +485,46 @@ pub(crate) async fn run_keyword_searches_dataforseo(
         }
     };
 
-    let mut all_results: Vec<KeywordResult> = Vec::new();
-
+    let _ = app.emit("cdp:log", &format!("DataForSEO: Searching Amazon keywords for {} seed(s) in one batch...", seeds.len()));
     for seed in seeds {
-        if crate::is_cancelled() { break; }
-        let _ = app.emit("cdp:log", &format!("DataForSEO keyword search: \"{}\"", seed));
-
-        match client.amazon_related_keywords(seed, 20).await {
-            Ok(keywords) => {
-                let _ = app.emit("cdp:log", &format!("  ✓ {} keywords found.", keywords.len()));
-                for kw in keywords {
-                    let competition = if kw.search_volume > 50000 { "High" }
-                        else if kw.search_volume > 5000 { "Medium" }
-                        else { "Low" };
-
-                    all_results.push(KeywordResult {
-                        keyword: kw.keyword,
-                        searches: format!("{}", kw.search_volume),
-                        competition: competition.to_string(),
-                        estimated_earnings: String::new(),
-                    });
-                }
-            }
-            Err(e) => {
-                let _ = app.emit("cdp:log", &format!("  ⚠ DataForSEO error: {}", e));
-            }
-        }
-
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let _ = app.emit("cdp:log", &format!("  Seed: \"{}\"", seed));
     }
+
+    let all_results: Vec<KeywordResult> = match client.amazon_related_keywords_batch(seeds, 20).await {
+        Ok(keywords) => {
+            let _ = app.emit("cdp:log", &format!("  ✓ {} keywords returned.", keywords.len()));
+            keywords.into_iter().map(|kw| {
+                let competition = if kw.search_volume > 50000 { "High" }
+                    else if kw.search_volume > 5000 { "Medium" }
+                    else { "Low" };
+
+                KeywordResult {
+                    keyword: kw.keyword,
+                    searches: format!("{}", kw.search_volume),
+                    competition: competition.to_string(),
+                    estimated_earnings: String::new(),
+                }
+            }).collect()
+        }
+        Err(e) => {
+            let _ = app.emit("cdp:log", &format!("  ⚠ DataForSEO error: {}", e));
+            Vec::new()
+        }
+    };
 
     // Persist results to DB
     if !all_results.is_empty() {
         let database = app.state::<crate::db::Db>();
         let conn = database.0.lock().unwrap();
-        for seed in seeds {
-            let rows: Vec<(String, String, String, String)> = all_results.iter()
-                .filter(|r| r.keyword.to_lowercase().contains(&seed.to_lowercase()) || seeds.len() == 1)
-                .map(|r| (r.keyword.clone(), r.searches.clone(), r.competition.clone(), r.estimated_earnings.clone()))
-                .collect();
-            if !rows.is_empty() {
-                let _ = crate::db::replace_keyword_search_results(&conn, folder, seed, &rows);
-            }
+        let rows: Vec<(String, String, String, String)> = all_results.iter()
+            .map(|r| (r.keyword.clone(), r.searches.clone(), r.competition.clone(), r.estimated_earnings.clone()))
+            .collect();
+        // Save all under the first seed as the batch key
+        if let Some(first_seed) = seeds.first() {
+            let _ = crate::db::replace_keyword_search_results(&conn, folder, first_seed, &rows);
         }
     }
 
-    let _ = app.emit("cdp:log", &format!("✓ DataForSEO: {} total keywords.", all_results.len()));
+    let _ = app.emit("cdp:log", &format!("✓ DataForSEO: {} total Amazon keywords.", all_results.len()));
     all_results
 }

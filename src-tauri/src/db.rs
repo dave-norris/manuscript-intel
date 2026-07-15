@@ -183,6 +183,14 @@ CREATE TABLE IF NOT EXISTS saved_reports (
 );
 
 CREATE INDEX IF NOT EXISTS idx_saved_reports_folder ON saved_reports(story_folder, doc_type);
+
+CREATE TABLE IF NOT EXISTS report_types (
+    id           TEXT PRIMARY KEY,
+    label        TEXT NOT NULL,
+    description  TEXT NOT NULL,
+    platforms    TEXT NOT NULL DEFAULT 'kdp,wide',  -- comma-separated: 'kdp', 'wide', or 'kdp,wide'
+    depends_on   TEXT NOT NULL DEFAULT ''           -- comma-separated report_type ids
+);
 "#;
 
 pub struct Db(pub Mutex<Connection>);
@@ -255,6 +263,7 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
 
     seed_if_empty(&conn)?;
     seed_bisac_if_empty(&conn)?;
+    seed_report_types(&conn)?;
 
     Ok(Db(Mutex::new(conn)))
 }
@@ -326,6 +335,40 @@ fn seed_bisac_if_empty(conn: &Connection) -> Result<(), String> {
         conn.execute(
             "INSERT OR IGNORE INTO bisac_codes (code, heading) VALUES (?1, ?2)",
             params![c.code, c.heading],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn seed_report_types(conn: &Connection) -> Result<(), String> {
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM report_types", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if count > 0 { return Ok(()); }
+
+    let rows: &[(&str, &str, &str, &str, &str)] = &[
+        // (id, label, description, platforms, depends_on)
+        ("chapter_summaries", "Chapter Summaries", "Extract genre signals from each chapter of the manuscript.", "kdp,wide", ""),
+        ("genre_analysis", "Genre Analysis", "Industry genre classification, KDP paths, comps, and reader demographic.", "kdp,wide", "chapter_summaries"),
+        ("genre_ranking", "Genre Ranking", "Score the manuscript against all known genres independently.", "kdp,wide", "chapter_summaries,genre_analysis"),
+        ("kdp_categories", "KDP Categories", "Find the best-fit Amazon categories with discoverability stats.", "kdp", "chapter_summaries,genre_analysis,genre_ranking"),
+        ("kdp_keywords", "KDP Keywords", "Optimize the 7 keyword strings for KDP discoverability.", "kdp", "chapter_summaries,genre_analysis,genre_ranking"),
+        ("bisac_classification", "BISAC Classification", "Select BISAC subject codes for KDP Print and Ingram distribution.", "kdp,wide", "chapter_summaries,genre_analysis"),
+        ("mi_search_terms", "Search Terms", "Generate competition search phrases for market analysis.", "kdp", "chapter_summaries,genre_analysis"),
+        ("discovery_keywords", "Discovery Keywords", "Keywords optimized for Apple Books, Kobo, Google Play, and SEO.", "wide", "chapter_summaries,genre_analysis"),
+        ("analysis", "Full Analysis", "Combined report: categories, BISAC, keywords, and positioning all in one.", "kdp", "chapter_summaries,genre_analysis,genre_ranking,kdp_categories,kdp_keywords,bisac_classification,mi_search_terms"),
+        ("keyword_search", "Keyword Search Results", "Amazon keyword volume and competition data from DataForSEO.", "kdp", "chapter_summaries,genre_analysis,genre_ranking"),
+        ("competition_report", "Competition Analysis", "Market landscape: how competitive the niche is, who dominates.", "kdp", "mi_search_terms"),
+        ("review_mining", "Reader Review Intelligence", "Reader insights extracted from competitor book reviews.", "kdp", "mi_search_terms"),
+        ("author_analysis", "Competitor Author Analysis", "Competitor pricing, release cadence, and series strategy.", "kdp", "mi_search_terms"),
+        ("activity_log", "Activity Log", "Log output from the analysis run.", "kdp,wide", ""),
+    ];
+
+    for (id, label, description, platforms, depends_on) in rows {
+        conn.execute(
+            "INSERT OR IGNORE INTO report_types (id, label, description, platforms, depends_on) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, label, description, platforms, depends_on],
         ).map_err(|e| e.to_string())?;
     }
 
@@ -1011,6 +1054,35 @@ pub fn list_documents(conn: &Connection, story_folder: &str) -> Vec<DocMeta> {
 }
 
 // ── Tauri commands for the Reports panel ────────────────────────────
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct ReportTypeDef {
+    pub id:          String,
+    pub label:       String,
+    pub description: String,
+    pub platforms:   Vec<String>,
+    pub depends_on:  Vec<String>,
+}
+
+#[tauri::command]
+pub async fn list_report_types_cmd(db: tauri::State<'_, Db>) -> Result<Vec<ReportTypeDef>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, label, description, platforms, depends_on FROM report_types ORDER BY rowid"
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map([], |r| {
+        Ok(ReportTypeDef {
+            id:          r.get(0)?,
+            label:       r.get(1)?,
+            description: r.get(2)?,
+            platforms:   r.get::<_, String>(3)?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            depends_on:  r.get::<_, String>(4)?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        })
+    }).map_err(|e| e.to_string())?;
+
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 pub async fn list_reports_cmd(db: tauri::State<'_, Db>, folder: String) -> Result<Vec<DocMeta>, String> {

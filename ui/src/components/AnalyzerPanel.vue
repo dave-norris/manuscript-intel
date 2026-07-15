@@ -1,39 +1,9 @@
 <script setup lang="ts">
-import { inject, ref, computed, watch } from 'vue';
+import { inject, ref, computed, watch, onMounted } from 'vue';
 import type { Ref, ComputedRef } from 'vue';
 import type { Story, AnalysisState } from '../types';
 import LogStream from './LogStream.vue';
-
-// ── Report definitions ────────────────────────────────────────────────────────
-
-interface ReportDef {
-  id: string;
-  label: string;
-  description: string;
-  platforms: string[];
-}
-
-const REPORT_DEFS: ReportDef[] = [
-  { id: 'chapter_summaries', label: 'Chapter Summaries', description: 'Extract genre signals from each chapter of the manuscript.', platforms: ['kdp', 'wide'] },
-  { id: 'genre_analysis', label: 'Genre Analysis', description: 'Industry genre classification, KDP paths, comps, and reader demographic.', platforms: ['kdp', 'wide'] },
-  { id: 'genre_ranking', label: 'Genre Ranking', description: 'Score the manuscript against all known genres independently.', platforms: ['kdp', 'wide'] },
-  { id: 'kdp_categories', label: 'KDP Categories', description: 'Find the best-fit Amazon categories with discoverability stats.', platforms: ['kdp'] },
-  { id: 'kdp_keywords', label: 'KDP Keywords', description: 'Optimize the 7 keyword strings for KDP discoverability.', platforms: ['kdp'] },
-  { id: 'bisac_classification', label: 'BISAC Classification', description: 'Select BISAC subject codes for KDP Print and Ingram distribution.', platforms: ['kdp', 'wide'] },
-  { id: 'mi_search_terms', label: 'Search Terms', description: 'Generate competition search phrases for market analysis.', platforms: ['kdp'] },
-  { id: 'discovery_keywords', label: 'Discovery Keywords', description: 'Keywords optimized for Apple Books, Kobo, Google Play, and SEO.', platforms: ['wide'] },
-];
-
-const REPORT_DEPS: Record<string, string[]> = {
-  'chapter_summaries': [],
-  'genre_analysis': ['chapter_summaries'],
-  'genre_ranking': ['chapter_summaries', 'genre_analysis'],
-  'kdp_categories': ['chapter_summaries', 'genre_analysis', 'genre_ranking'],
-  'kdp_keywords': ['chapter_summaries', 'genre_analysis', 'genre_ranking'],
-  'bisac_classification': ['chapter_summaries', 'genre_analysis'],
-  'mi_search_terms': ['chapter_summaries', 'genre_analysis'],
-  'discovery_keywords': ['chapter_summaries', 'genre_analysis'],
-};
+import { useReportTypes } from '../composables/useReportTypes';
 
 // ── Injections ────────────────────────────────────────────────────────────────
 
@@ -56,6 +26,11 @@ const platformCtx = inject<{
   setPlatform: (p: 'kdp' | 'wide') => void;
 }>('platform')!;
 
+// ── Report types from DB ──────────────────────────────────────────────────────
+
+const { reportTypes, loadReportTypes, getDependants } = useReportTypes();
+onMounted(() => loadReportTypes());
+
 // ── Local state ───────────────────────────────────────────────────────────────
 
 const selected = ref<string[]>([]);
@@ -64,35 +39,30 @@ const hasRun = ref(false);
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 
-/** Map report IDs to their "exists" status based on analysisState */
 const existsMap = computed(() => {
   const state = analysisCtx.analysisState.value;
-  const map: Record<string, boolean> = {
-    chapter_summaries: false,
-    genre_analysis: false,
-    genre_ranking: false,
-    kdp_categories: false,
-    kdp_keywords: false,
-    bisac_classification: false,
-    mi_search_terms: false,
-    discovery_keywords: false,
-  };
-  if (!state) return map;
-  map.chapter_summaries = state.summary_count > 0;
-  map.genre_analysis = state.has_genre_data;
-  map.genre_ranking = state.has_genre_ranking;
-  map.kdp_categories = state.has_categories;
-  map.kdp_keywords = state.has_keywords;
-  map.bisac_classification = state.has_bisac;
-  map.mi_search_terms = state.has_search_terms;
-  map.discovery_keywords = state.has_discovery_keywords;
-  return map;
+  if (!state) return {} as Record<string, boolean>;
+  return {
+    chapter_summaries: state.summary_count > 0,
+    genre_analysis: state.has_genre_data,
+    genre_ranking: state.has_genre_ranking,
+    kdp_categories: state.has_categories,
+    kdp_keywords: state.has_keywords,
+    bisac_classification: state.has_bisac,
+    mi_search_terms: state.has_search_terms,
+    discovery_keywords: state.has_discovery_keywords,
+    analysis: state.has_full_report,
+    keyword_search: state.has_keyword_search_results,
+    competition_report: state.has_competition,
+    review_mining: false,
+    author_analysis: false,
+    activity_log: false,
+  } as Record<string, boolean>;
 });
 
-/** Reports filtered to the current platform */
 const visibleReports = computed(() => {
   const plat = platformCtx.platform.value;
-  return REPORT_DEFS
+  return reportTypes.value
     .filter(r => r.platforms.includes(plat))
     .map(r => ({
       ...r,
@@ -100,55 +70,29 @@ const visibleReports = computed(() => {
     }));
 });
 
-/** Whether the Get Reports button should be disabled */
 const getReportsDisabled = computed(() => {
   return analysisCtx.isWorking.value
     || !storiesCtx.activeFolder.value
     || selected.value.length === 0;
 });
 
-// ── Dependency logic ──────────────────────────────────────────────────────────
+// ── Checkbox logic ────────────────────────────────────────────────────────────
 
-/** Get all transitive dependencies for a report */
-function getAllDeps(id: string): string[] {
-  const deps = new Set<string>();
-  const queue = [...(REPORT_DEPS[id] ?? [])];
-  while (queue.length > 0) {
-    const dep = queue.pop()!;
-    if (!deps.has(dep)) {
-      deps.add(dep);
-      queue.push(...(REPORT_DEPS[dep] ?? []));
-    }
-  }
-  return [...deps];
-}
-
-/** Get all reports that transitively depend on a given report */
-function getDependents(id: string): string[] {
-  const dependents: string[] = [];
-  for (const [reportId, deps] of Object.entries(REPORT_DEPS)) {
-    if (getAllDeps(reportId).includes(id) || deps.includes(id)) {
-      dependents.push(reportId);
-    }
-  }
-  return dependents;
-}
-
-function onCheckChange(id: string): void {
-
+function toggleReport(id: string): void {
   const sel = new Set(selected.value);
+  const dependants = getDependants(id);
 
   if (sel.has(id)) {
-    // Checked — add all transitive deps
-    const deps = getAllDeps(id);
-    for (const dep of deps) {
-      sel.add(dep);
+    // Unchecking: remove this and its dependants
+    sel.delete(id);
+    for (const dep of dependants) {
+      sel.delete(dep);
     }
   } else {
-    // Unchecked — remove all dependents (cascade up)
-    const dependents = getDependents(id);
-    for (const dep of dependents) {
-      sel.delete(dep);
+    // Checking: add this and its dependants
+    sel.add(id);
+    for (const dep of dependants) {
+      sel.add(dep);
     }
   }
 
@@ -235,14 +179,13 @@ function onStop(): void {
         :key="report.id"
         class="report-card"
       >
-        <label class="report-card-check">
+        <div class="report-card-check">
           <input
             type="checkbox"
-            v-model="selected"
-            :value="report.id"
-            @change="onCheckChange(report.id)"
+            :checked="selected.includes(report.id)"
+            @input="toggleReport(report.id)"
           />
-        </label>
+        </div>
         <div class="report-card-content">
           <div class="report-card-label">{{ report.label }}</div>
           <div class="report-card-desc">{{ report.description }}</div>

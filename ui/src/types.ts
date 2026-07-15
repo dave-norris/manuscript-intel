@@ -101,3 +101,11 @@ export interface StaleCleanupResult {
   removed: number;
   error: string;
 }
+
+export interface ReportTypeDef {
+  id: string;
+  label: string;
+  description: string;
+  platforms: string[];
+  depends_on: string[];
+}

@@ -49,6 +49,7 @@ pub fn run() {
             analysis::pipeline::analyze_story,
             genre_taxonomy::get_genre_taxonomy,
             db::list_genres_cmd,
+            db::list_report_types_cmd,
             db::add_kdp_path_cmd,
             db::list_reports_cmd,
             db::save_activity_log_cmd,

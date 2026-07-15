@@ -199,10 +199,10 @@ function formatTimestamp(ts: string): string {
             :title="type.description"
             @click="toggleExpand(type.docType)"
           >
-            <span class="report-type-label" :class="{ dimmed: type.count === 0 }">
+            <span class="report-type-label">
               {{ type.label }}
             </span>
-            <span v-if="type.count > 0" class="report-count">{{ type.count }}</span>
+            <span class="report-count">{{ type.count }}</span>
           </div>
 
           <!-- Expanded: show versions -->
@@ -410,11 +410,6 @@ function formatTimestamp(ts: string): string {
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text);
-}
-
-.report-type-label.dimmed {
-  color: var(--text-muted);
-  opacity: 0.5;
 }
 
 .report-count {

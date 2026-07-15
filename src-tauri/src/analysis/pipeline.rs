@@ -40,6 +40,7 @@ pub struct AnalysisState {
     pub has_discovery_keywords:     bool,
     pub has_keyword_search_results: bool,
     pub has_zeigarnik:              bool,
+    pub has_continuity_check:       bool,
 }
 
 // ── Folder picker ────────────────────────────────────────────────────────────
@@ -83,6 +84,7 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
             has_discovery_keywords:     !db::load_discovery_keywords(&conn, &folder).is_empty(),
             has_keyword_search_results: db::has_keyword_search_results(&conn, &folder),
             has_zeigarnik:              db::has_zeigarnik_analysis(&conn, &folder),
+            has_continuity_check:       db::get_document(&conn, &folder, "continuity_check").is_some(),
         }
     }).await.unwrap()
 }

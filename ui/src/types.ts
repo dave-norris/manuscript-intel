@@ -48,6 +48,19 @@ export interface AnalysisState {
   has_discovery_keywords: boolean;
   has_keyword_search_results: boolean;
   has_zeigarnik: boolean;
+  has_continuity_check: boolean;
+}
+
+export interface SeriesRow {
+  id: number;
+  name: string;
+  book_count: number;
+}
+
+export interface SeriesBookRow {
+  story_folder: string;
+  story_name: string;
+  book_order: number;
 }
 
 export interface Settings {

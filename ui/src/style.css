@@ -938,3 +938,26 @@ html, body {
 .activity-text {
   font-weight: 500;
 }
+
+/* ── Zeigarnik score ── */
+.zeigarnik-score {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 16px 20px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.zeigarnik-pct {
+  font-size: 36px;
+  font-weight: 800;
+  color: var(--accent);
+  line-height: 1;
+}
+.zeigarnik-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-muted);
+}

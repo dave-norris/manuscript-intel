@@ -113,15 +113,27 @@ pub async fn analyze_zeigarnik_for_story(app: AppHandle, request: ZeigarnikReque
     } else { 0.0 };
     let longest_gap_chapters = threads.iter().map(|t| t.max_gap_chapters).max().unwrap_or(0);
 
+    // ── Overall Zeigarnik usage percentage ──────────────────────────────
+    // Composite of three proxies, equally weighted:
+    //   1. % of chapters ending on a cliffhanger (vs resolved)
+    //   2. % of chapters that contain at least one open question
+    //   3. Whether open threads exist (binary scaled: thread_count > 0 gives a boost)
+    let cliffhanger_pct = if total_chapters > 0 { cliffhanger_count as f64 / total_chapters as f64 * 100.0 } else { 0.0 };
+    let chapters_with_questions = chapter_rows.iter().filter(|c| c.question_count > 0).count();
+    let question_pct = if total_chapters > 0 { chapters_with_questions as f64 / total_chapters as f64 * 100.0 } else { 0.0 };
+    let thread_pct = if threads.is_empty() { 0.0 } else { (threads.len().min(total_chapters) as f64 / total_chapters as f64 * 100.0).min(100.0) };
+    let overall_zeigarnik_pct = ((cliffhanger_pct + question_pct + thread_pct) / 3.0).round();
+
     let json = serde_json::json!({
         "schema": "zeigarnik_v1",
         "note": "Textual proxy analysis only — this measures manuscript structure (unresolved endings, open questions, long-gap threads), not reader recall itself. No AI was used to generate these results.",
         "summary": {
+            "overall_zeigarnik_pct": overall_zeigarnik_pct,
             "total_chapters": total_chapters,
             "total_words": total_words,
             "cliffhanger_endings": cliffhanger_count,
             "resolved_endings": resolved_count,
-            "cliffhanger_pct": if total_chapters > 0 { (cliffhanger_count as f64 / total_chapters as f64 * 100.0).round() } else { 0.0 },
+            "cliffhanger_pct": cliffhanger_pct.round(),
             "total_open_questions": total_questions,
             "avg_tension_score": (avg_tension * 10.0).round() / 10.0,
             "open_thread_count": threads.len(),

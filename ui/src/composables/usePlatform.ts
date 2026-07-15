@@ -13,7 +13,7 @@ export const WIDE_REPORT_TYPES = new Set([
 ]);
 
 export const CRAFT_REPORT_TYPES = new Set([
-  'zeigarnik_analysis', 'chapter_summaries', 'activity_log',
+  'zeigarnik_analysis', 'continuity_check', 'chapter_summaries', 'activity_log',
 ]);
 
 const platform = ref<'kdp' | 'wide' | 'craft'>(

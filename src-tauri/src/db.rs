@@ -238,6 +238,61 @@ CREATE TABLE IF NOT EXISTS zeigarnik_threads (
 );
 
 CREATE INDEX IF NOT EXISTS idx_zeigarnik_threads_folder ON zeigarnik_threads(story_folder);
+
+-- Continuity Checker: groups stories into a series (reading order) so facts
+-- can be compared across books, not just within one manuscript.
+CREATE TABLE IF NOT EXISTS series (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS series_books (
+    series_id    INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    story_folder TEXT NOT NULL,
+    story_name   TEXT NOT NULL DEFAULT '',
+    book_order   INTEGER NOT NULL,
+    PRIMARY KEY (series_id, story_folder)
+);
+
+CREATE INDEX IF NOT EXISTS idx_series_books_series ON series_books(series_id);
+
+-- AI-extracted continuity-relevant facts, one row per (entity, attribute,
+-- chapter) triple. Extraction runs once per chapter; comparison (finding
+-- contradictions) is a separate pass over the accumulated facts — see
+-- continuity_findings below.
+CREATE TABLE IF NOT EXISTS continuity_facts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    story_folder  TEXT NOT NULL,
+    chapter_index INTEGER NOT NULL,
+    file          TEXT NOT NULL,
+    chapter_title TEXT NOT NULL,
+    entity        TEXT NOT NULL,
+    entity_type   TEXT NOT NULL,   -- 'character' | 'place' | 'object' | 'timeline' | 'other'
+    attribute     TEXT NOT NULL,
+    value         TEXT NOT NULL,
+    snippet       TEXT NOT NULL,
+    generated_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_continuity_facts_folder ON continuity_facts(story_folder);
+
+-- AI-judged contradictions. `scope` is 'manuscript' (scope_key = story_folder)
+-- or 'series' (scope_key = 'series:<id>') so the same table serves both.
+CREATE TABLE IF NOT EXISTS continuity_findings (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope            TEXT NOT NULL,
+    scope_key        TEXT NOT NULL,
+    entity           TEXT NOT NULL,
+    attribute        TEXT NOT NULL,
+    verdict          TEXT NOT NULL,   -- 'contradiction' | 'possible' | 'likely_intentional'
+    confidence       INTEGER NOT NULL,
+    explanation      TEXT NOT NULL,
+    occurrences_json TEXT NOT NULL,
+    generated_at     TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_continuity_findings_scope ON continuity_findings(scope, scope_key);
 "#;
 
 pub struct Db(pub Mutex<Connection>);
@@ -406,6 +461,7 @@ fn seed_report_types(conn: &Connection) -> Result<(), String> {
         ("review_mining", "Reader Review Intelligence", "Reader insights extracted from competitor book reviews.", "kdp", "mi_search_terms"),
         ("author_analysis", "Competitor Author Analysis", "Competitor pricing, release cadence, and series strategy.", "kdp", "mi_search_terms"),
         ("zeigarnik_analysis", "Zeigarnik Effect", "Analyzes open loops and unresolved tension to maintain reader engagement.", "craft", ""),
+        ("continuity_check", "Continuity Check", "AI-assisted scan for contradicted facts — within a manuscript or across a whole series.", "craft", ""),
     ];
 
     for (id, label, description, platforms, depends_on) in rows {
@@ -574,6 +630,187 @@ pub fn has_zeigarnik_analysis(conn: &Connection, story_folder: &str) -> bool {
         "SELECT 1 FROM zeigarnik_chapters WHERE story_folder = ?1 LIMIT 1",
         params![story_folder], |_| Ok(())
     ).is_ok()
+}
+
+// ── Series (Continuity Checker: grouping stories in reading order) ────────────
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SeriesRow {
+    pub id:         i64,
+    pub name:       String,
+    pub book_count: i64,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SeriesBookRow {
+    pub story_folder: String,
+    pub story_name:   String,
+    pub book_order:   i64,
+}
+
+pub fn list_series(conn: &Connection) -> Result<Vec<SeriesRow>, String> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.name, COUNT(sb.story_folder)
+         FROM series s LEFT JOIN series_books sb ON sb.series_id = s.id
+         GROUP BY s.id ORDER BY s.name"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        Ok(SeriesRow { id: r.get(0)?, name: r.get(1)?, book_count: r.get(2)? })
+    }).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+pub fn create_series(conn: &Connection, name: &str) -> Result<SeriesRow, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute("INSERT INTO series (name, created_at) VALUES (?1, ?2)", params![name.trim(), now])
+        .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    Ok(SeriesRow { id, name: name.trim().to_string(), book_count: 0 })
+}
+
+/// Deletes the series and its book memberships. Does NOT delete the stories
+/// themselves or any continuity data already recorded under the series key.
+pub fn delete_series(conn: &Connection, series_id: i64) -> Result<(), String> {
+    conn.execute("DELETE FROM series_books WHERE series_id = ?1", params![series_id]).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM series WHERE id = ?1", params![series_id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn list_series_books(conn: &Connection, series_id: i64) -> Result<Vec<SeriesBookRow>, String> {
+    let mut stmt = conn.prepare(
+        "SELECT story_folder, story_name, book_order FROM series_books
+         WHERE series_id = ?1 ORDER BY book_order"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(params![series_id], |r| {
+        Ok(SeriesBookRow { story_folder: r.get(0)?, story_name: r.get(1)?, book_order: r.get(2)? })
+    }).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+pub fn add_story_to_series(conn: &Connection, series_id: i64, story_folder: &str, story_name: &str, book_order: i64) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO series_books (series_id, story_folder, story_name, book_order) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(series_id, story_folder) DO UPDATE SET story_name = excluded.story_name, book_order = excluded.book_order",
+        params![series_id, story_folder, story_name, book_order],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn remove_story_from_series(conn: &Connection, series_id: i64, story_folder: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM series_books WHERE series_id = ?1 AND story_folder = ?2", params![series_id, story_folder])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_series_cmd(db: tauri::State<'_, Db>) -> Result<Vec<SeriesRow>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    list_series(&conn)
+}
+
+#[tauri::command]
+pub async fn create_series_cmd(db: tauri::State<'_, Db>, name: String) -> Result<SeriesRow, String> {
+    if name.trim().is_empty() { return Err("Series name cannot be empty.".to_string()); }
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    create_series(&conn, &name)
+}
+
+#[tauri::command]
+pub async fn delete_series_cmd(db: tauri::State<'_, Db>, series_id: i64) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    delete_series(&conn, series_id)
+}
+
+#[tauri::command]
+pub async fn list_series_books_cmd(db: tauri::State<'_, Db>, series_id: i64) -> Result<Vec<SeriesBookRow>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    list_series_books(&conn, series_id)
+}
+
+#[derive(serde::Deserialize)]
+pub struct AddToSeriesRequest {
+    pub series_id:    i64,
+    pub story_folder: String,
+    pub story_name:   String,
+    pub book_order:   i64,
+}
+
+#[tauri::command]
+pub async fn add_story_to_series_cmd(db: tauri::State<'_, Db>, request: AddToSeriesRequest) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    add_story_to_series(&conn, request.series_id, &request.story_folder, &request.story_name, request.book_order)
+}
+
+#[tauri::command]
+pub async fn remove_story_from_series_cmd(db: tauri::State<'_, Db>, series_id: i64, story_folder: String) -> Result<(), String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+    remove_story_from_series(&conn, series_id, &story_folder)
+}
+
+// ── Continuity Checker (craft platform, AI-assisted) ────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ContinuityFactRow {
+    pub chapter_index: i64,
+    pub file:          String,
+    pub chapter_title: String,
+    pub entity:        String,
+    pub entity_type:   String,
+    pub attribute:     String,
+    pub value:         String,
+    pub snippet:       String,
+}
+
+pub fn replace_continuity_facts(conn: &Connection, story_folder: &str, facts: &[ContinuityFactRow]) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute("DELETE FROM continuity_facts WHERE story_folder = ?1", params![story_folder]).map_err(|e| e.to_string())?;
+    for f in facts {
+        conn.execute(
+            "INSERT INTO continuity_facts
+             (story_folder, chapter_index, file, chapter_title, entity, entity_type, attribute, value, snippet, generated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![story_folder, f.chapter_index, f.file, f.chapter_title, f.entity, f.entity_type, f.attribute, f.value, f.snippet, now],
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct ContinuityOccurrence {
+    pub story_folder:  String,
+    pub story_name:    String,
+    pub file:          String,
+    pub chapter_title: String,
+    pub chapter_index: i64,
+    pub value:         String,
+    pub snippet:       String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ContinuityFindingRow {
+    pub entity:       String,
+    pub attribute:    String,
+    pub verdict:      String,
+    pub confidence:   i64,
+    pub explanation:  String,
+    pub occurrences:  Vec<ContinuityOccurrence>,
+}
+
+/// Replace all stored findings for a scope (one manuscript, or one series) —
+/// same "latest run supersedes" model used everywhere else.
+pub fn replace_continuity_findings(conn: &Connection, scope: &str, scope_key: &str, findings: &[ContinuityFindingRow]) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute("DELETE FROM continuity_findings WHERE scope = ?1 AND scope_key = ?2", params![scope, scope_key]).map_err(|e| e.to_string())?;
+    for f in findings {
+        let occ_json = serde_json::to_string(&f.occurrences).unwrap_or_default();
+        conn.execute(
+            "INSERT INTO continuity_findings
+             (scope, scope_key, entity, attribute, verdict, confidence, explanation, occurrences_json, generated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![scope, scope_key, f.entity, f.attribute, f.verdict, f.confidence, f.explanation, occ_json, now],
+        ).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 // ── Tauri commands (for future UI — browsing/editing the genre/category map) ───────────
@@ -1196,6 +1433,7 @@ pub const DOC_TYPES: &[(&str, &str)] = &[
     ("keyword_search",      "Keyword Search Results"),
     ("activity_log",        "Activity Log"),
     ("zeigarnik_analysis",  "Zeigarnik Effect"),
+    ("continuity_check",    "Continuity Check"),
 ];
 
 pub fn save_document(conn: &Connection, story_folder: &str, doc_type: &str, content: &str) -> Result<(), String> {

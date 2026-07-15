@@ -99,29 +99,70 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
   }
 }
 
-async function runCraftAnalysis(folder: string): Promise<void> {
+export type ContinuityScope = { mode: 'manuscript' } | { mode: 'series'; seriesId: number };
+
+/**
+ * Craft-tab reports have mixed requirements: Zeigarnik is pure pattern
+ * matching (no AI), Chapter Summaries and Continuity Check are AI-assisted.
+ * This runs whichever of the selected report ids apply, in a sensible order,
+ * only asking for an API key when a selected report actually needs one.
+ */
+async function runCraftAnalysis(folder: string, selected: string[], continuityScope: ContinuityScope): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
 
-  // Pure pattern-matching — no AI, no API key required.
   clearLog();
-  appendLog('Running Zeigarnik effect analysis (algorithmic — no AI)...');
   isWorking.value = true;
   let runTs = '';
+
   try {
-    const result = await invoke<GenreResult>('analyze_zeigarnik_for_story', {
-      request: { folder },
-    });
-    runTs = result.run_ts || new Date().toISOString();
-    if (result.success) {
-      appendLog('✓ Analysis complete. View reports in the sidebar.');
-    } else {
-      appendLog('✗ ' + result.error);
+    if (selected.includes('chapter_summaries')) {
+      const { provider, apiKey, model } = getSettings();
+      if (!apiKey || !model) {
+        appendLog('✗ Chapter Summaries needs an API key and model (Settings) — skipping.');
+      } else {
+        appendLog(`Generating chapter summaries... [${provider}: ${model}]`);
+        const result = await invoke<GenreResult>('generate_summaries', {
+          request: { folder, api_key: apiKey, model, provider },
+        });
+        runTs = result.run_ts || runTs;
+        appendLog(result.success ? '✓ Chapter summaries complete.' : '✗ ' + result.error);
+      }
     }
+
+    if (selected.includes('zeigarnik_analysis')) {
+      appendLog('Running Zeigarnik effect analysis (algorithmic — no AI)...');
+      const result = await invoke<GenreResult>('analyze_zeigarnik_for_story', { request: { folder } });
+      runTs = result.run_ts || runTs;
+      appendLog(result.success ? '✓ Zeigarnik analysis complete.' : '✗ ' + result.error);
+    }
+
+    if (selected.includes('continuity_check')) {
+      const { provider, apiKey, model } = getSettings();
+      if (!apiKey || !model) {
+        appendLog('✗ Continuity Check needs an API key and model (Settings) — skipping.');
+      } else if (continuityScope.mode === 'series') {
+        appendLog(`Running continuity check across the series... [${provider}: ${model}]`);
+        const result = await invoke<GenreResult>('check_continuity_for_series', {
+          request: { series_id: continuityScope.seriesId, api_key: apiKey, model, provider },
+        });
+        runTs = result.run_ts || runTs;
+        appendLog(result.success ? '✓ Series continuity check complete.' : '✗ ' + result.error);
+      } else {
+        appendLog(`Running continuity check for this manuscript... [${provider}: ${model}]`);
+        const result = await invoke<GenreResult>('check_continuity_for_story', {
+          request: { folder, api_key: apiKey, model, provider },
+        });
+        runTs = result.run_ts || runTs;
+        appendLog(result.success ? '✓ Continuity check complete.' : '✗ ' + result.error);
+      }
+    }
+
+    appendLog('✓ Done. View reports in the sidebar.');
   } catch (e) {
     appendLog('✗ ' + String(e));
   } finally {
     isWorking.value = false;
-    saveLog(folder, runTs);
+    saveLog(folder, runTs || new Date().toISOString());
   }
 }
 

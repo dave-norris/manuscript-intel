@@ -57,6 +57,7 @@ const ALL_REPORT_TYPES: { docType: string; label: string; description: string }[
   { docType: 'keyword_search', label: 'Keyword Search Results', description: 'Amazon keyword volume and competition data.' },
   { docType: 'activity_log', label: 'Activity Log', description: 'Log output from the last analysis run.' },
   { docType: 'zeigarnik_analysis', label: 'Zeigarnik Effect', description: 'Analyzes open loops and unresolved tension to maintain reader engagement.' },
+  { docType: 'continuity_check', label: 'Continuity Check', description: 'AI-assisted scan for contradicted facts — within a manuscript or across a series.' },
 ];
 
 // ── Expand/collapse state ─────────────────────────────────────────────────────
@@ -228,6 +229,9 @@ function formatTimestamp(ts: string): string {
 
     <!-- Settings at bottom -->
     <div class="nav-section settings-section">
+      <button class="nav-item" @click="showPanel('series')">
+        Series
+      </button>
       <button class="nav-item" @click="showPanel('settings')">
         Settings
       </button>

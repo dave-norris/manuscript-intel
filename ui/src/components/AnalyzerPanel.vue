@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { inject, ref, computed, watch, onMounted } from 'vue';
 import type { Ref, ComputedRef } from 'vue';
-import type { Story, AnalysisState } from '../types';
+import type { Story, AnalysisState, SeriesRow } from '../types';
+import type { ContinuityScope } from '../composables/useAnalysis';
 import LogStream from './LogStream.vue';
 import { useReportTypes } from '../composables/useReportTypes';
 
@@ -16,10 +17,15 @@ const analysisCtx = inject<{
   analysisState: Ref<AnalysisState | null>;
   isWorking: Ref<boolean>;
   runAnalyze: (folder: string, forceResummarize: boolean, platform: string) => Promise<void>;
-  runCraftAnalysis: (folder: string) => Promise<void>;
+  runCraftAnalysis: (folder: string, selected: string[], continuityScope: ContinuityScope) => Promise<void>;
   runMarketIntel: (folder: string) => Promise<void>;
   cancelOperation: () => Promise<void>;
 }>('analysis')!;
+
+const seriesCtx = inject<{
+  series: Ref<SeriesRow[]>;
+  loadSeries: () => Promise<void>;
+}>('series')!;
 
 const platformCtx = inject<{
   platform: Ref<'kdp' | 'wide' | 'craft'>;
@@ -37,6 +43,10 @@ onMounted(() => loadReportTypes());
 const selected = ref<string[]>([]);
 const forceResummarize = ref(false);
 const hasRun = ref(false);
+const continuityScopeMode = ref<'manuscript' | 'series'>('manuscript');
+const continuitySeriesId = ref<number | null>(null);
+
+onMounted(() => seriesCtx.loadSeries());
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 
@@ -59,6 +69,7 @@ const existsMap = computed(() => {
     author_analysis: false,
     activity_log: false,
     zeigarnik_analysis: state.has_zeigarnik,
+    continuity_check: state.has_continuity_check,
   } as Record<string, boolean>;
 });
 
@@ -112,9 +123,10 @@ function onGetReports(): void {
   const folder = storiesCtx.activeFolder.value;
   hasRun.value = true;
   if (platformCtx.platform.value === 'craft') {
-    // Craft-tab tools (currently: Zeigarnik effect) are pure text analysis —
-    // no AI call, no API key needed.
-    analysisCtx.runCraftAnalysis(folder);
+    const scope: ContinuityScope = continuityScopeMode.value === 'series' && continuitySeriesId.value != null
+      ? { mode: 'series', seriesId: continuitySeriesId.value }
+      : { mode: 'manuscript' };
+    analysisCtx.runCraftAnalysis(folder, selected.value, scope);
   } else {
     analysisCtx.runAnalyze(folder, forceResummarize.value, platformCtx.platform.value);
   }
@@ -179,10 +191,32 @@ function onStop(): void {
         @click="onStop"
       >Stop</button>
 
-      <label class="force-resummarize-label">
+      <label v-if="platformCtx.platform.value !== 'craft'" class="force-resummarize-label">
         <input v-model="forceResummarize" type="checkbox" />
         Force re-summarize
       </label>
+    </div>
+
+    <!-- Continuity Check scope (only relevant when that report is selected) -->
+    <div v-if="platformCtx.platform.value === 'craft' && selected.includes('continuity_check')" class="continuity-scope-row">
+      <span class="continuity-scope-label">Continuity Check scope:</span>
+      <label class="scope-radio">
+        <input v-model="continuityScopeMode" type="radio" value="manuscript" />
+        This manuscript
+      </label>
+      <label class="scope-radio">
+        <input v-model="continuityScopeMode" type="radio" value="series" :disabled="seriesCtx.series.value.length === 0" />
+        Series
+      </label>
+      <select
+        v-if="continuityScopeMode === 'series'"
+        v-model="continuitySeriesId"
+        class="continuity-series-select"
+      >
+        <option :value="null" disabled>Choose a series…</option>
+        <option v-for="s in seriesCtx.series.value" :key="s.id" :value="s.id">{{ s.name }} ({{ s.book_count }} books)</option>
+      </select>
+      <span v-if="seriesCtx.series.value.length === 0" class="continuity-scope-hint">No series yet — create one in the Series panel.</span>
     </div>
 
     <!-- Report cards -->
@@ -422,6 +456,54 @@ function onStop(): void {
 
 .force-resummarize-label input[type="checkbox"] {
   accent-color: var(--accent);
+}
+
+/* ── Continuity scope row ────────────────────────────────────────────────── */
+
+.continuity-scope-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12px;
+}
+
+.continuity-scope-label {
+  color: var(--text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.scope-radio {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scope-radio input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+.continuity-series-select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+.continuity-scope-hint {
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 /* ── Activity indicator ────────────────────────────────────────────────────── */

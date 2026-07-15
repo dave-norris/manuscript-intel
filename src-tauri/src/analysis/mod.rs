@@ -8,6 +8,7 @@
 //   bisac      — BISAC subject-code classification
 //   pipeline   — Orchestration commands that compose the full analysis pipeline
 //   zeigarnik  — Zeigarnik-effect proxy detector (Craft platform, no AI)
+//   continuity — Continuity checker (Craft platform, AI-assisted, manuscript or series scope)
 
 pub mod chapters;
 pub mod genres;
@@ -16,6 +17,7 @@ pub mod keywords;
 pub mod bisac;
 pub mod pipeline;
 pub mod zeigarnik;
+pub mod continuity;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};

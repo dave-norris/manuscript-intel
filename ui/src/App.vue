@@ -5,6 +5,7 @@ import { useAnalysis } from './composables/useAnalysis';
 import { usePlatform } from './composables/usePlatform';
 import { useSettings } from './composables/useSettings';
 import { useReports } from './composables/useReports';
+import { useSeries } from './composables/useSeries';
 import type { Story } from './types';
 
 import TitleBar from './components/TitleBar.vue';
@@ -13,6 +14,7 @@ import AnalyzerPanel from './components/AnalyzerPanel.vue';
 import ReportsViewer from './components/ReportsViewer.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
 import StoryForm from './components/StoryForm.vue';
+import SeriesPanel from './components/SeriesPanel.vue';
 
 // ── Composables ───────────────────────────────────────────────────────────────
 
@@ -21,16 +23,18 @@ const analysisCtx = useAnalysis();
 const platformCtx = usePlatform();
 const settingsCtx = useSettings();
 const reportsCtx = useReports();
+const seriesCtx = useSeries();
 
 provide('stories', storiesCtx);
 provide('analysis', analysisCtx);
 provide('platform', platformCtx);
 provide('settings', settingsCtx);
 provide('reports', reportsCtx);
+provide('series', seriesCtx);
 
 // ── Panel state ───────────────────────────────────────────────────────────────
 
-type Panel = 'analyzer' | 'reports' | 'settings' | 'story-form';
+type Panel = 'analyzer' | 'reports' | 'settings' | 'story-form' | 'series';
 const activePanel = ref<Panel>('analyzer');
 const prevPanel = ref<Panel>('analyzer');
 
@@ -108,6 +112,7 @@ onMounted(() => {
       <ReportsViewer v-if="activePanel === 'reports'" />
       <SettingsPanel v-if="activePanel === 'settings'" />
       <StoryForm v-if="activePanel === 'story-form'" :story="editingStory" />
+      <SeriesPanel v-if="activePanel === 'series'" />
     </main>
   </div>
 </template>

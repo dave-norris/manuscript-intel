@@ -55,6 +55,7 @@ function renderBySchema(data: any, docType: string): string {
   if (schema === 'discovery_keywords_v1') return renderDiscoveryKeywords(data);
   if (schema === 'activity_log_v1') return renderActivityLog(data);
   if (schema === 'zeigarnik_v1') return renderZeigarnik(data);
+  if (schema === 'continuity_v1') return renderContinuity(data);
 
   // Detect BISAC classification by structure or doc_type
   if (docType === 'bisac_classification' || (data.ebook && Array.isArray(data.ebook))) {
@@ -694,6 +695,11 @@ function renderZeigarnik(data: any): string {
   const threads: any[] = data.threads || [];
 
   let html = '';
+
+  // Overall Zeigarnik usage percentage at the top
+  const overallPct = summary.overall_zeigarnik_pct ?? 0;
+  html += `<div class="zeigarnik-score"><span class="zeigarnik-pct">${overallPct}%</span><span class="zeigarnik-label">Zeigarnik Usage</span></div>`;
+
   if (data.note) {
     html += `<p class="report-note">${esc(data.note)}</p>`;
   }
@@ -749,6 +755,72 @@ function renderZeigarnik(data: any): string {
     });
     html += `</tbody></table></section>`;
   }
+
+  return html;
+}
+
+// ── Continuity Check Report ───────────────────────────────────────────────────
+
+function renderContinuity(data: any): string {
+  const summary = data.summary || {};
+  const findings: any[] = data.findings || [];
+
+  let html = '';
+  if (data.note) {
+    html += `<p class="report-note">${esc(data.note)}</p>`;
+  }
+  if (data.scope === 'series') {
+    html += `<p class="report-hint">Series-wide check — facts compared across every book in reading order.</p>`;
+  }
+
+  html += `<section class="report-section"><h3>Summary</h3>`;
+  html += `<table class="report-table"><tbody>`;
+  html += `<tr><td><strong>Total findings</strong></td><td>${summary.total_findings ?? 0}</td></tr>`;
+  html += `<tr><td><strong>Contradictions</strong></td><td style="color:#e74c3c"><strong>${summary.contradictions ?? 0}</strong></td></tr>`;
+  html += `<tr><td><strong>Possible issues</strong></td><td style="color:#e0a020">${summary.possible ?? 0}</td></tr>`;
+  html += `<tr><td><strong>Likely intentional / non-issues</strong></td><td class="muted">${summary.likely_intentional ?? 0}</td></tr>`;
+  html += `</tbody></table></section>`;
+
+  if (!findings.length) {
+    html += `<section class="report-section"><p class="muted">No candidate contradictions found.</p></section>`;
+    return html;
+  }
+
+  const verdictLabel: Record<string, string> = {
+    contradiction: 'Contradiction',
+    possible: 'Possible',
+    likely_intentional: 'Likely intentional',
+  };
+  const verdictColor: Record<string, string> = {
+    contradiction: '#e74c3c',
+    possible: '#e0a020',
+    likely_intentional: '#7a7a7a',
+  };
+
+  html += `<section class="report-section"><h3>Findings</h3>`;
+  for (const f of findings) {
+    const color = verdictColor[f.verdict] || '#7a7a7a';
+    const label = verdictLabel[f.verdict] || esc(f.verdict);
+    html += `<div class="genre-block">`;
+    html += `<strong>${esc(f.entity)}</strong> &mdash; ${esc(f.attribute)} `;
+    html += `<span style="color:${color}; font-weight:600;">[${label}, ${f.confidence}%]</span>`;
+    html += `<p>${esc(f.explanation)}</p>`;
+    const occs: any[] = f.occurrences || [];
+    if (occs.length) {
+      html += `<table class="report-table"><thead><tr><th>Book</th><th>Chapter</th><th>Value</th><th>Quote</th></tr></thead><tbody>`;
+      for (const o of occs) {
+        html += `<tr>
+          <td>${esc(o.story_name || '')}</td>
+          <td>${esc(o.chapter_title || o.file || '')}</td>
+          <td>${esc(o.value)}</td>
+          <td class="muted">“${esc(o.snippet || '')}”</td>
+        </tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+    html += `</div>`;
+  }
+  html += `</section>`;
 
   return html;
 }

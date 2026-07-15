@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { inject, computed } from 'vue';
+import { inject, computed, ref } from 'vue';
 import type { Ref, ComputedRef } from 'vue';
-import type { Story, DocMeta, SavedReportMeta, ReportEnvelope } from '../types';
+import type { Story, DocMeta, ReportEnvelope } from '../types';
 
 // ── Injections ────────────────────────────────────────────────────────────────
 
@@ -15,9 +15,11 @@ const storiesCtx = inject<{
 
 const reportsCtx = inject<{
   reports: Ref<DocMeta[]>;
-  savedReports: Ref<SavedReportMeta[]>;
-  openReport: (folder: string, docType: string) => Promise<ReportEnvelope>;
-  openSavedReport: (id: number) => Promise<ReportEnvelope>;
+  currentReport: Ref<ReportEnvelope | null>;
+  loadReports: (folder: string) => Promise<void>;
+  openReport: (id: number) => Promise<ReportEnvelope>;
+  deleteReport: (id: number) => Promise<void>;
+  closeReport: () => void;
 }>('reports')!;
 
 const platformCtx = inject<{
@@ -34,75 +36,78 @@ const emit = defineEmits<{
   (e: 'open-story-form', story: Story | null): void;
 }>();
 
-// ── Report descriptions ───────────────────────────────────────────────────────
+// ── Report type definitions ───────────────────────────────────────────────────
 
-const reportDescriptions: Record<string, string> = {
-  'analysis': 'Combined analysis: categories, BISAC, keywords, and positioning.',
-  'genres_and_categories': 'Genre ranking with KDP category matching for Kindle and Paperback.',
-  'genre_analysis': 'Industry genre classification, KDP paths, comps, and reader demographic.',
-  'full_report': 'Genre analysis with competition status.',
-  'kdp_keywords': 'The 7 keyword strings optimized for KDP discoverability.',
-  'mi_search_terms': 'Short search phrases used for competition and review analysis.',
-  'competition_report': 'Market landscape: how competitive the niche is, who dominates.',
-  'category_finder': 'Category matching results with live discoverability scores.',
-  'genre_ranking': 'Each genre scored independently against the manuscript.',
-  'bisac_classification': 'BISAC subject codes for KDP Print and Ingram distribution.',
-  'review_mining': 'Reader insights extracted from competitor book reviews.',
-  'author_analysis': 'Competitor author catalog strategy: pricing, release cadence.',
-  'chapter_summaries': 'Genre signal extraction from each chapter of the manuscript.',
-  'discovery_keywords': 'Keyword phrases for non-Amazon platforms.',
-  'keyword_search': 'Amazon keyword volume and competition data.',
-  'mapped_categories': 'Verified KDP category paths with live bestseller stats.',
-};
+const ALL_REPORT_TYPES: { docType: string; label: string; description: string }[] = [
+  { docType: 'analysis', label: 'Full Analysis', description: 'Combined analysis: categories, BISAC, keywords, and positioning.' },
+  { docType: 'genres_and_categories', label: 'Find Genres & Categories', description: 'Genre ranking with KDP category matching.' },
+  { docType: 'genre_analysis', label: 'Genre Analysis', description: 'Industry genre classification, KDP paths, comps, and reader demographic.' },
+  { docType: 'full_report', label: 'Full Report', description: 'Genre analysis with competition status.' },
+  { docType: 'kdp_keywords', label: 'KDP Keywords', description: 'The 7 keyword strings optimized for KDP discoverability.' },
+  { docType: 'mi_search_terms', label: 'Search Terms', description: 'Short search phrases used for competition analysis.' },
+  { docType: 'competition_report', label: 'Competition Analysis', description: 'Market landscape: how competitive, who dominates.' },
+  { docType: 'category_finder', label: 'Category Finder', description: 'Category matching results with discoverability scores.' },
+  { docType: 'genre_ranking', label: 'Genre Ranking', description: 'Each genre scored independently against the manuscript.' },
+  { docType: 'bisac_classification', label: 'BISAC Classification', description: 'BISAC subject codes for KDP Print and Ingram.' },
+  { docType: 'review_mining', label: 'Reader Review Intelligence', description: 'Reader insights from competitor reviews.' },
+  { docType: 'author_analysis', label: 'Competitor Author Analysis', description: 'Competitor pricing, release cadence, series.' },
+  { docType: 'chapter_summaries', label: 'Chapter Summaries', description: 'Genre signal extraction from each chapter.' },
+  { docType: 'discovery_keywords', label: 'Discovery Keywords', description: 'Keywords for non-Amazon platforms.' },
+  { docType: 'keyword_search', label: 'Keyword Search Results', description: 'Amazon keyword volume and competition data.' },
+  { docType: 'activity_log', label: 'Activity Log', description: 'Log output from the last analysis run.' },
+];
 
-// ── Computed reports list ─────────────────────────────────────────────────────
+// ── Expand/collapse state ─────────────────────────────────────────────────────
 
-interface ReportListItem {
-  docType: string;
-  label: string;
-  count: number;
-  hasCurrent: boolean;
-  firstSavedId: number | null;
-  description: string;
+const expanded = ref<string | null>(null);
+
+function toggleExpand(docType: string): void {
+  expanded.value = expanded.value === docType ? null : docType;
 }
 
-const reportsList = computed<ReportListItem[]>(() => {
-  const docs = reportsCtx.reports.value;
-  const saved = reportsCtx.savedReports.value;
-  const visibleTypes = platformCtx.platform.value === 'kdp'
+// ── Computed: visible report types with version counts ────────────────────────
+
+interface VisibleReportType {
+  docType: string;
+  label: string;
+  description: string;
+  count: number;
+  versions: DocMeta[];
+}
+
+const visibleTypes = computed<VisibleReportType[]>(() => {
+  const allowedTypes = platformCtx.platform.value === 'kdp'
     ? platformCtx.KDP_REPORT_TYPES
     : platformCtx.WIDE_REPORT_TYPES;
 
-  const typeMap: Record<string, { doc: DocMeta | null; savedCount: number; firstSavedId: number | null }> = {};
+  const docs = reportsCtx.reports.value;
 
+  // Group docs by doc_type
+  const versionsByType = new Map<string, DocMeta[]>();
   for (const doc of docs) {
-    typeMap[doc.doc_type] = { doc, savedCount: 0, firstSavedId: null };
-  }
-  for (const s of saved) {
-    if (!typeMap[s.doc_type]) {
-      typeMap[s.doc_type] = { doc: null, savedCount: 0, firstSavedId: null };
+    if (!versionsByType.has(doc.doc_type)) {
+      versionsByType.set(doc.doc_type, []);
     }
-    typeMap[s.doc_type].savedCount++;
-    if (typeMap[s.doc_type].firstSavedId === null) {
-      typeMap[s.doc_type].firstSavedId = s.id;
-    }
+    versionsByType.get(doc.doc_type)!.push(doc);
   }
 
-  const items: ReportListItem[] = [];
-  for (const [docType, info] of Object.entries(typeMap)) {
-    if (!visibleTypes.has(docType)) continue;
-    const label = info.doc?.label || saved.find(s => s.doc_type === docType)?.label || docType;
-    const totalCount = (info.doc ? 1 : 0) + info.savedCount;
-    items.push({
-      docType,
-      label,
-      count: totalCount,
-      hasCurrent: !!info.doc,
-      firstSavedId: info.firstSavedId,
-      description: reportDescriptions[docType] || '',
-    });
+  // Sort each group by generated_at descending (newest first)
+  for (const versions of versionsByType.values()) {
+    versions.sort((a, b) => new Date(b.generated_at).getTime() - new Date(a.generated_at).getTime());
   }
-  return items;
+
+  return ALL_REPORT_TYPES
+    .filter(t => allowedTypes.has(t.docType))
+    .map(t => {
+      const versions = versionsByType.get(t.docType) || [];
+      return {
+        docType: t.docType,
+        label: t.label,
+        description: t.description,
+        count: versions.length,
+        versions,
+      };
+    });
 });
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -120,15 +125,20 @@ function onNewStory(): void {
   emit('open-story-form', null);
 }
 
-async function onReportClick(item: ReportListItem): Promise<void> {
-  const folder = storiesCtx.activeFolder.value;
-  if (!folder) return;
+async function onVersionClick(id: number): Promise<void> {
+  await reportsCtx.openReport(id);
   showPanel('reports');
-  if (item.hasCurrent) {
-    await reportsCtx.openReport(folder, item.docType);
-  } else if (item.firstSavedId !== null) {
-    await reportsCtx.openSavedReport(item.firstSavedId);
-  }
+}
+
+// ── Timestamp formatting ──────────────────────────────────────────────────────
+
+function formatTimestamp(ts: string): string {
+  return new Date(ts).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 </script>
 
@@ -167,7 +177,7 @@ async function onReportClick(item: ReportListItem): Promise<void> {
             class="story-item-edit"
             :title="'Edit story'"
             @click.stop="onEditStory(story)"
-          >✎</button>
+          >&#x270E;</button>
         </div>
       </div>
     </div>
@@ -178,19 +188,39 @@ async function onReportClick(item: ReportListItem): Promise<void> {
       <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint">
         Select a story to see reports.
       </div>
-      <div v-else-if="reportsList.length === 0" class="sidebar-hint">
-        No reports yet. Click Get Reports.
-      </div>
-      <div
-        v-for="item in reportsList"
-        :key="item.docType"
-        class="sidebar-report-item"
-        :title="item.description"
-        @click="onReportClick(item)"
-      >
-        <span class="report-item-label">{{ item.label }}</span>
-        <span v-if="item.count > 1" class="report-count">{{ item.count }}</span>
-      </div>
+      <template v-else>
+        <div
+          v-for="type in visibleTypes"
+          :key="type.docType"
+          class="report-type"
+        >
+          <div
+            class="report-type-header"
+            :title="type.description"
+            @click="toggleExpand(type.docType)"
+          >
+            <span class="report-type-label" :class="{ dimmed: type.count === 0 }">
+              {{ type.label }}
+            </span>
+            <span v-if="type.count > 0" class="report-count">{{ type.count }}</span>
+          </div>
+
+          <!-- Expanded: show versions -->
+          <div
+            v-if="expanded === type.docType && type.versions.length > 0"
+            class="report-versions"
+          >
+            <div
+              v-for="version in type.versions"
+              :key="version.id"
+              class="report-version-item"
+              @click="onVersionClick(version.id)"
+            >
+              {{ formatTimestamp(version.generated_at) }}
+            </div>
+          </div>
+        </div>
+      </template>
     </div>
 
     <!-- Settings at bottom -->
@@ -355,13 +385,16 @@ async function onReportClick(item: ReportListItem): Promise<void> {
   padding: 8px 10px 4px;
 }
 
-.sidebar-report-item {
+.report-type {
+  margin: 0;
+}
+
+.report-type-header {
   padding: 6px 10px;
   font-size: 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  color: var(--text);
   cursor: pointer;
   border-radius: var(--radius);
   white-space: nowrap;
@@ -369,14 +402,19 @@ async function onReportClick(item: ReportListItem): Promise<void> {
   text-overflow: ellipsis;
 }
 
-.sidebar-report-item:hover {
+.report-type-header:hover {
   background: var(--surface2);
-  color: var(--accent);
 }
 
-.report-item-label {
+.report-type-label {
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--text);
+}
+
+.report-type-label.dimmed {
+  color: var(--text-muted);
+  opacity: 0.5;
 }
 
 .report-count {
@@ -389,6 +427,23 @@ async function onReportClick(item: ReportListItem): Promise<void> {
   min-width: 18px;
   text-align: center;
   flex-shrink: 0;
+}
+
+.report-versions {
+  padding: 2px 0 4px 18px;
+}
+
+.report-version-item {
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius);
+}
+
+.report-version-item:hover {
+  background: var(--surface2);
+  color: var(--accent);
 }
 
 .sidebar-hint {

@@ -3,17 +3,15 @@ import { inject, ref, computed } from 'vue';
 import type { Ref, ComputedRef } from 'vue';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { renderReport } from '../reportRenderer';
-import type { Story, DocMeta, SavedReportMeta, ReportEnvelope } from '../types';
+import type { Story, DocMeta, ReportEnvelope } from '../types';
 
 // ── Injections ────────────────────────────────────────────────────────────────
 
 const reportsCtx = inject<{
   reports: Ref<DocMeta[]>;
-  savedReports: Ref<SavedReportMeta[]>;
   currentReport: Ref<ReportEnvelope | null>;
   loadReports: (folder: string) => Promise<void>;
-  saveVersion: (folder: string, docType: string) => Promise<SavedReportMeta>;
-  deleteVersion: (id: number) => Promise<void>;
+  deleteReport: (id: number) => Promise<void>;
   closeReport: () => void;
 }>('reports')!;
 
@@ -27,12 +25,6 @@ const showPanel = inject<(name: string) => void>('showPanel')!;
 // ── Local state ───────────────────────────────────────────────────────────────
 
 const copyLabel = ref('Copy');
-const saveLabel = ref('Save');
-const saveDisabled = ref(false);
-
-// Track which type we're viewing — needed for save/delete
-const viewingDocType = ref('');
-const viewingSavedId = ref<number | null>(null);
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 
@@ -44,40 +36,12 @@ const renderedHtml = computed(() => {
   return renderReport(report.value, storyName);
 });
 
-const reportTitle = computed(() => report.value?.label || '');
-
-const isSavedVersion = computed(() => viewingSavedId.value !== null);
-
-// Detect whether this is a current report (can Save) or saved (can Delete)
-// We watch the currentReport to update tracking
-import { watch } from 'vue';
-
-watch(report, (envelope) => {
-  if (!envelope) {
-    viewingDocType.value = '';
-    viewingSavedId.value = null;
-    return;
-  }
-  // Determine if it's a saved version by checking savedReports
-  const savedMatch = reportsCtx.savedReports.value.find(
-    s => s.doc_type === envelope.doc_type && s.label === envelope.label
-  );
-  // If the envelope matches a doc from the current reports list, it's "current"
-  const currentMatch = reportsCtx.reports.value.find(
-    d => d.doc_type === envelope.doc_type
-  );
-
-  if (currentMatch && currentMatch.label === envelope.label) {
-    viewingDocType.value = envelope.doc_type;
-    viewingSavedId.value = null;
-  } else if (savedMatch) {
-    viewingDocType.value = '';
-    viewingSavedId.value = savedMatch.id;
-  } else {
-    // Fallback: treat as current
-    viewingDocType.value = envelope.doc_type;
-    viewingSavedId.value = null;
-  }
+const reportTitle = computed(() => {
+  if (!report.value) return '';
+  const ts = new Date(report.value.generated_at).toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+  });
+  return `${report.value.label} — ${ts}`;
 });
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -89,27 +53,11 @@ async function onCopy(): Promise<void> {
   setTimeout(() => { copyLabel.value = 'Copy'; }, 1500);
 }
 
-async function onSave(): Promise<void> {
-  const folder = storiesCtx.activeFolder.value;
-  if (!folder || !viewingDocType.value) return;
-  saveDisabled.value = true;
-  saveLabel.value = 'Saving...';
-  try {
-    const meta = await reportsCtx.saveVersion(folder, viewingDocType.value);
-    saveLabel.value = `Saved as ${meta.label}`;
-    await reportsCtx.loadReports(folder);
-    setTimeout(() => { saveLabel.value = 'Save'; saveDisabled.value = false; }, 2000);
-  } catch (e) {
-    saveLabel.value = 'Error';
-    setTimeout(() => { saveLabel.value = 'Save'; saveDisabled.value = false; }, 2000);
-  }
-}
-
 async function onDelete(): Promise<void> {
-  if (viewingSavedId.value === null) return;
-  if (!confirm('Delete this saved report version? This cannot be undone.')) return;
+  if (!report.value) return;
+  if (!confirm('Delete this report version? This cannot be undone.')) return;
   try {
-    await reportsCtx.deleteVersion(viewingSavedId.value);
+    await reportsCtx.deleteReport(report.value.id);
     const folder = storiesCtx.activeFolder.value;
     if (folder) await reportsCtx.loadReports(folder);
     reportsCtx.closeReport();
@@ -130,18 +78,8 @@ function onClose(): void {
     <div class="reports-viewer-header">
       <span class="reports-viewer-title">{{ reportTitle }}</span>
       <div class="reports-viewer-actions">
-        <button
-          v-if="!isSavedVersion"
-          class="btn btn-sm"
-          :disabled="saveDisabled"
-          @click="onSave"
-        >{{ saveLabel }}</button>
         <button class="btn btn-sm" @click="onCopy">{{ copyLabel }}</button>
-        <button
-          v-if="isSavedVersion"
-          class="btn btn-sm btn-danger"
-          @click="onDelete"
-        >Delete</button>
+        <button class="btn btn-sm btn-danger" @click="onDelete">Delete</button>
         <button class="btn-close" @click="onClose">&times;</button>
       </div>
     </div>

@@ -141,12 +141,14 @@ CREATE INDEX IF NOT EXISTS idx_keyword_results_folder ON keyword_search_results(
 -- against a file that quietly stopped being written (see: the genre-ranking
 -- .json/.md drift this replaces).
 CREATE TABLE IF NOT EXISTS story_documents (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
     story_folder TEXT NOT NULL,
     doc_type     TEXT NOT NULL,
     content      TEXT NOT NULL,
-    generated_at TEXT NOT NULL,
-    PRIMARY KEY (story_folder, doc_type)
+    generated_at TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_story_docs_folder ON story_documents(story_folder, doc_type);
 
 CREATE INDEX IF NOT EXISTS idx_summaries_folder ON chapter_summaries(story_folder);
 
@@ -226,6 +228,30 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
          SELECT story_folder, generated_at, keywords_json FROM pr_keywords;
          DROP TABLE IF EXISTS pr_keywords;"
     );
+
+    // Migration: story_documents from single-version (PRIMARY KEY on story_folder+doc_type)
+    // to multi-version (auto-increment id). Recreate table if it lacks an id column.
+    let has_id: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('story_documents') WHERE name = 'id'",
+        [], |r| r.get::<_, i64>(0)
+    ).unwrap_or(0) > 0;
+
+    if !has_id {
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS story_documents_new (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                story_folder TEXT NOT NULL,
+                doc_type     TEXT NOT NULL,
+                content      TEXT NOT NULL,
+                generated_at TEXT NOT NULL
+            );
+            INSERT INTO story_documents_new (story_folder, doc_type, content, generated_at)
+                SELECT story_folder, doc_type, content, generated_at FROM story_documents;
+            DROP TABLE story_documents;
+            ALTER TABLE story_documents_new RENAME TO story_documents;
+            CREATE INDEX IF NOT EXISTS idx_story_docs_folder ON story_documents(story_folder, doc_type);"
+        );
+    }
 
     seed_if_empty(&conn)?;
     seed_bisac_if_empty(&conn)?;
@@ -931,8 +957,7 @@ pub fn save_document(conn: &Connection, story_folder: &str, doc_type: &str, cont
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO story_documents (story_folder, doc_type, content, generated_at)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(story_folder, doc_type) DO UPDATE SET content = excluded.content, generated_at = excluded.generated_at",
+         VALUES (?1, ?2, ?3, ?4)",
         params![story_folder, doc_type, content, now],
     ).map_err(|e| e.to_string())?;
     Ok(())
@@ -940,13 +965,14 @@ pub fn save_document(conn: &Connection, story_folder: &str, doc_type: &str, cont
 
 pub fn get_document(conn: &Connection, story_folder: &str, doc_type: &str) -> Option<String> {
     conn.query_row(
-        "SELECT content FROM story_documents WHERE story_folder = ?1 AND doc_type = ?2",
+        "SELECT content FROM story_documents WHERE story_folder = ?1 AND doc_type = ?2 ORDER BY generated_at DESC LIMIT 1",
         params![story_folder, doc_type], |r| r.get(0)
     ).ok()
 }
 
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct DocMeta {
+    pub id:           i64,
     pub doc_type:     String,
     pub label:        String,
     pub generated_at: String,
@@ -955,6 +981,7 @@ pub struct DocMeta {
 /// Response envelope for get_report_cmd — tells the frontend what format to expect.
 #[derive(serde::Serialize, Clone, Debug)]
 pub struct ReportEnvelope {
+    pub id:           i64,
     pub doc_type:     String,
     pub label:        String,
     pub format:       String,   // "json" | "markdown"
@@ -964,22 +991,19 @@ pub struct ReportEnvelope {
 
 pub fn list_documents(conn: &Connection, story_folder: &str) -> Vec<DocMeta> {
     let mut stmt = match conn.prepare(
-        "SELECT doc_type, generated_at FROM story_documents WHERE story_folder = ?1"
+        "SELECT id, doc_type, generated_at FROM story_documents WHERE story_folder = ?1 ORDER BY generated_at DESC"
     ) { Ok(s) => s, Err(_) => return Vec::new() };
 
-    let rows: Vec<(String, String)> = stmt.query_map(params![story_folder], |r| {
-        Ok((r.get(0)?, r.get(1)?))
+    let rows: Vec<(i64, String, String)> = stmt.query_map(params![story_folder], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
     }).and_then(|rows| rows.collect::<Result<Vec<_>, _>>()).unwrap_or_default();
 
-    let mut out: Vec<DocMeta> = rows.into_iter().map(|(doc_type, generated_at)| {
+    rows.into_iter().map(|(id, doc_type, generated_at)| {
         let label = DOC_TYPES.iter().find(|(t, _)| *t == doc_type)
             .map(|(_, l)| l.to_string())
             .unwrap_or_else(|| doc_type.clone());
-        DocMeta { doc_type, label, generated_at }
-    }).collect();
-
-    out.sort_by_key(|d| DOC_TYPES.iter().position(|(t, _)| *t == d.doc_type).unwrap_or(99));
-    out
+        DocMeta { id, doc_type, label, generated_at }
+    }).collect()
 }
 
 // ── Tauri commands for the Reports panel ────────────────────────────
@@ -997,62 +1021,35 @@ pub async fn save_activity_log_cmd(db: tauri::State<'_, Db>, folder: String, con
 }
 
 #[tauri::command]
-pub async fn get_report_cmd(db: tauri::State<'_, Db>, folder: String, doc_type: String) -> Result<ReportEnvelope, String> {
+pub async fn get_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<ReportEnvelope, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let (content, generated_at) = conn.query_row(
-        "SELECT content, generated_at FROM story_documents WHERE story_folder = ?1 AND doc_type = ?2",
-        params![folder, doc_type], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    let (doc_type, content, generated_at): (String, String, String) = conn.query_row(
+        "SELECT doc_type, content, generated_at FROM story_documents WHERE id = ?1",
+        params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
     ).map_err(|_| "Report not found.".to_string())?;
 
     let label = DOC_TYPES.iter().find(|(t, _)| *t == doc_type)
         .map(|(_, l)| l.to_string())
         .unwrap_or_else(|| doc_type.clone());
 
-    // Detect format: if the content parses as a JSON object with a "schema" field, it's structured
     let format = if content.starts_with('{') || content.starts_with('[') {
         if serde_json::from_str::<serde_json::Value>(&content).is_ok() { "json" } else { "markdown" }
     } else {
         "markdown"
     };
 
-    Ok(ReportEnvelope { doc_type, label, format: format.to_string(), content, generated_at })
+    Ok(ReportEnvelope { id, doc_type, label, format: format.to_string(), content, generated_at })
 }
 
-// ── Tauri commands for saved (versioned) reports ────────────────────────
+// ── Delete a report version ────────────────────────
 
 #[tauri::command]
-pub async fn save_report_version_cmd(db: tauri::State<'_, Db>, folder: String, doc_type: String) -> Result<SavedReportMeta, String> {
+pub async fn delete_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<(), String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
-    save_report_version(&conn, &folder, &doc_type)
-}
-
-#[tauri::command]
-pub async fn list_saved_reports_cmd(db: tauri::State<'_, Db>, folder: String) -> Result<Vec<SavedReportMeta>, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    Ok(list_saved_reports(&conn, &folder))
-}
-
-#[tauri::command]
-pub async fn get_saved_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<ReportEnvelope, String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    let (doc_type, content, saved_at, label): (String, String, String, String) = conn.query_row(
-        "SELECT doc_type, content, saved_at, label FROM saved_reports WHERE id = ?1",
-        params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-    ).map_err(|_| "Saved report not found.".to_string())?;
-
-    let format = if content.starts_with('{') || content.starts_with('[') {
-        if serde_json::from_str::<serde_json::Value>(&content).is_ok() { "json" } else { "markdown" }
-    } else {
-        "markdown"
-    };
-
-    Ok(ReportEnvelope { doc_type, label, format: format.to_string(), content, generated_at: saved_at })
-}
-
-#[tauri::command]
-pub async fn delete_saved_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<(), String> {
-    let conn = db.0.lock().map_err(|e| e.to_string())?;
-    delete_saved_report(&conn, id)
+    let affected = conn.execute("DELETE FROM story_documents WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    if affected == 0 { return Err("Report not found.".to_string()); }
+    Ok(())
 }
 
 // ── BISAC classifications ──────────────────────────────────────────────
@@ -1109,77 +1106,4 @@ pub fn node_id_for_path(conn: &Connection, path: &str, store: &str) -> Option<St
         "SELECT amazon_node_id FROM kdp_categories WHERE path = ?1 AND store = ?2 AND amazon_node_id IS NOT NULL AND amazon_node_id != ''",
         params![path, store], |r| r.get::<_, String>(0)
     ).ok()
-}
-
-// ── Saved reports (versioned) ───────────────────────────────────────────
-
-#[derive(serde::Serialize, Clone, Debug)]
-pub struct SavedReportMeta {
-    pub id:           i64,
-    pub doc_type:     String,
-    pub version:      i64,
-    pub label:        String,
-    pub saved_at:     String,
-}
-
-/// Save the current content of a report as a new version. Auto-increments
-/// the version number for this story+doc_type pair.
-pub fn save_report_version(conn: &Connection, story_folder: &str, doc_type: &str) -> Result<SavedReportMeta, String> {
-    // Get the current (latest) content from story_documents
-    let content = get_document(conn, story_folder, doc_type)
-        .ok_or_else(|| format!("No current '{}' report to save.", doc_type))?;
-
-    // Determine next version number
-    let max_version: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(version), 0) FROM saved_reports WHERE story_folder = ?1 AND doc_type = ?2",
-        params![story_folder, doc_type], |r| r.get(0)
-    ).unwrap_or(0);
-    let next_version = max_version + 1;
-
-    // Build label from DOC_TYPES lookup
-    let type_label = DOC_TYPES.iter().find(|(t, _)| *t == doc_type)
-        .map(|(_, l)| l.to_string())
-        .unwrap_or_else(|| doc_type.to_string());
-    let label = format!("{} v{}", type_label, next_version);
-
-    let now = chrono::Utc::now().to_rfc3339();
-    conn.execute(
-        "INSERT INTO saved_reports (story_folder, doc_type, version, label, content, saved_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![story_folder, doc_type, next_version, label, content, now],
-    ).map_err(|e| e.to_string())?;
-
-    let id = conn.last_insert_rowid();
-
-    Ok(SavedReportMeta { id, doc_type: doc_type.to_string(), version: next_version, label, saved_at: now })
-}
-
-/// List all saved report versions for a story, newest first.
-pub fn list_saved_reports(conn: &Connection, story_folder: &str) -> Vec<SavedReportMeta> {
-    let mut stmt = match conn.prepare(
-        "SELECT id, doc_type, version, label, saved_at FROM saved_reports
-         WHERE story_folder = ?1 ORDER BY saved_at DESC"
-    ) { Ok(s) => s, Err(_) => return Vec::new() };
-
-    stmt.query_map(params![story_folder], |r| {
-        Ok(SavedReportMeta {
-            id:       r.get(0)?,
-            doc_type: r.get(1)?,
-            version:  r.get(2)?,
-            label:    r.get(3)?,
-            saved_at: r.get(4)?,
-        })
-    }).and_then(|rows| rows.collect::<Result<Vec<_>, _>>()).unwrap_or_default()
-}
-
-/// Get the content of a specific saved report by ID.
-
-/// Delete a saved report version by ID.
-pub fn delete_saved_report(conn: &Connection, id: i64) -> Result<(), String> {
-    let affected = conn.execute("DELETE FROM saved_reports WHERE id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
-    if affected == 0 {
-        return Err("Saved report not found.".to_string());
-    }
-    Ok(())
 }

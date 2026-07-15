@@ -56,6 +56,7 @@ export interface Settings {
 }
 
 export interface DocMeta {
+  id: number;
   doc_type: string;
   label: string;
   generated_at: string;
@@ -70,6 +71,7 @@ export interface SavedReportMeta {
 }
 
 export interface ReportEnvelope {
+  id: number;
   doc_type: string;
   label: string;
   format: string;

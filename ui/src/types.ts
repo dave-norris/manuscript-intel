@@ -47,6 +47,7 @@ export interface AnalysisState {
   has_bisac: boolean;
   has_discovery_keywords: boolean;
   has_keyword_search_results: boolean;
+  has_zeigarnik: boolean;
 }
 
 export interface Settings {

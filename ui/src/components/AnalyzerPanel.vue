@@ -16,14 +16,15 @@ const analysisCtx = inject<{
   analysisState: Ref<AnalysisState | null>;
   isWorking: Ref<boolean>;
   runAnalyze: (folder: string, forceResummarize: boolean, platform: string) => Promise<void>;
+  runCraftAnalysis: (folder: string) => Promise<void>;
   runMarketIntel: (folder: string) => Promise<void>;
   cancelOperation: () => Promise<void>;
 }>('analysis')!;
 
 const platformCtx = inject<{
-  platform: Ref<'kdp' | 'wide'>;
+  platform: Ref<'kdp' | 'wide' | 'craft'>;
   isKdp: ComputedRef<boolean>;
-  setPlatform: (p: 'kdp' | 'wide') => void;
+  setPlatform: (p: 'kdp' | 'wide' | 'craft') => void;
 }>('platform')!;
 
 // ── Report types from DB ──────────────────────────────────────────────────────
@@ -57,6 +58,7 @@ const existsMap = computed(() => {
     review_mining: false,
     author_analysis: false,
     activity_log: false,
+    zeigarnik_analysis: state.has_zeigarnik,
   } as Record<string, boolean>;
 });
 
@@ -109,7 +111,13 @@ watch(() => platformCtx.platform.value, () => {
 function onGetReports(): void {
   const folder = storiesCtx.activeFolder.value;
   hasRun.value = true;
-  analysisCtx.runAnalyze(folder, forceResummarize.value, platformCtx.platform.value);
+  if (platformCtx.platform.value === 'craft') {
+    // Craft-tab tools (currently: Zeigarnik effect) are pure text analysis —
+    // no AI call, no API key needed.
+    analysisCtx.runCraftAnalysis(folder);
+  } else {
+    analysisCtx.runAnalyze(folder, forceResummarize.value, platformCtx.platform.value);
+  }
 }
 
 function onMarketIntel(): void {
@@ -142,6 +150,11 @@ function onStop(): void {
         :class="{ active: platformCtx.platform.value === 'wide' }"
         @click="platformCtx.setPlatform('wide')"
       >Wide</button>
+      <button
+        class="platform-tab"
+        :class="{ active: platformCtx.platform.value === 'craft' }"
+        @click="platformCtx.setPlatform('craft')"
+      >Craft</button>
     </div>
 
     <!-- Actions (top) -->

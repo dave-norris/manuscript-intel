@@ -12,13 +12,17 @@ export const WIDE_REPORT_TYPES = new Set([
   'genre_ranking', 'chapter_summaries', 'activity_log',
 ]);
 
-const platform = ref<'kdp' | 'wide'>(
-  (localStorage.getItem('platform') as 'kdp' | 'wide') || 'kdp'
+export const CRAFT_REPORT_TYPES = new Set([
+  'zeigarnik_analysis', 'chapter_summaries', 'activity_log',
+]);
+
+const platform = ref<'kdp' | 'wide' | 'craft'>(
+  (localStorage.getItem('platform') as 'kdp' | 'wide' | 'craft') || 'kdp'
 );
 
 const isKdp = computed(() => platform.value === 'kdp');
 
-function setPlatform(p: 'kdp' | 'wide'): void {
+function setPlatform(p: 'kdp' | 'wide' | 'craft'): void {
   platform.value = p;
   localStorage.setItem('platform', p);
 }
@@ -30,5 +34,6 @@ export function usePlatform() {
     setPlatform,
     KDP_REPORT_TYPES,
     WIDE_REPORT_TYPES,
+    CRAFT_REPORT_TYPES,
   };
 }

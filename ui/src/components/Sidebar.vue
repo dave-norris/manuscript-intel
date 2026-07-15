@@ -23,9 +23,10 @@ const reportsCtx = inject<{
 }>('reports')!;
 
 const platformCtx = inject<{
-  platform: Ref<'kdp' | 'wide'>;
+  platform: Ref<'kdp' | 'wide' | 'craft'>;
   KDP_REPORT_TYPES: Set<string>;
   WIDE_REPORT_TYPES: Set<string>;
+  CRAFT_REPORT_TYPES: Set<string>;
 }>('platform')!;
 
 const showPanel = inject<(name: string) => void>('showPanel')!;
@@ -55,6 +56,7 @@ const ALL_REPORT_TYPES: { docType: string; label: string; description: string }[
   { docType: 'discovery_keywords', label: 'Discovery Keywords', description: 'Keywords for non-Amazon platforms.' },
   { docType: 'keyword_search', label: 'Keyword Search Results', description: 'Amazon keyword volume and competition data.' },
   { docType: 'activity_log', label: 'Activity Log', description: 'Log output from the last analysis run.' },
+  { docType: 'zeigarnik_analysis', label: 'Zeigarnik Effect', description: 'Analyzes open loops and unresolved tension to maintain reader engagement.' },
 ];
 
 // ── Expand/collapse state ─────────────────────────────────────────────────────
@@ -76,9 +78,10 @@ interface VisibleReportType {
 }
 
 const visibleTypes = computed<VisibleReportType[]>(() => {
-  const allowedTypes = platformCtx.platform.value === 'kdp'
-    ? platformCtx.KDP_REPORT_TYPES
-    : platformCtx.WIDE_REPORT_TYPES;
+  const p = platformCtx.platform.value;
+  const allowedTypes = p === 'kdp' ? platformCtx.KDP_REPORT_TYPES
+    : p === 'wide' ? platformCtx.WIDE_REPORT_TYPES
+    : platformCtx.CRAFT_REPORT_TYPES;
 
   const docs = reportsCtx.reports.value;
 

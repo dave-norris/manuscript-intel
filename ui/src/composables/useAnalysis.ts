@@ -99,6 +99,32 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
   }
 }
 
+async function runCraftAnalysis(folder: string): Promise<void> {
+  if (!folder) { appendLog('✗ No story selected.'); return; }
+
+  // Pure pattern-matching — no AI, no API key required.
+  clearLog();
+  appendLog('Running Zeigarnik effect analysis (algorithmic — no AI)...');
+  isWorking.value = true;
+  let runTs = '';
+  try {
+    const result = await invoke<GenreResult>('analyze_zeigarnik_for_story', {
+      request: { folder },
+    });
+    runTs = result.run_ts || new Date().toISOString();
+    if (result.success) {
+      appendLog('✓ Analysis complete. View reports in the sidebar.');
+    } else {
+      appendLog('✗ ' + result.error);
+    }
+  } catch (e) {
+    appendLog('✗ ' + String(e));
+  } finally {
+    isWorking.value = false;
+    saveLog(folder, runTs);
+  }
+}
+
 async function runCompetition(folder: string, store: string): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
   const { provider, apiKey, model, canopyApiKey } = getSettings();
@@ -247,6 +273,7 @@ export function useAnalysis() {
     logLines,
     refreshState,
     runAnalyze,
+    runCraftAnalysis,
     runCompetition,
     runMineReviews,
     runAuthorAnalysis,

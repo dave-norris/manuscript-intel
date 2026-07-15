@@ -21,6 +21,7 @@ use tauri::{AppHandle, Manager};
 const SEED_GENRE_LIST_JSON:    &str = include_str!("../data/genre-list.json");
 const SEED_GENRE_KDP_MAP_JSON: &str = include_str!("../data/genre-kdp-map.json");
 const SEED_BISAC_JSON:         &str = include_str!("../data/bisac-fiction.json");
+const SEED_ZEIGARNIK_CONFIG_JSON: &str = include_str!("../data/zeigarnik-config.json");
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS genres (
@@ -191,6 +192,52 @@ CREATE TABLE IF NOT EXISTS report_types (
     platforms    TEXT NOT NULL DEFAULT 'kdp,wide',  -- comma-separated: 'kdp', 'wide', or 'kdp,wide'
     depends_on   TEXT NOT NULL DEFAULT ''           -- comma-separated report_type ids
 );
+
+-- Zeigarnik effect detector: pure textual-proxy analysis, no AI. Phrase lists
+-- and thresholds live here (seeded once from zeigarnik-config.json) instead of
+-- being hardcoded in Rust, so they can be tuned per-project without a rebuild.
+CREATE TABLE IF NOT EXISTS zeigarnik_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL   -- JSON-encoded: array of strings, or a single number/object
+);
+
+-- One row per manuscript chapter per analysis run (replaced wholesale each run).
+CREATE TABLE IF NOT EXISTS zeigarnik_chapters (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    story_folder   TEXT NOT NULL,
+    chapter_index  INTEGER NOT NULL,
+    file           TEXT NOT NULL,
+    title          TEXT NOT NULL,
+    word_count     INTEGER NOT NULL,
+    sentence_count INTEGER NOT NULL,
+    question_count INTEGER NOT NULL,
+    ending_type    TEXT NOT NULL,   -- 'cliffhanger' | 'neutral' | 'resolved'
+    tension_score  INTEGER NOT NULL, -- 0-100, heuristic
+    ending_snippet TEXT NOT NULL,
+    generated_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_zeigarnik_chapters_folder ON zeigarnik_chapters(story_folder);
+
+-- Candidate open loops: a capitalized term/phrase that reappears after a
+-- long gap of chapters. A textual proxy for "unresolved thread the reader
+-- may still be holding open" — not a direct measurement of recall.
+CREATE TABLE IF NOT EXISTS zeigarnik_threads (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    story_folder       TEXT NOT NULL,
+    term               TEXT NOT NULL,
+    mention_count      INTEGER NOT NULL,
+    first_chapter_index INTEGER NOT NULL,
+    first_file         TEXT NOT NULL,
+    first_snippet      TEXT NOT NULL,
+    gap_start_index    INTEGER NOT NULL,  -- chapter after which the term went quiet
+    gap_end_index      INTEGER NOT NULL,  -- chapter where it resurfaces
+    max_gap_chapters   INTEGER NOT NULL,
+    max_gap_words      INTEGER NOT NULL,
+    generated_at       TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_zeigarnik_threads_folder ON zeigarnik_threads(story_folder);
 "#;
 
 pub struct Db(pub Mutex<Connection>);
@@ -264,6 +311,7 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     seed_if_empty(&conn)?;
     seed_bisac_if_empty(&conn)?;
     seed_report_types(&conn)?;
+    seed_zeigarnik_config_if_empty(&conn)?;
 
     Ok(Db(Mutex::new(conn)))
 }
@@ -342,14 +390,9 @@ fn seed_bisac_if_empty(conn: &Connection) -> Result<(), String> {
 }
 
 fn seed_report_types(conn: &Connection) -> Result<(), String> {
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM report_types", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-    if count > 0 { return Ok(()); }
-
     let rows: &[(&str, &str, &str, &str, &str)] = &[
         // (id, label, description, platforms, depends_on)
-        ("chapter_summaries", "Chapter Summaries", "Extract genre signals from each chapter of the manuscript.", "kdp,wide", ""),
+        ("chapter_summaries", "Chapter Summaries", "Extract genre signals from each chapter of the manuscript.", "kdp,wide,craft", ""),
         ("genre_analysis", "Genre Analysis", "Industry genre classification, KDP paths, comps, and reader demographic.", "kdp,wide", "chapter_summaries"),
         ("genre_ranking", "Genre Ranking", "Score the manuscript against all known genres independently.", "kdp,wide", "chapter_summaries,genre_analysis"),
         ("kdp_categories", "KDP Categories", "Find the best-fit Amazon categories with discoverability stats.", "kdp", "chapter_summaries,genre_analysis,genre_ranking"),
@@ -362,17 +405,175 @@ fn seed_report_types(conn: &Connection) -> Result<(), String> {
         ("competition_report", "Competition Analysis", "Market landscape: how competitive the niche is, who dominates.", "kdp", "mi_search_terms"),
         ("review_mining", "Reader Review Intelligence", "Reader insights extracted from competitor book reviews.", "kdp", "mi_search_terms"),
         ("author_analysis", "Competitor Author Analysis", "Competitor pricing, release cadence, and series strategy.", "kdp", "mi_search_terms"),
-        ("activity_log", "Activity Log", "Log output from the analysis run.", "kdp,wide", ""),
+        ("zeigarnik_analysis", "Zeigarnik Effect", "Analyzes open loops and unresolved tension to maintain reader engagement.", "craft", ""),
     ];
 
     for (id, label, description, platforms, depends_on) in rows {
         conn.execute(
-            "INSERT OR IGNORE INTO report_types (id, label, description, platforms, depends_on) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO report_types (id, label, description, platforms, depends_on) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET label = excluded.label, description = excluded.description, platforms = excluded.platforms, depends_on = excluded.depends_on",
             params![id, label, description, platforms, depends_on],
         ).map_err(|e| e.to_string())?;
     }
 
     Ok(())
+}
+
+fn seed_zeigarnik_config_if_empty(conn: &Connection) -> Result<(), String> {
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM zeigarnik_config", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if count > 0 { return Ok(()); }
+
+    let parsed: serde_json::Value = serde_json::from_str(SEED_ZEIGARNIK_CONFIG_JSON)
+        .map_err(|e| format!("Cannot parse seed zeigarnik-config.json: {}", e))?;
+
+    let obj = parsed.as_object().ok_or("zeigarnik-config.json must be a JSON object")?;
+    for (key, value) in obj {
+        if key == "thresholds" {
+            // Flatten thresholds into individual keys so each is independently tunable.
+            if let Some(t) = value.as_object() {
+                for (tkey, tval) in t {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO zeigarnik_config (key, value) VALUES (?1, ?2)",
+                        params![format!("threshold.{}", tkey), tval.to_string()],
+                    ).map_err(|e| e.to_string())?;
+                }
+            }
+        } else {
+            conn.execute(
+                "INSERT OR IGNORE INTO zeigarnik_config (key, value) VALUES (?1, ?2)",
+                params![key, value.to_string()],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+// ── Zeigarnik effect detector (craft platform, no AI) ──────────────────────
+
+#[derive(Clone, Debug)]
+pub struct ZeigarnikConfig {
+    pub cliffhanger_markers:  Vec<String>,
+    pub resolution_markers:   Vec<String>,
+    pub question_lead_ins:    Vec<String>,
+    pub short_fragment_max_words:      usize,
+    pub min_gap_chapters_for_thread:   usize,
+    pub max_total_mentions_for_thread: usize,
+    pub min_thread_term_len:           usize,
+    pub top_threads_limit:             usize,
+    pub min_question_words:            usize,
+    pub max_questions_per_chapter:     usize,
+}
+
+impl Default for ZeigarnikConfig {
+    fn default() -> Self {
+        ZeigarnikConfig {
+            cliffhanger_markers: vec![], resolution_markers: vec![], question_lead_ins: vec![],
+            short_fragment_max_words: 8, min_gap_chapters_for_thread: 3,
+            max_total_mentions_for_thread: 6, min_thread_term_len: 4,
+            top_threads_limit: 25, min_question_words: 4, max_questions_per_chapter: 6,
+        }
+    }
+}
+
+/// Load the Zeigarnik phrase lists and thresholds from the database. Falls
+/// back to sane defaults for any key missing (e.g. a fresh DB where seeding
+/// somehow failed) rather than erroring the whole analysis out.
+pub fn load_zeigarnik_config(conn: &Connection) -> ZeigarnikConfig {
+    let mut cfg = ZeigarnikConfig::default();
+
+    let get_str_list = |key: &str| -> Vec<String> {
+        conn.query_row("SELECT value FROM zeigarnik_config WHERE key = ?1", params![key], |r| r.get::<_, String>(0))
+            .ok()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+            .unwrap_or_default()
+    };
+    let get_usize = |key: &str, default: usize| -> usize {
+        conn.query_row("SELECT value FROM zeigarnik_config WHERE key = ?1", params![format!("threshold.{}", key)], |r| r.get::<_, String>(0))
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(default)
+    };
+
+    cfg.cliffhanger_markers = get_str_list("cliffhanger_markers");
+    cfg.resolution_markers  = get_str_list("resolution_markers");
+    cfg.question_lead_ins   = get_str_list("question_lead_ins");
+    cfg.short_fragment_max_words      = get_usize("short_fragment_max_words", 8);
+    cfg.min_gap_chapters_for_thread   = get_usize("min_gap_chapters_for_thread", 3);
+    cfg.max_total_mentions_for_thread = get_usize("max_total_mentions_for_thread", 6);
+    cfg.min_thread_term_len           = get_usize("min_thread_term_len", 4);
+    cfg.top_threads_limit             = get_usize("top_threads_limit", 25);
+    cfg.min_question_words            = get_usize("min_question_words", 4);
+    cfg.max_questions_per_chapter     = get_usize("max_questions_per_chapter", 6);
+
+    cfg
+}
+
+#[derive(Clone, Debug)]
+pub struct ZeigarnikChapterRow {
+    pub chapter_index:  i64,
+    pub file:           String,
+    pub title:          String,
+    pub word_count:     i64,
+    pub sentence_count: i64,
+    pub question_count: i64,
+    pub ending_type:    String,
+    pub tension_score:  i64,
+    pub ending_snippet: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ZeigarnikThreadRow {
+    pub term:                String,
+    pub mention_count:       i64,
+    pub first_chapter_index: i64,
+    pub first_file:          String,
+    pub first_snippet:       String,
+    pub gap_start_index:     i64,
+    pub gap_end_index:       i64,
+    pub max_gap_chapters:    i64,
+    pub max_gap_words:       i64,
+}
+
+/// Replace all stored Zeigarnik chapter metrics + threads for a story with a
+/// fresh set — same "latest run supersedes" model used everywhere else.
+pub fn replace_zeigarnik_analysis(
+    conn: &Connection,
+    story_folder: &str,
+    chapters: &[ZeigarnikChapterRow],
+    threads: &[ZeigarnikThreadRow],
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute("DELETE FROM zeigarnik_chapters WHERE story_folder = ?1", params![story_folder]).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM zeigarnik_threads WHERE story_folder = ?1", params![story_folder]).map_err(|e| e.to_string())?;
+
+    for c in chapters {
+        conn.execute(
+            "INSERT INTO zeigarnik_chapters
+             (story_folder, chapter_index, file, title, word_count, sentence_count, question_count, ending_type, tension_score, ending_snippet, generated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![story_folder, c.chapter_index, c.file, c.title, c.word_count, c.sentence_count, c.question_count, c.ending_type, c.tension_score, c.ending_snippet, now],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    for t in threads {
+        conn.execute(
+            "INSERT INTO zeigarnik_threads
+             (story_folder, term, mention_count, first_chapter_index, first_file, first_snippet, gap_start_index, gap_end_index, max_gap_chapters, max_gap_words, generated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![story_folder, t.term, t.mention_count, t.first_chapter_index, t.first_file, t.first_snippet, t.gap_start_index, t.gap_end_index, t.max_gap_chapters, t.max_gap_words, now],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+pub fn has_zeigarnik_analysis(conn: &Connection, story_folder: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM zeigarnik_chapters WHERE story_folder = ?1 LIMIT 1",
+        params![story_folder], |_| Ok(())
+    ).is_ok()
 }
 
 // ── Tauri commands (for future UI — browsing/editing the genre/category map) ───────────
@@ -994,6 +1195,7 @@ pub const DOC_TYPES: &[(&str, &str)] = &[
     ("discovery_keywords",  "Discovery Keywords"),
     ("keyword_search",      "Keyword Search Results"),
     ("activity_log",        "Activity Log"),
+    ("zeigarnik_analysis",  "Zeigarnik Effect"),
 ];
 
 pub fn save_document(conn: &Connection, story_folder: &str, doc_type: &str, content: &str) -> Result<(), String> {

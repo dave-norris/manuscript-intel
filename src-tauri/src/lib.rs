@@ -47,6 +47,7 @@ pub fn run() {
             analysis::pipeline::run_full_analysis,
             analysis::pipeline::find_genres_and_categories_for_story,
             analysis::pipeline::analyze_story,
+            analysis::zeigarnik::analyze_zeigarnik_for_story,
             genre_taxonomy::get_genre_taxonomy,
             db::list_genres_cmd,
             db::list_report_types_cmd,

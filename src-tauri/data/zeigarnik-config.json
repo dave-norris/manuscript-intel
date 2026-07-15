@@ -1,0 +1,42 @@
+{
+  "cliffhanger_markers": [
+    "little did", "if only", "what she didn't know", "what he didn't know",
+    "would never be the same", "everything was about to change", "she had no idea",
+    "he had no idea", "he never saw it coming", "she never saw it coming",
+    "before she could", "before he could", "just as", "without warning",
+    "the phone rang", "a scream", "he froze", "she froze", "her heart stopped",
+    "his heart stopped", "she couldn't breathe", "he couldn't breathe",
+    "would come to regret", "everything changed in", "one thing was certain",
+    "there was no going back", "what happened next", "she wasn't alone",
+    "he wasn't alone", "someone was watching", "the door creaked open",
+    "the door swung open", "she turned around", "he turned around",
+    "and then she saw", "and then he saw", "that's when", "only then did",
+    "would haunt her", "would haunt him", "a chill ran down", "her blood ran cold",
+    "his blood ran cold"
+  ],
+  "resolution_markers": [
+    "finally", "at last", "it was over", "she smiled", "he smiled",
+    "safe now", "everything was fine", "settled into", "sighed with relief",
+    "peace settled", "all was well", "closed the door behind",
+    "case closed", "mystery solved", "problem solved", "she relaxed",
+    "he relaxed", "took a deep breath and", "it was done", "the end",
+    "she was home", "he was home", "nothing left to fear", "she felt whole",
+    "he felt whole", "for the first time in a long time, she", "for the first time in a long time, he"
+  ],
+  "question_lead_ins": [
+    "what if", "why would", "why did", "who could have", "who would have",
+    "how could", "how did", "what was", "what were", "could it be",
+    "was it possible", "would she ever", "would he ever", "what happened to",
+    "where was", "where were", "who was", "who were", "what did it mean",
+    "why hadn't", "why couldn't", "was there any", "how had"
+  ],
+  "thresholds": {
+    "short_fragment_max_words": 8,
+    "min_gap_chapters_for_thread": 3,
+    "max_total_mentions_for_thread": 6,
+    "min_thread_term_len": 4,
+    "top_threads_limit": 25,
+    "min_question_words": 4,
+    "max_questions_per_chapter": 6
+  }
+}

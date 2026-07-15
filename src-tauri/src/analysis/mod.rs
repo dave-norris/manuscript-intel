@@ -7,6 +7,7 @@
 //   keywords   — KDP keyword optimization, search terms, discovery keywords
 //   bisac      — BISAC subject-code classification
 //   pipeline   — Orchestration commands that compose the full analysis pipeline
+//   zeigarnik  — Zeigarnik-effect proxy detector (Craft platform, no AI)
 
 pub mod chapters;
 pub mod genres;
@@ -14,6 +15,7 @@ pub mod categories;
 pub mod keywords;
 pub mod bisac;
 pub mod pipeline;
+pub mod zeigarnik;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};

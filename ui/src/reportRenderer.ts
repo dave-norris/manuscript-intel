@@ -54,6 +54,7 @@ function renderBySchema(data: any, docType: string): string {
   if (schema === 'genre_ranking_v1') return renderGenreRanking(data);
   if (schema === 'discovery_keywords_v1') return renderDiscoveryKeywords(data);
   if (schema === 'activity_log_v1') return renderActivityLog(data);
+  if (schema === 'zeigarnik_v1') return renderZeigarnik(data);
 
   // Detect BISAC classification by structure or doc_type
   if (docType === 'bisac_classification' || (data.ebook && Array.isArray(data.ebook))) {
@@ -683,6 +684,73 @@ function markdownToHtml(md: string): string {
     .replace(/<p>(<hr>)<\/p>/g, '$1')
     .replace(/<p>(<blockquote>)/g, '$1')
     .replace(/(<\/blockquote>)<\/p>/g, '$1');
+}
+
+// ── Zeigarnik Effect Report ───────────────────────────────────────────────────
+
+function renderZeigarnik(data: any): string {
+  const summary = data.summary || {};
+  const chapters: any[] = data.chapters || [];
+  const threads: any[] = data.threads || [];
+
+  let html = '';
+  if (data.note) {
+    html += `<p class="report-note">${esc(data.note)}</p>`;
+  }
+
+  html += `<section class="report-section"><h3>Summary</h3>`;
+  html += `<table class="report-table"><tbody>`;
+  html += `<tr><td><strong>Chapters analyzed</strong></td><td>${summary.total_chapters ?? '—'}</td></tr>`;
+  html += `<tr><td><strong>Total words</strong></td><td>${(summary.total_words ?? 0).toLocaleString()}</td></tr>`;
+  html += `<tr><td><strong>Cliffhanger endings</strong></td><td>${summary.cliffhanger_endings ?? 0} of ${summary.total_chapters ?? 0} (${summary.cliffhanger_pct ?? 0}%)</td></tr>`;
+  html += `<tr><td><strong>Resolved endings</strong></td><td>${summary.resolved_endings ?? 0}</td></tr>`;
+  html += `<tr><td><strong>Open narrative questions</strong></td><td>${summary.total_open_questions ?? 0}</td></tr>`;
+  html += `<tr><td><strong>Average tension score</strong></td><td>${summary.avg_tension_score ?? 0} / 100</td></tr>`;
+  html += `<tr><td><strong>Candidate open threads</strong></td><td>${summary.open_thread_count ?? 0}</td></tr>`;
+  html += `<tr><td><strong>Longest thread gap</strong></td><td>${summary.longest_gap_chapters ?? 0} chapters</td></tr>`;
+  html += `</tbody></table></section>`;
+
+  if (threads.length) {
+    html += `<section class="report-section"><h3>Open Threads</h3>`;
+    html += `<p class="report-hint">A capitalized name, place, or object that appears, then goes quiet for several chapters, then resurfaces — the textual shape of an unresolved thread. Sorted by the longest gap.</p>`;
+    html += `<table class="report-table"><thead><tr><th>Term</th><th>First Seen</th><th>Gap</th><th>Resurfaces</th><th>Mentions</th><th>Context</th></tr></thead><tbody>`;
+    for (const t of threads) {
+      html += `<tr>
+        <td><strong>${esc(t.term)}</strong></td>
+        <td>Ch. ${(t.first_chapter_index ?? 0) + 1}</td>
+        <td>${t.max_gap_chapters} chapters / ${(t.max_gap_words ?? 0).toLocaleString()} words</td>
+        <td>Ch. ${(t.gap_end_index ?? 0) + 1}</td>
+        <td>${t.mention_count}</td>
+        <td class="muted">${esc(t.first_snippet || '')}</td>
+      </tr>`;
+    }
+    html += `</tbody></table></section>`;
+  } else {
+    html += `<section class="report-section"><p class="muted">No long-gap threads found above the configured threshold.</p></section>`;
+  }
+
+  if (chapters.length) {
+    html += `<section class="report-section"><h3>Chapter Endings</h3>`;
+    html += `<table class="report-table"><thead><tr><th>#</th><th>Chapter</th><th>Words</th><th>Questions</th><th>Ending</th><th>Tension</th></tr></thead><tbody>`;
+    chapters.forEach((c: any, i: number) => {
+      const endingClass = c.ending_type === 'cliffhanger' ? 'style="color:#e74c3c"' :
+                          c.ending_type === 'resolved' ? 'style="color:#27ae60"' : '';
+      html += `<tr>
+        <td>${i + 1}</td>
+        <td><strong>${esc(c.title || c.file)}</strong></td>
+        <td>${(c.word_count ?? 0).toLocaleString()}</td>
+        <td>${c.question_count ?? 0}</td>
+        <td ${endingClass}><strong>${esc(c.ending_type)}</strong></td>
+        <td>${c.tension_score ?? 0}</td>
+      </tr>`;
+      if (c.ending_snippet) {
+        html += `<tr><td colspan="6" class="top-books-cell muted">"${esc(c.ending_snippet)}"</td></tr>`;
+      }
+    });
+    html += `</tbody></table></section>`;
+  }
+
+  return html;
 }
 
 function renderActivityLog(data: any): string {

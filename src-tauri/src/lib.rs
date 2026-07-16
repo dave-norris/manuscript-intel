@@ -51,6 +51,7 @@ pub fn run() {
             analysis::zeigarnik::analyze_zeigarnik_for_story,
             analysis::continuity::check_continuity_for_story,
             analysis::continuity::check_continuity_for_series,
+            analysis::continuity::suggest_continuity_fix,
             genre_taxonomy::get_genre_taxonomy,
             db::list_genres_cmd,
             db::list_report_types_cmd,

@@ -798,12 +798,15 @@ function renderContinuity(data: any): string {
   };
 
   html += `<section class="report-section"><h3>Findings</h3>`;
-  for (const f of findings) {
+  findings.forEach((f: any, idx: number) => {
     const color = verdictColor[f.verdict] || '#7a7a7a';
     const label = verdictLabel[f.verdict] || esc(f.verdict);
     html += `<div class="genre-block">`;
     html += `<strong>${esc(f.entity)}</strong> &mdash; ${esc(f.attribute)} `;
     html += `<span style="color:${color}; font-weight:600;">[${label}, ${f.confidence}%]</span>`;
+    if (f.verdict === 'contradiction' || f.verdict === 'possible') {
+      html += ` <a href="#" class="suggest-fix-link" data-finding-index="${idx}">Suggest fix</a>`;
+    }
     html += `<p>${esc(f.explanation)}</p>`;
     const occs: any[] = f.occurrences || [];
     if (occs.length) {
@@ -819,7 +822,7 @@ function renderContinuity(data: any): string {
       html += `</tbody></table>`;
     }
     html += `</div>`;
-  }
+  });
   html += `</section>`;
 
   return html;

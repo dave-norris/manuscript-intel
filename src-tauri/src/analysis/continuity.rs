@@ -533,3 +533,65 @@ fn render_findings_json(findings: &[db::ContinuityFindingRow], scope: &str, scop
     });
     json.to_string()
 }
+
+// ── Suggest fix for a continuity finding ─────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct SuggestFixRequest {
+    pub provider:   String,
+    pub api_key:    String,
+    pub model:      String,  // The prose model (higher quality)
+    pub entity:     String,
+    pub attribute:  String,
+    pub explanation: String,
+    pub occurrences: Vec<SuggestFixOccurrence>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct SuggestFixOccurrence {
+    pub story_name:    String,
+    pub file:          String,
+    pub chapter_title: String,
+    pub value:         String,
+    pub snippet:       String,
+}
+
+#[derive(serde::Serialize)]
+pub struct SuggestFixResult {
+    pub success: bool,
+    pub suggestions: String,
+    pub error: String,
+}
+
+#[tauri::command]
+pub async fn suggest_continuity_fix(request: SuggestFixRequest) -> SuggestFixResult {
+    let system = r#"You are a fiction editor helping an author fix a continuity error in their manuscript. You will be given:
+- The entity and attribute that has contradicting values
+- Where each value appears (which chapter, with a snippet of surrounding text)
+- A brief explanation of the contradiction
+
+Provide 2-3 concrete, specific suggestions for how to fix this. For each suggestion:
+1. Say which passage to change (cite the chapter and file)
+2. Give the exact revised wording (not vague — actual prose the author can paste)
+3. Briefly explain why this fix works
+
+Keep the author's voice and style. Be concise but specific. Write revised prose that sounds natural, not robotic."#;
+
+    let mut occurrences_text = String::new();
+    for occ in &request.occurrences {
+        occurrences_text.push_str(&format!(
+            "\n- {} / {} ({}): value = \"{}\"\n  Context: \"{}\"",
+            occ.story_name, occ.chapter_title, occ.file, occ.value, occ.snippet
+        ));
+    }
+
+    let user = format!(
+        "Entity: {}\nAttribute: {}\nContradiction: {}\n\nOccurrences:{}",
+        request.entity, request.attribute, request.explanation, occurrences_text
+    );
+
+    match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 2000).await {
+        Ok(suggestions) => SuggestFixResult { success: true, suggestions, error: String::new() },
+        Err(e) => SuggestFixResult { success: false, suggestions: String::new(), error: e },
+    }
+}

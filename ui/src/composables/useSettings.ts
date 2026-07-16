@@ -5,6 +5,7 @@ import type { ModelInfo, ModelsResult } from '../types';
 const provider = ref(localStorage.getItem('provider') || 'tokenmix');
 const apiKey = ref(localStorage.getItem('apiKey') || '');
 const model = ref(localStorage.getItem('model') || '');
+const proseModel = ref(localStorage.getItem('proseModel') || '');
 const canopyApiKey = ref(localStorage.getItem('canopyApiKey') || '');
 const dataforseoLogin = ref(localStorage.getItem('dataforseoLogin') || '');
 const dataforseoPassword = ref(localStorage.getItem('dataforseoPassword') || '');
@@ -38,6 +39,7 @@ function saveSettings(): void {
   localStorage.setItem('provider', provider.value);
   localStorage.setItem('apiKey', apiKey.value.trim());
   localStorage.setItem('model', model.value);
+  localStorage.setItem('proseModel', proseModel.value);
   localStorage.setItem('canopyApiKey', canopyApiKey.value.trim());
   localStorage.setItem('dataforseoLogin', dataforseoLogin.value.trim());
   localStorage.setItem('dataforseoPassword', dataforseoPassword.value.trim());
@@ -75,6 +77,7 @@ export function useSettings() {
     provider,
     apiKey,
     model,
+    proseModel,
     canopyApiKey,
     dataforseoLogin,
     dataforseoPassword,

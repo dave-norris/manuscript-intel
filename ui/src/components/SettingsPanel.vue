@@ -8,6 +8,7 @@ const settingsCtx = inject<{
   provider: Ref<string>;
   apiKey: Ref<string>;
   model: Ref<string>;
+  proseModel: Ref<string>;
   canopyApiKey: Ref<string>;
   dataforseoLogin: Ref<string>;
   dataforseoPassword: Ref<string>;
@@ -155,6 +156,22 @@ async function onRemoveStale(): Promise<void> {
         <button class="btn btn-sm" @click="onFetchModels">Fetch Models</button>
       </div>
       <div class="model-fetch-status">{{ modelFetchStatus }}</div>
+
+      <!-- Prose Model -->
+      <label>
+        Prose Model
+        <span class="model-hint">Used for creative suggestions (continuity fixes, rewrites). Pick a higher-quality model.</span>
+      </label>
+      <div class="model-row">
+        <select v-model="settingsCtx.proseModel.value">
+          <option value="">(Same as analysis model)</option>
+          <option
+            v-for="m in settingsCtx.models.value"
+            :key="m.id"
+            :value="m.id"
+          >{{ modelLabel(m) }}</option>
+        </select>
+      </div>
 
       <!-- Save -->
       <button class="btn" @click="onSave">Save Settings</button>

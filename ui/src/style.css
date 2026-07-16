@@ -797,6 +797,17 @@ html, body {
 .genre-block {
   margin-bottom: 10px;
 }
+.suggest-fix-link {
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: none;
+  margin-left: 8px;
+  font-weight: 500;
+}
+.suggest-fix-link:hover {
+  text-decoration: underline;
+}
 .badge {
   font-size: 10px;
   background: var(--accent);

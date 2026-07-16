@@ -41,6 +41,7 @@ pub struct AnalysisState {
     pub has_keyword_search_results: bool,
     pub has_zeigarnik:              bool,
     pub has_continuity_check:       bool,
+    pub has_show_dont_tell:         bool,
 }
 
 // ── Folder picker ────────────────────────────────────────────────────────────
@@ -85,6 +86,7 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
             has_keyword_search_results: db::has_keyword_search_results(&conn, &folder),
             has_zeigarnik:              db::has_zeigarnik_analysis(&conn, &folder),
             has_continuity_check:       db::get_document(&conn, &folder, "continuity_check").is_some(),
+            has_show_dont_tell:         db::get_document(&conn, &folder, "show_dont_tell").is_some(),
         }
     }).await.unwrap()
 }
@@ -1098,6 +1100,24 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
                 emit(&app, &format!("✗ Continuity: {}", cr.error));
                 return cr;
             }
+        }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+
+    // ── Show Don't Tell ───────────────────────────────────────────────────
+    if request.selected.contains(&"show_dont_tell".to_string()) {
+        let sdt = super::show_dont_tell::check_show_dont_tell(
+            app.clone(),
+            super::show_dont_tell::ShowDontTellRequest {
+                folder: request.folder.clone(),
+                provider: request.provider.clone(),
+                api_key: request.api_key.clone(),
+                model: request.model.clone(),
+            },
+        ).await;
+        if !sdt.success {
+            emit(&app, &format!("✗ Show Don't Tell: {}", sdt.error));
+            return sdt;
         }
         if crate::is_cancelled() { return err("Cancelled."); }
     }

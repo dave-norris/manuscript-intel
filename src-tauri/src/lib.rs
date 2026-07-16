@@ -53,6 +53,7 @@ pub fn run() {
             analysis::continuity::check_continuity_for_story,
             analysis::continuity::check_continuity_for_series,
             analysis::continuity::suggest_continuity_fix,
+            analysis::show_dont_tell::check_show_dont_tell,
             genre_taxonomy::get_genre_taxonomy,
             db::list_genres_cmd,
             db::list_report_types_cmd,

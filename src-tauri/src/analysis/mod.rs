@@ -18,6 +18,7 @@ pub mod bisac;
 pub mod pipeline;
 pub mod zeigarnik;
 pub mod continuity;
+pub mod show_dont_tell;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};

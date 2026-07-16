@@ -68,6 +68,7 @@ const existsMap = computed(() => {
     activity_log: false,
     zeigarnik_analysis: state.has_zeigarnik,
     continuity_check: state.has_continuity_check,
+    show_dont_tell: state.has_show_dont_tell,
   } as Record<string, boolean>;
 });
 

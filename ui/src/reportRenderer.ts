@@ -56,6 +56,7 @@ function renderBySchema(data: any, docType: string): string {
   if (schema === 'activity_log_v1') return renderActivityLog(data);
   if (schema === 'zeigarnik_v1') return renderZeigarnik(data);
   if (schema === 'continuity_v1') return renderContinuity(data);
+  if (schema === 'show_dont_tell_v1') return renderShowDontTell(data);
 
   // Detect BISAC classification by structure or doc_type
   if (docType === 'bisac_classification' || (data.ebook && Array.isArray(data.ebook))) {
@@ -824,6 +825,58 @@ function renderContinuity(data: any): string {
     html += `</div>`;
   });
   html += `</section>`;
+
+  return html;
+}
+
+// ── Show Don't Tell Report ────────────────────────────────────────────────────
+
+function renderShowDontTell(data: any): string {
+  const summary = data.summary || {};
+  const chapters: any[] = data.chapters || [];
+
+  let html = '';
+  if (data.note) {
+    html += `<p class="report-note">${esc(data.note)}</p>`;
+  }
+
+  html += `<section class="report-section"><h3>Summary</h3>`;
+  html += `<table class="report-table"><tbody>`;
+  html += `<tr><td><strong>Chapters checked</strong></td><td>${summary.chapters_checked ?? 0}</td></tr>`;
+  html += `<tr><td><strong>Chapters with violations</strong></td><td>${summary.chapters_with_violations ?? 0}</td></tr>`;
+  html += `<tr><td><strong>Total violations</strong></td><td style="color:#e74c3c"><strong>${summary.total_violations ?? 0}</strong></td></tr>`;
+  html += `</tbody></table></section>`;
+
+  if (!chapters.length) {
+    html += `<section class="report-section"><p class="muted">No show-don't-tell violations found. Nice work.</p></section>`;
+    return html;
+  }
+
+  const severityColor: Record<string, string> = {
+    minor: '#7a7a7a',
+    moderate: '#e0a020',
+    major: '#e74c3c',
+  };
+
+  for (const ch of chapters) {
+    const violations: any[] = ch.violations || [];
+    html += `<section class="report-section">`;
+    html += `<h3>${esc(ch.title || ch.file)} <span class="muted">(${violations.length})</span></h3>`;
+
+    for (const v of violations) {
+      const color = severityColor[v.severity] || '#7a7a7a';
+      html += `<div class="sdt-violation">`;
+      html += `<div class="sdt-severity" style="color:${color}">${esc(v.severity)}</div>`;
+      html += `<blockquote class="sdt-telling">${esc(v.telling_text)}</blockquote>`;
+      if (v.context) {
+        html += `<div class="sdt-context"><span class="muted">Context:</span> ${esc(v.context)}</div>`;
+      }
+      html += `<div class="sdt-why">${esc(v.why)}</div>`;
+      html += `</div>`;
+    }
+
+    html += `</section>`;
+  }
 
   return html;
 }

@@ -808,6 +808,42 @@ html, body {
 .suggest-fix-link:hover {
   text-decoration: underline;
 }
+
+/* Show Don't Tell report */
+.sdt-violation {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.sdt-severity {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 4px;
+}
+.sdt-telling {
+  margin: 6px 0;
+  padding: 8px 12px;
+  border-left: 3px solid #e74c3c;
+  background: rgba(231, 76, 60, 0.04);
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.sdt-context {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 4px 0;
+  line-height: 1.5;
+}
+.sdt-why {
+  font-size: 12px;
+  color: var(--text);
+  margin-top: 4px;
+}
 .badge {
   font-size: 10px;
   background: var(--accent);

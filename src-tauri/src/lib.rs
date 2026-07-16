@@ -9,6 +9,7 @@ mod dataforseo;
 mod db;
 mod genre_taxonomy;
 mod models;
+mod series;
 mod stories;
 mod winningcat;
 
@@ -81,6 +82,10 @@ pub fn run() {
             stories::add_story,
             stories::update_story,
             stories::delete_story,
+            series::list_series,
+            series::create_series,
+            series::update_series,
+            series::delete_series,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

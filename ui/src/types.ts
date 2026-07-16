@@ -123,3 +123,22 @@ export interface ReportTypeDef {
   platforms: string[];
   depends_on: string[];
 }
+
+export interface SeriesBook {
+  story_folder: string;
+  story_name: string;
+  book_order: number;
+}
+
+export interface Series {
+  id: number;
+  name: string;
+  created_at: string;
+  books: SeriesBook[];
+}
+
+export interface SeriesResult {
+  success: boolean;
+  series: Series[];
+  error: string;
+}

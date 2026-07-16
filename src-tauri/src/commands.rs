@@ -85,7 +85,22 @@ pub async fn call_llm(
     max_tokens: u32,
 ) -> Result<String, String> {
     match provider {
-        "tokenmix" => call_tokenmix(api_key, model, system, user, max_tokens).await,
+        "tokenmix" => call_tokenmix(api_key, model, system, user, max_tokens, false).await,
+        _ => call_claude(api_key, model, system, user, max_tokens).await,
+    }
+}
+
+/// Same as call_llm but forces JSON mode (valid JSON guaranteed in response).
+pub async fn call_llm_json(
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> Result<String, String> {
+    match provider {
+        "tokenmix" => call_tokenmix(api_key, model, system, user, max_tokens, true).await,
         _ => call_claude(api_key, model, system, user, max_tokens).await,
     }
 }
@@ -139,8 +154,9 @@ async fn call_tokenmix(
     system: &str,
     user: &str,
     max_tokens: u32,
+    json_mode: bool,
 ) -> Result<String, String> {
-    let body = json!({
+    let mut body = json!({
         "model": model,
         "max_tokens": max_tokens,
         "messages": [
@@ -148,6 +164,10 @@ async fn call_tokenmix(
             {"role": "user", "content": user}
         ]
     });
+
+    if json_mode {
+        body["response_format"] = json!({"type": "json_object"});
+    }
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))

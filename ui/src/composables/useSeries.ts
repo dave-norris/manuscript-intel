@@ -1,78 +1,43 @@
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { SeriesRow, SeriesBookRow } from '../types';
+import type { Series, SeriesResult } from '../types';
 
-const series = ref<SeriesRow[]>([]);
-const activeSeriesBooks = ref<SeriesBookRow[]>([]);
+const seriesList = ref<Series[]>([]);
 
 async function loadSeries(): Promise<void> {
   try {
-    series.value = await invoke<SeriesRow[]>('list_series_cmd');
+    const result = await invoke<SeriesResult>('list_series');
+    seriesList.value = result.success ? result.series : [];
   } catch (e) {
-    console.error('Failed to load series:', e);
+    console.error('loadSeries:', e);
+    seriesList.value = [];
   }
 }
 
-async function createSeries(name: string): Promise<SeriesRow | null> {
-  try {
-    const row = await invoke<SeriesRow>('create_series_cmd', { name });
-    await loadSeries();
-    return row;
-  } catch (e) {
-    console.error('Failed to create series:', e);
-    return null;
-  }
+async function createSeries(name: string, books: { story_folder: string; story_name: string; book_order: number }[]): Promise<SeriesResult> {
+  const result = await invoke<SeriesResult>('create_series', { request: { name, books } });
+  if (result.success) seriesList.value = result.series;
+  return result;
 }
 
-async function deleteSeries(seriesId: number): Promise<void> {
-  try {
-    await invoke('delete_series_cmd', { seriesId });
-    await loadSeries();
-  } catch (e) {
-    console.error('Failed to delete series:', e);
-  }
+async function updateSeries(id: number, name: string, books: { story_folder: string; story_name: string; book_order: number }[]): Promise<SeriesResult> {
+  const result = await invoke<SeriesResult>('update_series', { request: { id, name, books } });
+  if (result.success) seriesList.value = result.series;
+  return result;
 }
 
-async function loadSeriesBooks(seriesId: number): Promise<void> {
-  try {
-    activeSeriesBooks.value = await invoke<SeriesBookRow[]>('list_series_books_cmd', { seriesId });
-  } catch (e) {
-    console.error('Failed to load series books:', e);
-    activeSeriesBooks.value = [];
-  }
-}
-
-async function addStoryToSeries(seriesId: number, storyFolder: string, storyName: string, bookOrder: number): Promise<void> {
-  try {
-    await invoke('add_story_to_series_cmd', {
-      request: { series_id: seriesId, story_folder: storyFolder, story_name: storyName, book_order: bookOrder },
-    });
-    await loadSeriesBooks(seriesId);
-    await loadSeries();
-  } catch (e) {
-    console.error('Failed to add story to series:', e);
-  }
-}
-
-async function removeStoryFromSeries(seriesId: number, storyFolder: string): Promise<void> {
-  try {
-    await invoke('remove_story_from_series_cmd', { seriesId, storyFolder });
-    await loadSeriesBooks(seriesId);
-    await loadSeries();
-  } catch (e) {
-    console.error('Failed to remove story from series:', e);
-  }
+async function deleteSeries(id: number): Promise<SeriesResult> {
+  const result = await invoke<SeriesResult>('delete_series', { id });
+  if (result.success) seriesList.value = result.series;
+  return result;
 }
 
 export function useSeries() {
   return {
-    series,
-    activeSeriesBooks,
+    seriesList,
     loadSeries,
     createSeries,
+    updateSeries,
     deleteSeries,
-    loadSeriesBooks,
-    addStoryToSeries,
-    removeStoryFromSeries,
   };
 }

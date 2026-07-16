@@ -14,7 +14,7 @@ import AnalyzerPanel from './components/AnalyzerPanel.vue';
 import ReportsViewer from './components/ReportsViewer.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
 import StoryForm from './components/StoryForm.vue';
-import SeriesPanel from './components/SeriesPanel.vue';
+import SeriesForm from './components/SeriesForm.vue';
 
 // ── Composables ───────────────────────────────────────────────────────────────
 
@@ -60,6 +60,16 @@ function openStoryForm(story: Story | null): void {
   showPanel('story-form');
 }
 
+// ── Series form state ─────────────────────────────────────────────────────────
+
+import type { Series } from './types';
+const editingSeries = ref<Series | null>(null);
+
+function openSeriesForm(series: Series | null): void {
+  editingSeries.value = series;
+  showPanel('series');
+}
+
 // ── Watchers ──────────────────────────────────────────────────────────────────
 
 // When active story changes, refresh analysis state and reports
@@ -100,19 +110,20 @@ onMounted(() => {
 
   // Load initial data
   storiesCtx.loadStories();
+  seriesCtx.loadSeries();
 });
 </script>
 
 <template>
   <div id="app-root">
     <TitleBar />
-    <Sidebar @open-story-form="openStoryForm" />
+    <Sidebar @open-story-form="openStoryForm" @open-series-form="openSeriesForm" />
     <main id="main">
       <AnalyzerPanel v-if="activePanel === 'analyzer'" />
       <ReportsViewer v-if="activePanel === 'reports'" />
       <SettingsPanel v-if="activePanel === 'settings'" />
       <StoryForm v-if="activePanel === 'story-form'" :story="editingStory" />
-      <SeriesPanel v-if="activePanel === 'series'" />
+      <SeriesForm v-if="activePanel === 'series'" :series="editingSeries" />
     </main>
   </div>
 </template>

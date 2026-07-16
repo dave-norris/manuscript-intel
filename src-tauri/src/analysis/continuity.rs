@@ -23,7 +23,7 @@ use tauri::{AppHandle, Manager};
 
 use super::{emit, err, GenreResult};
 use super::chapters::{collect_chapters, extract_title, truncate_words};
-use crate::commands::call_llm;
+use crate::commands::{call_llm, call_llm_json};
 use crate::db;
 
 // ── Requests ─────────────────────────────────────────────────────────────────
@@ -221,13 +221,15 @@ Do NOT include transient action-beat description, generic scenery, subjective na
 
 Use the character or place's fullest, most formal name as it is introduced in the text (e.g. "Sarah Chen" rather than just "Sarah" or "the detective"), so the same entity can be matched consistently across chapters.
 
-Return ONLY a JSON array, no markdown, no preamble, maximum 20 items. Each item exactly:
-{"entity": "<canonical name>", "entity_type": "character|place|object|timeline|other", "attribute": "<short attribute label, e.g. eye_color>", "value": "<the stated fact, plainly>", "snippet": "<verbatim quote, under 20 words>"}"#;
+Return ONLY a JSON array, no markdown, no preamble. Maximum 15 items. Be terse.
+Each item exactly:
+{"entity": "<canonical name>", "entity_type": "character|place|object|timeline|other", "attribute": "<short_label>", "value": "<fact in under 10 words>", "snippet": "<verbatim quote, under 12 words>"}
+Keep values and snippets as short as possible. One fact per attribute per entity. No duplicates."#;
 
-    let raw = call_llm(
+    let raw = call_llm_json(
         provider, api_key, model, system,
         &format!("Chapter: {}\n\n---\n\n{}", filename, content),
-        900,
+        4000,
     ).await?;
 
     let clean = raw.trim()
@@ -338,6 +340,8 @@ async fn judge_contradictions(
     model: &str,
     books: &[Book],
 ) -> Result<Vec<db::ContinuityFindingRow>, String> {
+    let is_series = books.len() > 1;
+
     // Flatten every fact across every book into occurrences, tagged with
     // display-friendly source info, keyed by (raw entity text, raw attribute).
     struct RawOcc {
@@ -392,6 +396,18 @@ async fn judge_contradictions(
                 .map(|o| o.value.trim().to_lowercase())
                 .collect();
             if distinct.len() < 2 { return None; }
+
+            // For series scope: only flag if the conflicting values come from
+            // different books. Within-book contradictions are handled by the
+            // single-book checker — the series checker only cares about things
+            // that changed between books.
+            if is_series {
+                let distinct_books: std::collections::HashSet<&str> = occs.iter()
+                    .map(|o| o.story_folder.as_str())
+                    .collect();
+                if distinct_books.len() < 2 { return None; }
+            }
+
             Some(CandidateGroup { entity, attribute, occurrences: occs })
         })
         .collect();

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { inject, computed, ref } from 'vue';
 import type { Ref, ComputedRef } from 'vue';
-import type { Story, DocMeta, ReportEnvelope } from '../types';
+import type { Story, DocMeta, ReportEnvelope, Series } from '../types';
 
 // ── Injections ────────────────────────────────────────────────────────────────
 
@@ -31,10 +31,16 @@ const platformCtx = inject<{
 
 const showPanel = inject<(name: string) => void>('showPanel')!;
 
+const seriesCtx = inject<{
+  seriesList: Ref<Series[]>;
+  loadSeries: () => Promise<void>;
+}>('series')!;
+
 // ── Emits ─────────────────────────────────────────────────────────────────────
 
 const emit = defineEmits<{
   (e: 'open-story-form', story: Story | null): void;
+  (e: 'open-series-form', series: Series | null): void;
 }>();
 
 // ── Report type definitions ───────────────────────────────────────────────────
@@ -129,6 +135,14 @@ function onNewStory(): void {
   emit('open-story-form', null);
 }
 
+function onNewSeries(): void {
+  emit('open-series-form', null);
+}
+
+function onEditSeries(s: Series): void {
+  emit('open-series-form', s);
+}
+
 async function onVersionClick(id: number): Promise<void> {
   await reportsCtx.openReport(id);
   showPanel('reports');
@@ -182,6 +196,25 @@ function formatTimestamp(ts: string): string {
             :title="'Edit story'"
             @click.stop="onEditStory(story)"
           >&#x270E;</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Series section -->
+    <div class="series-section">
+      <div class="nav-label-row">
+        <span class="nav-label">Series</span>
+        <button class="btn-new-story" title="New series" @click="onNewSeries">+</button>
+      </div>
+      <div class="series-list">
+        <div
+          v-for="s in seriesCtx.seriesList.value"
+          :key="s.id"
+          class="story-item"
+          @click="onEditSeries(s)"
+        >
+          <span class="story-item-name">{{ s.name }}</span>
+          <span class="series-book-count">{{ s.books.length }}</span>
         </div>
       </div>
     </div>
@@ -452,5 +485,19 @@ function formatTimestamp(ts: string): string {
   padding: 8px 10px;
   font-size: 11px;
   color: var(--text-muted);
+}
+.series-section {
+  padding: 0;
+}
+.series-list {
+  padding: 0 8px 8px;
+}
+.series-book-count {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--surface2);
+  padding: 1px 5px;
+  border-radius: 6px;
+  margin-left: auto;
 }
 </style>

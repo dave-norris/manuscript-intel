@@ -61,6 +61,7 @@ pub fn run() {
             db::save_activity_log_cmd,
             db::get_report_cmd,
             db::delete_report_cmd,
+            db::get_sidebar_reports,
             db::list_series_cmd,
             db::create_series_cmd,
             db::delete_series_cmd,

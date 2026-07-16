@@ -100,6 +100,19 @@ export interface LogLine {
   text: string;
 }
 
+export interface SidebarReportVersion {
+  id: number;
+  generated_at: string;
+}
+
+export interface SidebarReportGroup {
+  doc_type: string;
+  label: string;
+  description: string;
+  count: number;
+  versions: SidebarReportVersion[];
+}
+
 export interface WinningCatImportResult {
   success: boolean;
   imported: number;

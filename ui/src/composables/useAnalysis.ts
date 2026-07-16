@@ -73,174 +73,67 @@ function getSettings() {
 async function runAnalyze(folder: string, forceResummarize: boolean, platform: string): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
   const { provider, apiKey, model, canopyApiKey, dataforseoLogin, dataforseoPassword } = getSettings();
-  if (!apiKey) { appendLog('✗ No API key set. Go to Settings.'); return; }
-  if (!model) { appendLog('✗ No model selected. Go to Settings and fetch models.'); return; }
 
-  // Clear log for this run
   clearLog();
-
-  // Capture the run time — the exact moment the user clicked the button
+  isWorking.value = true;
   const runTime = new Date().toISOString();
 
-  const pipelineLabel = platform === 'wide' ? 'Wide distribution' : 'KDP';
-  appendLog(`Running ${pipelineLabel} analysis pipeline... [${provider}: ${model}]${forceResummarize ? ' (force re-summarize)' : ''}`);
-  isWorking.value = true;
-  let runTs = '';
   try {
     const result = await invoke<GenreResult>('analyze_story', {
-      request: { folder, api_key: apiKey, model, provider, force_resummarize: forceResummarize, canopy_api_key: canopyApiKey, platform, dataforseo_login: dataforseoLogin, dataforseo_password: dataforseoPassword, run_time: runTime },
+      request: {
+        folder, api_key: apiKey, model, provider,
+        force_resummarize: forceResummarize,
+        canopy_api_key: canopyApiKey,
+        platform,
+        dataforseo_login: dataforseoLogin,
+        dataforseo_password: dataforseoPassword,
+        run_time: runTime,
+      },
     });
-    runTs = result.run_ts || runTime;
-    if (result.success) {
-      appendLog('✓ Analysis complete. View reports in the sidebar.');
-    } else {
+    if (!result.success) {
       appendLog('✗ ' + result.error);
     }
   } catch (e) {
     appendLog('✗ ' + String(e));
   } finally {
     isWorking.value = false;
-    saveLog(folder, runTs);
+    saveLog(folder, runTime);
   }
 }
 
 export type ContinuityScope = { mode: 'manuscript' } | { mode: 'series'; seriesId: number };
 
 /**
- * Craft-tab reports have mixed requirements: Zeigarnik is pure pattern
- * matching (no AI), Chapter Summaries and Continuity Check are AI-assisted.
- * This runs whichever of the selected report ids apply, in a sensible order,
- * only asking for an API key when a selected report actually needs one.
+ * Runs the craft pipeline via a single backend command.
+ * The backend handles ordering, AI calls, and storage.
  */
 async function runCraftAnalysis(folder: string, selected: string[], continuityScope: ContinuityScope): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
 
+  const { provider, apiKey, model } = getSettings();
   clearLog();
   isWorking.value = true;
-  let runTs = '';
 
   try {
-    if (selected.includes('chapter_summaries')) {
-      const { provider, apiKey, model } = getSettings();
-      if (!apiKey || !model) {
-        appendLog('✗ Chapter Summaries needs an API key and model (Settings) — skipping.');
-      } else {
-        appendLog(`Generating chapter summaries... [${provider}: ${model}]`);
-        const result = await invoke<GenreResult>('generate_summaries', {
-          request: { folder, api_key: apiKey, model, provider },
-        });
-        runTs = result.run_ts || runTs;
-        appendLog(result.success ? '✓ Chapter summaries complete.' : '✗ ' + result.error);
-      }
-    }
-
-    if (selected.includes('zeigarnik_analysis')) {
-      appendLog('Running Zeigarnik effect analysis (algorithmic — no AI)...');
-      const result = await invoke<GenreResult>('analyze_zeigarnik_for_story', { request: { folder } });
-      runTs = result.run_ts || runTs;
-      appendLog(result.success ? '✓ Zeigarnik analysis complete.' : '✗ ' + result.error);
-    }
-
-    if (selected.includes('continuity_check')) {
-      const { provider, apiKey, model } = getSettings();
-      if (!apiKey || !model) {
-        appendLog('✗ Continuity Check needs an API key and model (Settings) — skipping.');
-      } else if (continuityScope.mode === 'series') {
-        appendLog(`Running continuity check across the series... [${provider}: ${model}]`);
-        const result = await invoke<GenreResult>('check_continuity_for_series', {
-          request: { series_id: continuityScope.seriesId, api_key: apiKey, model, provider },
-        });
-        runTs = result.run_ts || runTs;
-        appendLog(result.success ? '✓ Series continuity check complete.' : '✗ ' + result.error);
-      } else {
-        appendLog(`Running continuity check for this manuscript... [${provider}: ${model}]`);
-        const result = await invoke<GenreResult>('check_continuity_for_story', {
-          request: { folder, api_key: apiKey, model, provider },
-        });
-        runTs = result.run_ts || runTs;
-        appendLog(result.success ? '✓ Continuity check complete.' : '✗ ' + result.error);
-      }
-    }
-
-    appendLog('✓ Done. View reports in the sidebar.');
-  } catch (e) {
-    appendLog('✗ ' + String(e));
-  } finally {
-    isWorking.value = false;
-    saveLog(folder, runTs || new Date().toISOString());
-  }
-}
-
-async function runCompetition(folder: string, store: string): Promise<void> {
-  if (!folder) { appendLog('✗ No story selected.'); return; }
-  const { provider, apiKey, model, canopyApiKey } = getSettings();
-  if (!apiKey) { appendLog('✗ No API key set. Go to Settings.'); return; }
-  if (!model) { appendLog('✗ No model selected. Go to Settings.'); return; }
-  if (!canopyApiKey) { appendLog('✗ No Canopy API key set. Go to Settings.'); return; }
-
-  appendLog(`Analyzing competition [${store}] via Canopy API... [${provider}: ${model}]`);
-  isWorking.value = true;
-  try {
-    const result = await invoke<GenreResult>('analyze_competition_canopy', {
-      request: { folder, api_key: apiKey, model, store, provider, canopy_api_key: canopyApiKey },
+    const result = await invoke<GenreResult>('run_craft_pipeline', {
+      request: {
+        folder,
+        selected,
+        provider,
+        api_key: apiKey,
+        model,
+        continuity_scope: continuityScope.mode,
+        series_id: continuityScope.mode === 'series' ? continuityScope.seriesId : 0,
+      },
     });
-    if (result.success) {
-      appendLog('✓ Competition analysis complete. View reports in the sidebar.');
-    } else {
+    if (!result.success) {
       appendLog('✗ ' + result.error);
     }
   } catch (e) {
     appendLog('✗ ' + String(e));
   } finally {
     isWorking.value = false;
-  }
-}
-
-async function runMineReviews(folder: string): Promise<void> {
-  if (!folder) { appendLog('✗ No story selected.'); return; }
-  const { provider, apiKey, model, canopyApiKey } = getSettings();
-  if (!canopyApiKey) { appendLog('✗ No Canopy API key. Go to Settings.'); return; }
-  if (!apiKey) { appendLog('✗ No AI API key. Go to Settings.'); return; }
-
-  appendLog('Mining competitor reviews...');
-  isWorking.value = true;
-  try {
-    const result = await invoke<{ success: boolean; error: string }>('mine_competitor_reviews', {
-      request: { folder, canopy_api_key: canopyApiKey, api_key: apiKey, model, provider },
-    });
-    if (result.success) {
-      appendLog('✓ Review mining complete. View in sidebar.');
-    } else {
-      appendLog('✗ ' + result.error);
-    }
-  } catch (e) {
-    appendLog('✗ ' + String(e));
-  } finally {
-    isWorking.value = false;
-  }
-}
-
-async function runAuthorAnalysis(folder: string): Promise<void> {
-  if (!folder) { appendLog('✗ No story selected.'); return; }
-  const { provider, apiKey, model, canopyApiKey } = getSettings();
-  if (!canopyApiKey) { appendLog('✗ No Canopy API key. Go to Settings.'); return; }
-  if (!apiKey) { appendLog('✗ No AI API key. Go to Settings.'); return; }
-
-  appendLog('Analyzing competitor authors...');
-  isWorking.value = true;
-  try {
-    const result = await invoke<{ success: boolean; error: string }>('analyze_comp_authors', {
-      request: { folder, canopy_api_key: canopyApiKey, api_key: apiKey, model, provider },
-    });
-    if (result.success) {
-      appendLog('✓ Author analysis complete. View in sidebar.');
-    } else {
-      appendLog('✗ ' + result.error);
-    }
-  } catch (e) {
-    appendLog('✗ ' + String(e));
-  } finally {
-    isWorking.value = false;
+    saveLog(folder, new Date().toISOString());
   }
 }
 
@@ -320,9 +213,6 @@ export function useAnalysis() {
     refreshState,
     runAnalyze,
     runCraftAnalysis,
-    runCompetition,
-    runMineReviews,
-    runAuthorAnalysis,
     runMarketIntel,
     cancelOperation,
     clearLog,

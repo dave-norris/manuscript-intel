@@ -1414,27 +1414,15 @@ pub fn replace_keyword_search_results(
 
 // ── Story documents (rendered markdown cache, read by the Reports panel) ─────
 
-pub const DOC_TYPES: &[(&str, &str)] = &[
-    ("analysis",            "Full Analysis"),
-    ("genres_and_categories","Find Genres & Categories"),
-    ("genre_analysis",      "Genre Analysis"),
-    ("full_report",         "Full Report"),
-    ("kdp_keywords",        "KDP Keywords"),
-    ("mi_search_terms",     "Search Terms"),
-    ("competition_report",  "Competition Analysis"),
-    ("category_finder",     "Category Finder"),
-    ("genre_ranking",       "Genre Ranking"),
-    ("mapped_categories",   "Mapped Categories (Verified)"),
-    ("bisac_classification","BISAC Classification"),
-    ("review_mining",       "Reader Review Intelligence"),
-    ("author_analysis",     "Competitor Author Analysis"),
-    ("chapter_summaries",   "Chapter Summaries"),
-    ("discovery_keywords",  "Discovery Keywords"),
-    ("keyword_search",      "Keyword Search Results"),
-    ("activity_log",        "Activity Log"),
-    ("zeigarnik_analysis",  "Zeigarnik Effect"),
-    ("continuity_check",    "Continuity Check"),
-];
+/// Look up the display label for a doc_type from the report_types table.
+/// Falls back to the doc_type string itself if not found.
+fn label_for_doc_type(conn: &Connection, doc_type: &str) -> String {
+    conn.query_row(
+        "SELECT label FROM report_types WHERE id = ?1",
+        params![doc_type],
+        |r| r.get::<_, String>(0),
+    ).unwrap_or_else(|_| doc_type.to_string())
+}
 
 pub fn save_document(conn: &Connection, story_folder: &str, doc_type: &str, content: &str) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
@@ -1486,9 +1474,7 @@ pub fn list_documents(conn: &Connection, story_folder: &str) -> Vec<DocMeta> {
     }).and_then(|rows| rows.collect::<Result<Vec<_>, _>>()).unwrap_or_default();
 
     rows.into_iter().map(|(id, doc_type, generated_at)| {
-        let label = DOC_TYPES.iter().find(|(t, _)| *t == doc_type)
-            .map(|(_, l)| l.to_string())
-            .unwrap_or_else(|| doc_type.clone());
+        let label = label_for_doc_type(conn, &doc_type);
         DocMeta { id, doc_type, label, generated_at }
     }).collect()
 }
@@ -1545,9 +1531,7 @@ pub async fn get_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<ReportE
         params![id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
     ).map_err(|_| "Report not found.".to_string())?;
 
-    let label = DOC_TYPES.iter().find(|(t, _)| *t == doc_type)
-        .map(|(_, l)| l.to_string())
-        .unwrap_or_else(|| doc_type.clone());
+    let label = label_for_doc_type(&conn, &doc_type);
 
     let format = if content.starts_with('{') || content.starts_with('[') {
         if serde_json::from_str::<serde_json::Value>(&content).is_ok() { "json" } else { "markdown" }
@@ -1567,6 +1551,80 @@ pub async fn delete_report_cmd(db: tauri::State<'_, Db>, id: i64) -> Result<(), 
         .map_err(|e| e.to_string())?;
     if affected == 0 { return Err("Report not found.".to_string()); }
     Ok(())
+}
+
+// ── Sidebar data (grouped reports by platform) ─────────────────────────
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SidebarReportVersion {
+    pub id:           i64,
+    pub generated_at: String,
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct SidebarReportGroup {
+    pub doc_type:    String,
+    pub label:       String,
+    pub description: String,
+    pub count:       usize,
+    pub versions:    Vec<SidebarReportVersion>,
+}
+
+/// Returns reports grouped by type, filtered by platform, sorted newest-first.
+/// This is the single source of truth for the sidebar's report list.
+#[tauri::command]
+pub async fn get_sidebar_reports(db: tauri::State<'_, Db>, folder: String, platform: String) -> Result<Vec<SidebarReportGroup>, String> {
+    let conn = db.0.lock().map_err(|e| e.to_string())?;
+
+    // Get report types for this platform
+    let mut type_stmt = conn.prepare(
+        "SELECT id, label, description FROM report_types ORDER BY rowid"
+    ).map_err(|e| e.to_string())?;
+    let all_types: Vec<(String, String, String)> = type_stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+    }).map_err(|e| e.to_string())?
+      .filter_map(|r| r.ok())
+      .collect();
+
+    // Get platforms for each type
+    let mut plat_stmt = conn.prepare(
+        "SELECT id, platforms FROM report_types"
+    ).map_err(|e| e.to_string())?;
+    let plat_map: std::collections::HashMap<String, Vec<String>> = plat_stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    }).map_err(|e| e.to_string())?
+      .filter_map(|r| r.ok())
+      .map(|(id, platforms)| {
+          let plats: Vec<String> = platforms.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+          (id, plats)
+      })
+      .collect();
+
+    // Get all saved documents for this folder
+    let docs = list_documents(&conn, &folder);
+
+    // Group docs by doc_type, sorted newest first (already sorted by query)
+    let mut versions_by_type: std::collections::HashMap<String, Vec<SidebarReportVersion>> = std::collections::HashMap::new();
+    for doc in &docs {
+        versions_by_type.entry(doc.doc_type.clone()).or_default().push(SidebarReportVersion {
+            id: doc.id,
+            generated_at: doc.generated_at.clone(),
+        });
+    }
+
+    // Build result: only types that belong to the requested platform
+    let groups: Vec<SidebarReportGroup> = all_types.into_iter()
+        .filter(|(id, _, _)| {
+            plat_map.get(id).map(|p| p.contains(&platform)).unwrap_or(false)
+        })
+        .map(|(id, label, description)| {
+            let versions = versions_by_type.remove(&id).unwrap_or_default();
+            let count = versions.len();
+            SidebarReportGroup { doc_type: id, label, description, count, versions }
+        })
+        .collect();
+
+    Ok(groups)
 }
 
 // ── BISAC classifications ──────────────────────────────────────────────

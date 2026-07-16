@@ -5,14 +5,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { renderReport } from '../reportRenderer';
 import { useSettings } from '../composables/useSettings';
-import type { Story, DocMeta, ReportEnvelope } from '../types';
+import type { Story, ReportEnvelope, SidebarReportGroup } from '../types';
 
 // ── Injections ────────────────────────────────────────────────────────────────
 
 const reportsCtx = inject<{
-  reports: Ref<DocMeta[]>;
+  sidebarGroups: Ref<SidebarReportGroup[]>;
   currentReport: Ref<ReportEnvelope | null>;
-  loadReports: (folder: string) => Promise<void>;
+  loadSidebarReports: (folder: string, platform: string) => Promise<void>;
   deleteReport: (id: number) => Promise<void>;
   closeReport: () => void;
 }>('reports')!;
@@ -21,6 +21,8 @@ const storiesCtx = inject<{
   activeStory: ComputedRef<Story | null>;
   activeFolder: ComputedRef<string>;
 }>('stories')!;
+
+const platformCtx = inject<{ platform: Ref<'kdp' | 'wide' | 'craft'> }>('platform')!;
 
 const showPanel = inject<(name: string) => void>('showPanel')!;
 
@@ -78,7 +80,7 @@ async function onDelete(): Promise<void> {
   try {
     await reportsCtx.deleteReport(report.value.id);
     const folder = storiesCtx.activeFolder.value;
-    if (folder) await reportsCtx.loadReports(folder);
+    if (folder) await reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
     reportsCtx.closeReport();
     showPanel('analyzer');
   } catch (e) {

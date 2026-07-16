@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { inject, computed, ref } from 'vue';
+import { inject, ref } from 'vue';
 import type { Ref, ComputedRef } from 'vue';
-import type { Story, DocMeta, ReportEnvelope, Series } from '../types';
+import type { Story, ReportEnvelope, Series, SidebarReportGroup } from '../types';
 
 // ── Injections ────────────────────────────────────────────────────────────────
 
@@ -14,9 +14,9 @@ const storiesCtx = inject<{
 }>('stories')!;
 
 const reportsCtx = inject<{
-  reports: Ref<DocMeta[]>;
+  sidebarGroups: Ref<SidebarReportGroup[]>;
   currentReport: Ref<ReportEnvelope | null>;
-  loadReports: (folder: string) => Promise<void>;
+  loadSidebarReports: (folder: string, platform: string) => Promise<void>;
   openReport: (id: number) => Promise<ReportEnvelope>;
   deleteReport: (id: number) => Promise<void>;
   closeReport: () => void;
@@ -24,9 +24,6 @@ const reportsCtx = inject<{
 
 const platformCtx = inject<{
   platform: Ref<'kdp' | 'wide' | 'craft'>;
-  KDP_REPORT_TYPES: Set<string>;
-  WIDE_REPORT_TYPES: Set<string>;
-  CRAFT_REPORT_TYPES: Set<string>;
 }>('platform')!;
 
 const showPanel = inject<(name: string) => void>('showPanel')!;
@@ -43,29 +40,6 @@ const emit = defineEmits<{
   (e: 'open-series-form', series: Series | null): void;
 }>();
 
-// ── Report type definitions ───────────────────────────────────────────────────
-
-const ALL_REPORT_TYPES: { docType: string; label: string; description: string }[] = [
-  { docType: 'analysis', label: 'Full Analysis', description: 'Combined analysis: categories, BISAC, keywords, and positioning.' },
-  { docType: 'genres_and_categories', label: 'Find Genres & Categories', description: 'Genre ranking with KDP category matching.' },
-  { docType: 'genre_analysis', label: 'Genre Analysis', description: 'Industry genre classification, KDP paths, comps, and reader demographic.' },
-  { docType: 'full_report', label: 'Full Report', description: 'Genre analysis with competition status.' },
-  { docType: 'kdp_keywords', label: 'KDP Keywords', description: 'The 7 keyword strings optimized for KDP discoverability.' },
-  { docType: 'mi_search_terms', label: 'Search Terms', description: 'Short search phrases used for competition analysis.' },
-  { docType: 'competition_report', label: 'Competition Analysis', description: 'Market landscape: how competitive, who dominates.' },
-  { docType: 'category_finder', label: 'Category Finder', description: 'Category matching results with discoverability scores.' },
-  { docType: 'genre_ranking', label: 'Genre Ranking', description: 'Each genre scored independently against the manuscript.' },
-  { docType: 'bisac_classification', label: 'BISAC Classification', description: 'BISAC subject codes for KDP Print and Ingram.' },
-  { docType: 'review_mining', label: 'Reader Review Intelligence', description: 'Reader insights from competitor reviews.' },
-  { docType: 'author_analysis', label: 'Competitor Author Analysis', description: 'Competitor pricing, release cadence, series.' },
-  { docType: 'chapter_summaries', label: 'Chapter Summaries', description: 'Genre signal extraction from each chapter.' },
-  { docType: 'discovery_keywords', label: 'Discovery Keywords', description: 'Keywords for non-Amazon platforms.' },
-  { docType: 'keyword_search', label: 'Keyword Search Results', description: 'Amazon keyword volume and competition data.' },
-  { docType: 'activity_log', label: 'Activity Log', description: 'Log output from the last analysis run.' },
-  { docType: 'zeigarnik_analysis', label: 'Zeigarnik Effect', description: 'Analyzes open loops and unresolved tension to maintain reader engagement.' },
-  { docType: 'continuity_check', label: 'Continuity Check', description: 'AI-assisted scan for contradicted facts — within a manuscript or across a series.' },
-];
-
 // ── Expand/collapse state ─────────────────────────────────────────────────────
 
 const expanded = ref<string | null>(null);
@@ -73,52 +47,6 @@ const expanded = ref<string | null>(null);
 function toggleExpand(docType: string): void {
   expanded.value = expanded.value === docType ? null : docType;
 }
-
-// ── Computed: visible report types with version counts ────────────────────────
-
-interface VisibleReportType {
-  docType: string;
-  label: string;
-  description: string;
-  count: number;
-  versions: DocMeta[];
-}
-
-const visibleTypes = computed<VisibleReportType[]>(() => {
-  const p = platformCtx.platform.value;
-  const allowedTypes = p === 'kdp' ? platformCtx.KDP_REPORT_TYPES
-    : p === 'wide' ? platformCtx.WIDE_REPORT_TYPES
-    : platformCtx.CRAFT_REPORT_TYPES;
-
-  const docs = reportsCtx.reports.value;
-
-  // Group docs by doc_type
-  const versionsByType = new Map<string, DocMeta[]>();
-  for (const doc of docs) {
-    if (!versionsByType.has(doc.doc_type)) {
-      versionsByType.set(doc.doc_type, []);
-    }
-    versionsByType.get(doc.doc_type)!.push(doc);
-  }
-
-  // Sort each group by generated_at descending (newest first)
-  for (const versions of versionsByType.values()) {
-    versions.sort((a, b) => new Date(b.generated_at).getTime() - new Date(a.generated_at).getTime());
-  }
-
-  return ALL_REPORT_TYPES
-    .filter(t => allowedTypes.has(t.docType))
-    .map(t => {
-      const versions = versionsByType.get(t.docType) || [];
-      return {
-        docType: t.docType,
-        label: t.label,
-        description: t.description,
-        count: versions.length,
-        versions,
-      };
-    });
-});
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -154,7 +82,7 @@ async function onDeleteVersion(id: number, e: Event): Promise<void> {
   try {
     await reportsCtx.deleteReport(id);
     const folder = storiesCtx.activeFolder.value;
-    if (folder) await reportsCtx.loadReports(folder);
+    if (folder) await reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
   } catch (err) {
     alert('Could not delete: ' + String(err));
   }
@@ -239,14 +167,14 @@ function formatTimestamp(ts: string): string {
       </div>
       <template v-else>
         <div
-          v-for="type in visibleTypes"
-          :key="type.docType"
+          v-for="type in reportsCtx.sidebarGroups.value"
+          :key="type.doc_type"
           class="report-type"
         >
           <div
             class="report-type-header"
             :title="type.description"
-            @click="toggleExpand(type.docType)"
+            @click="toggleExpand(type.doc_type)"
           >
             <span class="report-type-label">
               {{ type.label }}
@@ -256,7 +184,7 @@ function formatTimestamp(ts: string): string {
 
           <!-- Expanded: show versions -->
           <div
-            v-if="expanded === type.docType && type.versions.length > 0"
+            v-if="expanded === type.doc_type && type.versions.length > 0"
             class="report-versions"
           >
             <div

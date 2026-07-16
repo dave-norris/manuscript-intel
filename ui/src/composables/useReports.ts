@@ -1,21 +1,20 @@
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { DocMeta, ReportEnvelope } from '../types';
+import type { ReportEnvelope, SidebarReportGroup } from '../types';
 
-const reports = ref<DocMeta[]>([]);
+const sidebarGroups = ref<SidebarReportGroup[]>([]);
 const currentReport = ref<ReportEnvelope | null>(null);
 
-async function loadReports(folder: string): Promise<void> {
+async function loadSidebarReports(folder: string, platform: string): Promise<void> {
   if (!folder) {
-    reports.value = [];
+    sidebarGroups.value = [];
     return;
   }
   try {
-    const docs = await invoke<DocMeta[]>('list_reports_cmd', { folder });
-    reports.value = docs;
+    sidebarGroups.value = await invoke<SidebarReportGroup[]>('get_sidebar_reports', { folder, platform });
   } catch (e) {
-    console.error('loadReports:', e);
-    reports.value = [];
+    console.error('loadSidebarReports:', e);
+    sidebarGroups.value = [];
   }
 }
 
@@ -35,9 +34,9 @@ function closeReport(): void {
 
 export function useReports() {
   return {
-    reports,
+    sidebarGroups,
     currentReport,
-    loadReports,
+    loadSidebarReports,
     openReport,
     deleteReport,
     closeReport,

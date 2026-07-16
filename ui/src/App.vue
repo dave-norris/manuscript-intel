@@ -76,20 +76,25 @@ function openSeriesForm(series: Series | null): void {
 watch(() => storiesCtx.activeStoryId.value, (id) => {
   if (id && storiesCtx.activeFolder.value) {
     analysisCtx.refreshState(storiesCtx.activeFolder.value);
-    reportsCtx.loadReports(storiesCtx.activeFolder.value);
+    reportsCtx.loadSidebarReports(storiesCtx.activeFolder.value, platformCtx.platform.value);
   } else {
     analysisCtx.refreshState('');
-    reportsCtx.loadReports('');
+    reportsCtx.loadSidebarReports('', platformCtx.platform.value);
   }
 });
 
-// When platform changes, the sidebar already filters client-side — no reload needed
+// When platform changes, reload sidebar (backend filters by platform)
+watch(() => platformCtx.platform.value, () => {
+  if (storiesCtx.activeFolder.value) {
+    reportsCtx.loadSidebarReports(storiesCtx.activeFolder.value, platformCtx.platform.value);
+  }
+});
 
 // When analysis finishes, refresh state and reports
 watch(() => analysisCtx.isWorking.value, (working, wasWorking) => {
   if (wasWorking && !working && storiesCtx.activeFolder.value) {
     analysisCtx.refreshState(storiesCtx.activeFolder.value);
-    reportsCtx.loadReports(storiesCtx.activeFolder.value);
+    reportsCtx.loadSidebarReports(storiesCtx.activeFolder.value, platformCtx.platform.value);
   }
 });
 
@@ -108,7 +113,7 @@ onMounted(() => {
     const folder = storiesCtx.activeFolder.value;
     if (folder) {
       analysisCtx.refreshState(folder);
-      reportsCtx.loadReports(folder);
+      reportsCtx.loadSidebarReports(folder, platformCtx.platform.value);
     }
   });
   seriesCtx.loadSeries();

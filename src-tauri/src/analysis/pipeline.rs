@@ -527,6 +527,9 @@ pub async fn analyze_story(app: AppHandle, request: AnalyzeStoryRequest) -> Genr
 }
 
 async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> GenreResult {
+    if request.api_key.is_empty() { return err("No API key set. Go to Settings."); }
+    if request.model.is_empty() { return err("No model selected. Go to Settings."); }
+
     let database = app.state::<db::Db>();
     let run_ts = if request.run_time.is_empty() { chrono::Utc::now().to_rfc3339() } else { request.run_time.clone() };
 

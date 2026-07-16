@@ -61,10 +61,13 @@ struct Book {
 
 #[derive(serde::Deserialize, Clone, Debug)]
 struct AiFact {
+    #[serde(default)]
     entity:      String,
     #[serde(default = "default_entity_type")]
     entity_type: String,
+    #[serde(default)]
     attribute:   String,
+    #[serde(default)]
     value:       String,
     #[serde(default)]
     snippet:     String,
@@ -237,7 +240,21 @@ Keep values and snippets as short as possible. One fact per attribute per entity
         .trim_end_matches("```").trim();
 
     serde_json::from_str::<Vec<AiFact>>(clean)
-        .map_err(|e| format!("Parse error (facts): {} | got: {}", e, &clean[..clean.len().min(200)]))
+        .map(|facts| facts.into_iter().filter(|f| !f.entity.is_empty() && !f.attribute.is_empty() && !f.value.is_empty()).collect())
+        .or_else(|_| {
+            // Fallback: parse as array of Value and extract valid items individually
+            let arr = serde_json::from_str::<Vec<serde_json::Value>>(clean)
+                .map_err(|e| format!("Parse error (facts): {} | got: {}", e, &clean[..clean.len().min(200)]))?;
+            let mut good = Vec::new();
+            for item in arr {
+                if let Ok(f) = serde_json::from_value::<AiFact>(item) {
+                    if !f.entity.is_empty() && !f.attribute.is_empty() && !f.value.is_empty() {
+                        good.push(f);
+                    }
+                }
+            }
+            Ok(good)
+        })
 }
 
 fn flatten_facts(book: &Book) -> Vec<db::ContinuityFactRow> {

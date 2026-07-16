@@ -970,3 +970,135 @@ pub(crate) fn render_kdp_paste_section(
     });
     json.to_string()
 }
+
+// ── Craft pipeline ────────────────────────────────────────────────────────────
+
+/// Request for the craft analysis pipeline.
+/// The frontend sends which reports to run; this command handles ordering and execution.
+#[derive(serde::Deserialize)]
+pub struct CraftPipelineRequest {
+    pub folder:           String,
+    pub selected:         Vec<String>,  // e.g. ["chapter_summaries", "zeigarnik_analysis", "continuity_check"]
+    pub provider:         String,
+    pub api_key:          String,
+    pub model:            String,
+    /// "manuscript" or "series"
+    #[serde(default)]
+    pub continuity_scope: String,
+    /// Only used when continuity_scope == "series"
+    #[serde(default)]
+    pub series_id:        i64,
+}
+
+/// Runs the selected craft-platform reports in the correct order.
+/// Chapter summaries → Zeigarnik → Continuity. Each is optional based on `selected`.
+#[tauri::command]
+pub async fn run_craft_pipeline(app: AppHandle, request: CraftPipelineRequest) -> GenreResult {
+    let cancel = crate::cancel_notify();
+    tokio::select! {
+        result = run_craft_pipeline_inner(app, request) => result,
+        _ = cancel.notified() => err("Cancelled."),
+    }
+}
+
+async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest) -> GenreResult {
+    let folder = PathBuf::from(&request.folder);
+    if !folder.exists() { return err("Folder does not exist."); }
+
+    crate::reset_cancel();
+    let database = app.state::<db::Db>();
+    let run_ts = chrono::Utc::now().to_rfc3339();
+    let needs_ai = request.selected.iter().any(|s| s == "chapter_summaries" || s == "continuity_check");
+
+    if needs_ai && (request.api_key.is_empty() || request.model.is_empty()) {
+        return err("An API key and model are required for the selected reports. Set them in Settings.");
+    }
+
+    // ── Chapter Summaries ─────────────────────────────────────────────────
+    if request.selected.contains(&"chapter_summaries".to_string()) {
+        emit(&app, &format!("Generating chapter summaries... [{}: {}]", request.provider, request.model));
+        let chapters = collect_chapters(&folder);
+        if chapters.is_empty() { return err("No .md chapter files found."); }
+
+        let (done, skipped) = phase1_summaries(
+            &app, &database, &chapters, &request.folder,
+            &request.provider, &request.api_key, &request.model,
+        ).await;
+        emit(&app, &format!("✓ Chapter summaries complete ({} new, {} skipped).", done, skipped));
+
+        // Save as report
+        let conn = database.0.lock().unwrap();
+        let summaries = db::load_chapter_summaries(&conn, &request.folder);
+        if !summaries.is_empty() {
+            let cs_json = serde_json::json!({
+                "schema": "chapter_summaries_v1",
+                "chapters": summaries.iter().map(|s| serde_json::json!({
+                    "file": s.file, "title": s.title, "signals": s.signals, "word_count": s.word_count,
+                })).collect::<Vec<_>>(),
+                "total_words": summaries.iter().map(|s| s.word_count).sum::<i64>(),
+            }).to_string();
+            let _ = db::save_document_at(&conn, &request.folder, "chapter_summaries", &cs_json, &run_ts);
+        }
+
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+
+    // ── Zeigarnik Effect ──────────────────────────────────────────────────
+    if request.selected.contains(&"zeigarnik_analysis".to_string()) {
+        emit(&app, "Running Zeigarnik effect analysis (algorithmic — no AI)...");
+        let zr = super::zeigarnik::analyze_zeigarnik_for_story(
+            app.clone(),
+            super::zeigarnik::ZeigarnikRequest { folder: request.folder.clone() },
+        ).await;
+        if zr.success {
+            emit(&app, "✓ Zeigarnik analysis complete.");
+        } else {
+            emit(&app, &format!("✗ Zeigarnik: {}", zr.error));
+            return zr;
+        }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+
+    // ── Continuity Check ──────────────────────────────────────────────────
+    if request.selected.contains(&"continuity_check".to_string()) {
+        if request.continuity_scope == "series" && request.series_id > 0 {
+            emit(&app, &format!("Running continuity check across the series... [{}: {}]", request.provider, request.model));
+            let cr = super::continuity::check_continuity_for_series(
+                app.clone(),
+                super::continuity::SeriesContinuityRequest {
+                    series_id: request.series_id,
+                    provider: request.provider.clone(),
+                    api_key: request.api_key.clone(),
+                    model: request.model.clone(),
+                },
+            ).await;
+            if cr.success {
+                emit(&app, "✓ Series continuity check complete.");
+            } else {
+                emit(&app, &format!("✗ Continuity: {}", cr.error));
+                return cr;
+            }
+        } else {
+            emit(&app, &format!("Running continuity check for this manuscript... [{}: {}]", request.provider, request.model));
+            let cr = super::continuity::check_continuity_for_story(
+                app.clone(),
+                super::continuity::ContinuityRequest {
+                    folder: request.folder.clone(),
+                    provider: request.provider.clone(),
+                    api_key: request.api_key.clone(),
+                    model: request.model.clone(),
+                },
+            ).await;
+            if cr.success {
+                emit(&app, "✓ Continuity check complete.");
+            } else {
+                emit(&app, &format!("✗ Continuity: {}", cr.error));
+                return cr;
+            }
+        }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+
+    emit(&app, "✓ Done.");
+    GenreResult { success: true, report: String::new(), error: String::new(), run_ts }
+}

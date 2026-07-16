@@ -34,7 +34,7 @@ async function deleteSeries(id: number): Promise<SeriesResult> {
 
 export function useSeries() {
   return {
-    seriesList,
+    series: seriesList,
     loadSeries,
     createSeries,
     updateSeries,

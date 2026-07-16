@@ -46,8 +46,6 @@ const hasRun = ref(false);
 const continuityScopeMode = ref<'manuscript' | 'series'>('manuscript');
 const continuitySeriesId = ref<number | null>(null);
 
-onMounted(() => seriesCtx.loadSeries());
-
 // ── Computed ──────────────────────────────────────────────────────────────────
 
 const existsMap = computed(() => {

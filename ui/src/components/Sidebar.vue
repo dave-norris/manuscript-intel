@@ -32,7 +32,7 @@ const platformCtx = inject<{
 const showPanel = inject<(name: string) => void>('showPanel')!;
 
 const seriesCtx = inject<{
-  seriesList: Ref<Series[]>;
+  series: Ref<Series[]>;
   loadSeries: () => Promise<void>;
 }>('series')!;
 
@@ -148,6 +148,18 @@ async function onVersionClick(id: number): Promise<void> {
   showPanel('reports');
 }
 
+async function onDeleteVersion(id: number, e: Event): Promise<void> {
+  e.stopPropagation();
+  if (!confirm('Delete this report? This cannot be undone.')) return;
+  try {
+    await reportsCtx.deleteReport(id);
+    const folder = storiesCtx.activeFolder.value;
+    if (folder) await reportsCtx.loadReports(folder);
+  } catch (err) {
+    alert('Could not delete: ' + String(err));
+  }
+}
+
 // ── Timestamp formatting ──────────────────────────────────────────────────────
 
 function formatTimestamp(ts: string): string {
@@ -208,7 +220,7 @@ function formatTimestamp(ts: string): string {
       </div>
       <div class="series-list">
         <div
-          v-for="s in seriesCtx.seriesList.value"
+          v-for="s in seriesCtx.series.value"
           :key="s.id"
           class="story-item"
           @click="onEditSeries(s)"
@@ -253,7 +265,8 @@ function formatTimestamp(ts: string): string {
               class="report-version-item"
               @click="onVersionClick(version.id)"
             >
-              {{ formatTimestamp(version.generated_at) }}
+              <span class="version-label">{{ formatTimestamp(version.generated_at) }}</span>
+              <button class="version-delete" @click="onDeleteVersion(version.id, $event)" title="Delete this report">&times;</button>
             </div>
           </div>
         </div>
@@ -469,11 +482,38 @@ function formatTimestamp(ts: string): string {
 }
 
 .report-version-item {
+  display: flex;
+  align-items: center;
   padding: 4px 10px;
   font-size: 11px;
   color: var(--text-muted);
   cursor: pointer;
   border-radius: var(--radius);
+}
+
+.report-version-item .version-label {
+  flex: 1;
+}
+
+.report-version-item .version-delete {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
+.report-version-item:hover .version-delete {
+  display: inline;
+}
+
+.report-version-item .version-delete:hover {
+  color: #e74c3c;
+  background: var(--surface2);
 }
 
 .report-version-item:hover {

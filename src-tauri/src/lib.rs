@@ -48,6 +48,7 @@ pub fn run() {
             analysis::pipeline::run_full_analysis,
             analysis::pipeline::find_genres_and_categories_for_story,
             analysis::pipeline::analyze_story,
+            analysis::pipeline::run_craft_pipeline,
             analysis::zeigarnik::analyze_zeigarnik_for_story,
             analysis::continuity::check_continuity_for_story,
             analysis::continuity::check_continuity_for_series,

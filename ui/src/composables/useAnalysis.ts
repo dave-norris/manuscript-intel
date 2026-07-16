@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { AnalysisState, GenreResult, LogLine } from '../types';
 
+import { useSettings } from './useSettings';
+
 const analysisState = ref<AnalysisState | null>(null);
 const isWorking = ref(false);
 const logLines = ref<LogLine[]>([]);
@@ -57,17 +59,20 @@ async function refreshState(folder: string): Promise<void> {
 }
 
 function getSettings() {
+  const s = useSettings();
   return {
-    provider: localStorage.getItem('provider') || 'tokenmix',
-    apiKey: localStorage.getItem('apiKey') || '',
-    model: localStorage.getItem('model') || '',
-    canopyApiKey: localStorage.getItem('canopyApiKey') || '',
+    provider: s.provider.value,
+    apiKey: s.apiKey.value,
+    model: s.model.value,
+    canopyApiKey: s.canopyApiKey.value,
+    dataforseoLogin: s.dataforseoLogin.value,
+    dataforseoPassword: s.dataforseoPassword.value,
   };
 }
 
 async function runAnalyze(folder: string, forceResummarize: boolean, platform: string): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
-  const { provider, apiKey, model, canopyApiKey } = getSettings();
+  const { provider, apiKey, model, canopyApiKey, dataforseoLogin, dataforseoPassword } = getSettings();
   if (!apiKey) { appendLog('✗ No API key set. Go to Settings.'); return; }
   if (!model) { appendLog('✗ No model selected. Go to Settings and fetch models.'); return; }
 
@@ -83,7 +88,7 @@ async function runAnalyze(folder: string, forceResummarize: boolean, platform: s
   let runTs = '';
   try {
     const result = await invoke<GenreResult>('analyze_story', {
-      request: { folder, api_key: apiKey, model, provider, force_resummarize: forceResummarize, canopy_api_key: canopyApiKey, platform, dataforseo_login: localStorage.getItem('dataforseoLogin') || '', dataforseo_password: localStorage.getItem('dataforseoPassword') || '', run_time: runTime },
+      request: { folder, api_key: apiKey, model, provider, force_resummarize: forceResummarize, canopy_api_key: canopyApiKey, platform, dataforseo_login: dataforseoLogin, dataforseo_password: dataforseoPassword, run_time: runTime },
     });
     runTs = result.run_ts || runTime;
     if (result.success) {

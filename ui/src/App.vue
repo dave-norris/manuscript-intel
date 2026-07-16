@@ -83,12 +83,7 @@ watch(() => storiesCtx.activeStoryId.value, (id) => {
   }
 });
 
-// When platform changes, reload reports list
-watch(() => platformCtx.platform.value, () => {
-  if (storiesCtx.activeFolder.value) {
-    reportsCtx.loadReports(storiesCtx.activeFolder.value);
-  }
-});
+// When platform changes, the sidebar already filters client-side — no reload needed
 
 // When analysis finishes, refresh state and reports
 watch(() => analysisCtx.isWorking.value, (working, wasWorking) => {
@@ -109,7 +104,13 @@ onMounted(() => {
   });
 
   // Load initial data
-  storiesCtx.loadStories();
+  storiesCtx.loadStories().then(() => {
+    const folder = storiesCtx.activeFolder.value;
+    if (folder) {
+      analysisCtx.refreshState(folder);
+      reportsCtx.loadReports(folder);
+    }
+  });
   seriesCtx.loadSeries();
 });
 </script>

@@ -17,6 +17,8 @@ pub struct Story {
     pub name:    String,
     pub folder:  String,
     pub created: String,
+    #[serde(default)]
+    pub bible_path: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -91,6 +93,8 @@ pub struct UpdateStoryRequest {
     pub id:     String,
     pub name:   String,
     pub folder: String,
+    #[serde(default)]
+    pub bible_path: String,
 }
 
 /// List all stories.
@@ -130,6 +134,7 @@ pub async fn add_story(app: AppHandle, request: AddStoryRequest) -> StoriesResul
         name:    request.name.trim().to_string(),
         folder:  request.folder.clone(),
         created: now,
+        bible_path: String::new(),
     };
 
     match load_stories(&app) {
@@ -164,6 +169,7 @@ pub async fn update_story(app: AppHandle, request: UpdateStoryRequest) -> Storie
             if let Some(s) = stories.iter_mut().find(|s| s.id == request.id) {
                 s.name   = request.name.trim().to_string();
                 s.folder = request.folder.clone();
+                s.bible_path = request.bible_path.clone();
             }
             match save_stories(&app, &stories) {
                 Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },

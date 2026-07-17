@@ -5,6 +5,7 @@ export interface Story {
   name: string;
   folder: string;
   created: string;
+  bible_path: string;
 }
 
 export interface StoriesResult {
@@ -162,6 +163,7 @@ export interface Series {
   id: number;
   name: string;
   created_at: string;
+  bible_path: string;
   books: SeriesBook[];
 }
 

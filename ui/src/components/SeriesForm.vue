@@ -16,6 +16,7 @@ const props = defineProps<{
 }>();
 
 const name = ref('');
+const biblePath = ref('');
 const selectedBooks = ref<{ story_folder: string; story_name: string; book_order: number }[]>([]);
 const error = ref('');
 const isEditing = ref(false);
@@ -24,11 +25,13 @@ const editId = ref(0);
 watch(() => props.series, (s) => {
   if (s) {
     name.value = s.name;
+    biblePath.value = s.bible_path || '';
     selectedBooks.value = s.books.map(b => ({ ...b }));
     editId.value = s.id;
     isEditing.value = true;
   } else {
     name.value = '';
+    biblePath.value = '';
     selectedBooks.value = [];
     editId.value = 0;
     isEditing.value = false;
@@ -81,7 +84,7 @@ async function onSave(): Promise<void> {
 
   let result: SeriesResult;
   if (isEditing.value) {
-    result = await updateSeries(editId.value, trimName, selectedBooks.value);
+    result = await updateSeries(editId.value, trimName, selectedBooks.value, biblePath.value.trim());
   } else {
     result = await createSeries(trimName, selectedBooks.value);
   }
@@ -113,6 +116,11 @@ async function onDelete(): Promise<void> {
     <div class="form-group">
       <label>Series Name</label>
       <input v-model="name" type="text" placeholder="e.g. The Calloway Brothers" />
+    </div>
+
+    <div class="form-group">
+      <label>Series Bible <span style="text-transform:none;letter-spacing:0;font-size:11px;font-weight:400">(optional — markdown file with series-wide canon)</span></label>
+      <input v-model="biblePath" type="text" placeholder="/path/to/series-bible.md" />
     </div>
 
     <div class="form-group">

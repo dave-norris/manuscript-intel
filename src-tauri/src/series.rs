@@ -11,6 +11,7 @@ pub struct Series {
     pub id: i64,
     pub name: String,
     pub created_at: String,
+    pub bible_path: String,
     pub books: Vec<SeriesBook>,
 }
 
@@ -39,6 +40,8 @@ pub struct UpdateSeriesRequest {
     pub id: i64,
     pub name: String,
     pub books: Vec<SeriesBookInput>,
+    #[serde(default)]
+    pub bible_path: String,
 }
 
 #[derive(Deserialize, Clone)]
@@ -55,20 +58,20 @@ pub async fn list_series(app: AppHandle) -> SeriesResult {
     let database = app.state::<db::Db>();
     let conn = database.0.lock().unwrap();
 
-    let mut stmt = match conn.prepare("SELECT id, name, created_at FROM series ORDER BY name") {
+    let mut stmt = match conn.prepare("SELECT id, name, created_at, COALESCE(bible_path, '') FROM series ORDER BY name") {
         Ok(s) => s,
         Err(e) => return SeriesResult { success: false, series: Vec::new(), error: e.to_string() },
     };
 
-    let series_rows: Vec<(i64, String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    let series_rows: Vec<(i64, String, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
         .unwrap_or_default();
 
     let mut series_list = Vec::new();
-    for (id, name, created_at) in series_rows {
+    for (id, name, created_at, bible_path) in series_rows {
         let books = load_series_books(&conn, id);
-        series_list.push(Series { id, name, created_at, books });
+        series_list.push(Series { id, name, created_at, bible_path, books });
     }
 
     SeriesResult { success: true, series: series_list, error: String::new() }
@@ -111,8 +114,8 @@ pub async fn update_series(app: AppHandle, request: UpdateSeriesRequest) -> Seri
         }
 
         if let Err(e) = conn.execute(
-            "UPDATE series SET name = ?1 WHERE id = ?2",
-            rusqlite::params![name, request.id],
+            "UPDATE series SET name = ?1, bible_path = ?2 WHERE id = ?3",
+            rusqlite::params![name, request.bible_path, request.id],
         ) {
             return SeriesResult { success: false, series: Vec::new(), error: format!("Could not update series: {}", e) };
         }

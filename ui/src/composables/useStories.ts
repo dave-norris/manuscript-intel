@@ -36,8 +36,8 @@ async function addStory(name: string, folder: string): Promise<StoriesResult> {
   return result;
 }
 
-async function updateStory(id: string, name: string, folder: string): Promise<StoriesResult> {
-  const result = await invoke<StoriesResult>('update_story', { request: { id, name, folder } });
+async function updateStory(id: string, name: string, folder: string, biblePath: string = ''): Promise<StoriesResult> {
+  const result = await invoke<StoriesResult>('update_story', { request: { id, name, folder, bible_path: biblePath } });
   if (result.success) {
     stories.value = result.stories;
   }

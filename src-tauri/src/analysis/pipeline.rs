@@ -999,6 +999,8 @@ pub struct CraftPipelineRequest {
     /// Only used when continuity_scope == "series"
     #[serde(default)]
     pub series_id:        i64,
+    #[serde(default)]
+    pub bible_path:       String,
 }
 
 /// Runs the selected craft-platform reports in the correct order.
@@ -1086,6 +1088,7 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
                     provider: request.provider.clone(),
                     api_key: request.api_key.clone(),
                     model: model_continuity.clone(),
+                    bible_path: request.bible_path.clone(),
                 },
             ).await;
             if cr.success {
@@ -1103,6 +1106,7 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
                     provider: request.provider.clone(),
                     api_key: request.api_key.clone(),
                     model: model_continuity.clone(),
+                    bible_path: request.bible_path.clone(),
                 },
             ).await;
             if cr.success {
@@ -1124,6 +1128,7 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
                 provider: request.provider.clone(),
                 api_key: request.api_key.clone(),
                 model: model_sdt.clone(),
+                bible_path: request.bible_path.clone(),
             },
         ).await;
         if !sdt.success {

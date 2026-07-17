@@ -293,6 +293,33 @@ CREATE TABLE IF NOT EXISTS continuity_findings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_continuity_findings_scope ON continuity_findings(scope, scope_key);
+
+-- Prompt template system: editable AI prompts stored in DB instead of hardcoded.
+-- Each report function has a system prompt and a user prompt template with {placeholders}.
+CREATE TABLE IF NOT EXISTS prompt_templates (
+    id              TEXT PRIMARY KEY,    -- e.g. 'continuity_extract', 'sdt_check'
+    label           TEXT NOT NULL,
+    system_prompt   TEXT NOT NULL,
+    user_template   TEXT NOT NULL,       -- uses {chapter_title}, {chapter_text}, {bible}, etc.
+    max_tokens      INTEGER NOT NULL DEFAULT 4000,
+    json_mode       INTEGER NOT NULL DEFAULT 0,  -- 1 = force JSON response format
+    version         INTEGER NOT NULL DEFAULT 1,
+    updated_at      TEXT NOT NULL DEFAULT ''
+);
+
+-- Preprocessed chapter text, cached per report type. Invalidated when
+-- the source file changes (via modified_at timestamp comparison).
+CREATE TABLE IF NOT EXISTS preprocessed_chapters (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    story_folder   TEXT NOT NULL,
+    chapter_file   TEXT NOT NULL,
+    report_type    TEXT NOT NULL,        -- e.g. 'continuity_extract', 'sdt_check'
+    processed_text TEXT NOT NULL,
+    source_modified_at TEXT NOT NULL,    -- file mtime when preprocessed
+    created_at     TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_preproc_unique ON preprocessed_chapters(story_folder, chapter_file, report_type);
 "#;
 
 pub struct Db(pub Mutex<Connection>);
@@ -363,9 +390,13 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
         );
     }
 
+    // Migration: series.bible_path column for series bible support.
+    let _ = conn.execute("ALTER TABLE series ADD COLUMN bible_path TEXT NOT NULL DEFAULT ''", []);
+
     seed_if_empty(&conn)?;
     seed_bisac_if_empty(&conn)?;
     seed_report_types(&conn)?;
+    seed_prompt_templates(&conn)?;
     seed_zeigarnik_config_if_empty(&conn)?;
 
     Ok(Db(Mutex::new(conn)))
@@ -470,6 +501,125 @@ fn seed_report_types(conn: &Connection) -> Result<(), String> {
             "INSERT INTO report_types (id, label, description, platforms, depends_on) VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(id) DO UPDATE SET label = excluded.label, description = excluded.description, platforms = excluded.platforms, depends_on = excluded.depends_on",
             params![id, label, description, platforms, depends_on],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn seed_prompt_templates(conn: &Connection) -> Result<(), String> {
+    // Each row: (id, label, system_prompt, user_template, max_tokens, json_mode)
+    let templates: &[(&str, &str, &str, &str, i64, i64)] = &[
+        (
+            "continuity_extract",
+            "Continuity: Fact Extraction",
+            r#"You are a continuity editor for fiction. Extract only facts likely to matter for continuity — details a careful reader could later catch a contradiction on if they changed without explanation.
+
+Cover, when present:
+- Character: appearance, age, occupation, relationships, skills, habits, possessions
+- Place: location, layout, distance from other places
+- Object: description, ownership, condition
+- Timeline: dates, durations, sequences of events
+
+Use the character or place's fullest, most formal name as it is introduced in the text (e.g. "Sarah Chen" rather than just "Sarah" or "the detective"), so the same entity can be matched consistently across chapters.
+
+Return ONLY a JSON array, no markdown, no preamble. Maximum 15 items. Be terse.
+Each item exactly:
+{"entity": "<canonical name>", "entity_type": "character|place|object|timeline|other", "attribute": "<short_label>", "value": "<fact in under 10 words>", "snippet": "<verbatim quote, under 12 words>"}
+Keep values and snippets as short as possible. One fact per attribute per entity. No duplicates."#,
+            "Chapter: {chapter_title}\n\n{bible}\n\n---\n\n{chapter_text}",
+            4000, 1
+        ),
+        (
+            "continuity_judge",
+            "Continuity: Contradiction Judgment",
+            r#"You are a meticulous continuity editor for fiction. For each candidate group below, the same named entity has more than one recorded value for the same attribute across chapters (possibly across different books in a series, in reading order).
+
+Judge whether each is a genuine continuity error a careful reader could catch, or an explainable/intentional change: aging over time, injury, disguise, dye job, unreliable narration, a later-revealed secret, or simply imprecise-but-compatible wording that isn't actually a contradiction (e.g. "green eyes" vs "emerald eyes" is NOT a contradiction).
+
+Return ONLY a JSON array. Each item:
+{"entity":"<name>","attribute":"<attr>","verdict":"contradiction|possible|likely_intentional","confidence":<0-100>,"explanation":"<one sentence>"}
+
+Do NOT include reasoning, preamble, or markdown. ONLY the JSON array."#,
+            "{bible}\n\n---\n\nCandidate groups:\n{candidates}",
+            4000, 1
+        ),
+        (
+            "continuity_suggest",
+            "Continuity: Suggest Fix",
+            r#"You are a fiction editor helping an author fix a continuity error in their manuscript. You will be given:
+- The entity and attribute that has contradicting values
+- Where each value appears (which chapter, with a snippet of surrounding text)
+
+Provide 2-3 concrete suggestions for how to fix the inconsistency. For each:
+1. State which occurrence(s) to change
+2. Give the exact revised prose (ready to paste)
+3. One sentence explaining why this fix works
+
+Keep the author's voice and style. Be concise."#,
+            "Entity: {entity}\nAttribute: {attribute}\nExplanation: {explanation}\n\n{bible}\n\nOccurrences:\n{occurrences}",
+            2000, 0
+        ),
+        (
+            "sdt_check",
+            "Show Don't Tell: Check",
+            r#"You check fiction for TELLING instead of SHOWING. Output ONLY a JSON array.
+
+A violation is when the author DIRECTLY STATES an emotion, judgment, or conclusion that should be inferred by the reader from action, dialogue, or sensory detail.
+
+Flag ONLY clear violations. Do NOT flag:
+- Internal monologue that reveals character voice
+- Montage/summary passages that compress time intentionally
+- Metaphors, similes, or sensory comparisons
+- A character's self-aware observations in close POV
+- Stylistic choices that serve pacing or rhythm
+
+For each violation return exactly:
+{"telling_text":"<exact quote, max 15 words>","context":"<1-2 surrounding sentences>","why":"<one sentence>","severity":"minor|moderate|major"}
+
+Rules:
+- severity "major" = undermines a key emotional beat
+- severity "moderate" = weakens the scene noticeably
+- severity "minor" = could be tighter but doesn't hurt much
+- Maximum 8 per chapter. Only flag what genuinely weakens the prose.
+- Return [] if the chapter is clean.
+- Do NOT include reasoning, preamble, or markdown. ONLY the JSON array."#,
+            "Chapter: {chapter_title}\n\n{bible}\n\n---\n\n{chapter_text}",
+            4000, 1
+        ),
+        (
+            "sdt_suggest",
+            "Show Don't Tell: Suggest Fix",
+            r#"You are a fiction editor helping an author rewrite a "telling" passage to "show" instead. You will be given:
+- The passage that tells instead of shows
+- Surrounding context
+- Why it's considered telling
+
+Provide 2-3 alternative rewrites that SHOW instead of TELL. For each:
+1. Give the revised prose (ready to paste — match the author's voice and tense)
+2. One sentence explaining the technique used (body language, sensory detail, action, dialogue, etc.)
+
+Keep rewrites concise — replace only the telling passage, not the surrounding context. Maintain the author's style and point of view."#,
+            "Chapter: {chapter_title}\n\nTelling passage: \"{telling_text}\"\n\nContext: \"{context}\"\n\nWhy it's telling: {why}\n\n{bible}",
+            1500, 0
+        ),
+        (
+            "chapter_summary",
+            "Chapter Summary: Genre Signal Extraction",
+            r#"You are a book genre analyst. Read the chapter excerpt and extract genre-relevant signals: themes, tropes, character archetypes, setting type, tone, pacing indicators, and any explicit or implicit genre markers.
+
+Return a SHORT paragraph (3-5 sentences max) summarizing the genre signals. Do not summarize the plot. Focus only on what tells us about the genre and subgenre. Be specific (name tropes, compare to known genres)."#,
+            "Chapter: {chapter_title}\n\n{bible}\n\n---\n\n{chapter_text}",
+            500, 0
+        ),
+    ];
+
+    for (id, label, system_prompt, user_template, max_tokens, json_mode) in templates {
+        conn.execute(
+            "INSERT INTO prompt_templates (id, label, system_prompt, user_template, max_tokens, json_mode, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+             ON CONFLICT(id) DO NOTHING",
+            params![id, label, system_prompt, user_template, max_tokens, json_mode],
         ).map_err(|e| e.to_string())?;
     }
 

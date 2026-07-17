@@ -11,8 +11,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
 use super::{emit, err, GenreResult};
-use super::chapters::{collect_chapters, extract_title, truncate_words};
-use crate::commands::call_llm_json;
+use super::chapters::{collect_chapters, extract_title};
 use crate::db;
 
 // ── Request ──────────────────────────────────────────────────────────────────
@@ -23,6 +22,8 @@ pub struct ShowDontTellRequest {
     pub provider: String,
     pub api_key:  String,
     pub model:    String,
+    #[serde(default)]
+    pub bible_path: String,
 }
 
 // ── AI response shape ────────────────────────────────────────────────────────
@@ -64,6 +65,8 @@ async fn check_inner(app: AppHandle, request: ShowDontTellRequest) -> GenreResul
     let chapters = collect_chapters(&folder);
     if chapters.is_empty() { return err("No .md chapter files found."); }
 
+    let bible = crate::prompts::load_bible(&request.bible_path);
+
     emit(&app, &format!("Checking {} chapter(s) for show-don't-tell violations...", chapters.len()));
 
     let mut all_findings: Vec<serde_json::Value> = Vec::new();
@@ -81,13 +84,23 @@ async fn check_inner(app: AppHandle, request: ShowDontTellRequest) -> GenreResul
             .unwrap_or(path)
             .to_string_lossy().to_string();
         let title = extract_title(&content).unwrap_or_else(|| filename.clone());
-        let truncated = truncate_words(&content, 4000);
+
+        // Use preprocessed text (cached)
+        let processed = {
+            let conn = database.0.lock().unwrap();
+            crate::prompts::get_preprocessed(&conn, &request.folder, &filename, "sdt_check", path)
+                .unwrap_or_else(|| {
+                    let p = crate::prompts::preprocess_for_sdt(&content);
+                    crate::prompts::store_preprocessed(&conn, &request.folder, &filename, "sdt_check", &p, path);
+                    p
+                })
+        };
 
         emit(&app, &format!("[{}/{}] {} — checking...", i + 1, chapters.len(), filename));
 
         let violations = match extract_violations(
-            &request.provider, &request.api_key, &request.model,
-            &filename, &truncated,
+            &database, &request.provider, &request.api_key, &request.model,
+            &filename, &processed, &bible,
         ).await {
             Ok(v) => v,
             Err(e) => {
@@ -142,34 +155,19 @@ async fn check_inner(app: AppHandle, request: ShowDontTellRequest) -> GenreResul
 // ── AI extraction ────────────────────────────────────────────────────────────
 
 async fn extract_violations(
+    db: &db::Db,
     provider: &str, api_key: &str, model: &str,
-    filename: &str, content: &str,
+    filename: &str, content: &str, bible: &str,
 ) -> Result<Vec<AiViolation>, String> {
-    let system = r#"You check fiction for TELLING instead of SHOWING. Output ONLY a JSON array.
+    use std::collections::HashMap;
+    use crate::prompts;
 
-A violation is when the author DIRECTLY STATES an emotion, judgment, or conclusion that should be inferred by the reader from action, dialogue, or sensory detail.
+    let mut vars = HashMap::new();
+    vars.insert("chapter_title", filename);
+    vars.insert("chapter_text", content);
+    vars.insert("bible", bible);
 
-Flag ONLY clear violations. Do NOT flag:
-- Internal monologue that reveals character voice
-- Montage/summary passages that compress time intentionally
-- Metaphors, similes, or sensory comparisons
-- A character's self-aware observations in close POV
-- Stylistic choices that serve pacing or rhythm
-
-For each violation return exactly:
-{"telling_text":"<exact quote, max 15 words>","context":"<1-2 surrounding sentences>","why":"<one sentence>","severity":"minor|moderate|major"}
-
-Rules:
-- severity "major" = undermines a key emotional beat
-- severity "moderate" = weakens the scene noticeably
-- severity "minor" = could be tighter but doesn't hurt much
-- Maximum 8 per chapter. Only flag what genuinely weakens the prose.
-- Return [] if the chapter is clean.
-- Do NOT include reasoning, preamble, or markdown. ONLY the JSON array."#;
-
-    let user = format!("Chapter: {}\n\n---\n\n{}", filename, content);
-
-    let raw = call_llm_json(provider, api_key, model, system, &user, 4000).await?;
+    let raw = prompts::execute_prompt(db, "sdt_check", provider, api_key, model, vars).await?;
 
     let clean = raw.trim()
         .trim_start_matches("```json").trim_start_matches("```")
@@ -236,6 +234,8 @@ pub struct SuggestSdtFixRequest {
     pub context:       String,
     pub why:           String,
     pub chapter_title: String,
+    #[serde(default)]
+    pub bible_path:    String,
 }
 
 #[derive(serde::Serialize)]
@@ -246,26 +246,22 @@ pub struct SuggestSdtFixResult {
 }
 
 #[tauri::command]
-pub async fn suggest_sdt_fix(request: SuggestSdtFixRequest) -> SuggestSdtFixResult {
-    use crate::commands::call_llm;
+pub async fn suggest_sdt_fix(app: AppHandle, request: SuggestSdtFixRequest) -> SuggestSdtFixResult {
+    use std::collections::HashMap;
 
-    let system = r#"You are a fiction editor helping an author rewrite a "telling" passage to "show" instead. You will be given:
-- The passage that tells instead of shows
-- Surrounding context
-- Why it's considered telling
+    let database = app.state::<db::Db>();
+    let bible = crate::prompts::load_bible(&request.bible_path);
 
-Provide 2-3 alternative rewrites that SHOW instead of TELL. For each:
-1. Give the revised prose (ready to paste — match the author's voice and tense)
-2. One sentence explaining the technique used (body language, sensory detail, action, dialogue, etc.)
+    let mut vars = HashMap::new();
+    vars.insert("chapter_title", request.chapter_title.as_str());
+    vars.insert("telling_text", request.telling_text.as_str());
+    vars.insert("context", request.context.as_str());
+    vars.insert("why", request.why.as_str());
+    vars.insert("bible", bible.as_str());
 
-Keep rewrites concise — replace only the telling passage, not the surrounding context. Maintain the author's style and point of view."#;
-
-    let user = format!(
-        "Chapter: {}\n\nTelling passage: \"{}\"\n\nContext: \"{}\"\n\nWhy it's telling: {}",
-        request.chapter_title, request.telling_text, request.context, request.why
-    );
-
-    match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 1500).await {
+    match crate::prompts::execute_prompt(
+        &database, "sdt_suggest", &request.provider, &request.api_key, &request.model, vars,
+    ).await {
         Ok(suggestions) => SuggestSdtFixResult { success: true, suggestions, error: String::new() },
         Err(e) => SuggestSdtFixResult { success: false, suggestions: String::new(), error: e },
     }

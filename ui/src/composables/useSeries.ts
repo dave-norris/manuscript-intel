@@ -20,8 +20,8 @@ async function createSeries(name: string, books: { story_folder: string; story_n
   return result;
 }
 
-async function updateSeries(id: number, name: string, books: { story_folder: string; story_name: string; book_order: number }[]): Promise<SeriesResult> {
-  const result = await invoke<SeriesResult>('update_series', { request: { id, name, books } });
+async function updateSeries(id: number, name: string, books: { story_folder: string; story_name: string; book_order: number }[], biblePath: string = ''): Promise<SeriesResult> {
+  const result = await invoke<SeriesResult>('update_series', { request: { id, name, books, bible_path: biblePath } });
   if (result.success) seriesList.value = result.series;
   return result;
 }

@@ -9,6 +9,7 @@ mod dataforseo;
 mod db;
 mod genre_taxonomy;
 mod models;
+mod prompts;
 mod series;
 mod stories;
 mod winningcat;

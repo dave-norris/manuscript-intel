@@ -9,7 +9,7 @@ const storiesCtx = inject<{
   activeStoryId: Ref<string | null>;
   setActiveStory: (id: string | null) => void;
   addStory: (name: string, folder: string) => Promise<StoriesResult>;
-  updateStory: (id: string, name: string, folder: string) => Promise<StoriesResult>;
+  updateStory: (id: string, name: string, folder: string, biblePath: string) => Promise<StoriesResult>;
   deleteStory: (id: string) => Promise<StoriesResult>;
 }>('stories')!;
 
@@ -21,6 +21,7 @@ const props = defineProps<{
 
 const name = ref('');
 const folder = ref('');
+const biblePath = ref('');
 const error = ref('');
 const isEditing = ref(false);
 const editId = ref('');
@@ -30,11 +31,13 @@ watch(() => props.story, (s) => {
   if (s) {
     name.value = s.name;
     folder.value = s.folder;
+    biblePath.value = s.bible_path || '';
     editId.value = s.id;
     isEditing.value = true;
   } else {
     name.value = '';
     folder.value = '';
+    biblePath.value = '';
     editId.value = '';
     isEditing.value = false;
   }
@@ -62,7 +65,7 @@ async function onSave(): Promise<void> {
 
   let result: StoriesResult;
   if (isEditing.value && editId.value) {
-    result = await storiesCtx.updateStory(editId.value, trimName, trimFolder);
+    result = await storiesCtx.updateStory(editId.value, trimName, trimFolder, biblePath.value.trim());
   } else {
     result = await storiesCtx.addStory(trimName, trimFolder);
   }
@@ -112,6 +115,11 @@ async function onDelete(): Promise<void> {
       </div>
     </div>
 
+    <div class="form-group">
+      <label>Story Bible <span class="form-hint">(optional — markdown file with canon facts, character details, world rules)</span></label>
+      <input v-model="biblePath" type="text" placeholder="/path/to/bible.md" />
+    </div>
+
     <div v-if="error" class="form-error">{{ error }}</div>
 
     <div class="form-actions">
@@ -149,6 +157,13 @@ async function onDelete(): Promise<void> {
   text-transform: uppercase;
   letter-spacing: 0.06em;
   margin-bottom: 6px;
+}
+
+.form-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-size: 11px;
 }
 
 .form-group input {

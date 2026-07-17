@@ -23,7 +23,6 @@ use tauri::{AppHandle, Manager};
 
 use super::{emit, err, GenreResult};
 use super::chapters::{collect_chapters, extract_title, truncate_words};
-use crate::commands::{call_llm, call_llm_json};
 use crate::db;
 
 // ── Requests ─────────────────────────────────────────────────────────────────
@@ -34,6 +33,8 @@ pub struct ContinuityRequest {
     pub provider: String,
     pub api_key:  String,
     pub model:    String,
+    #[serde(default)]
+    pub bible_path: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -42,6 +43,8 @@ pub struct SeriesContinuityRequest {
     pub provider:  String,
     pub api_key:   String,
     pub model:     String,
+    #[serde(default)]
+    pub bible_path: String,
 }
 
 // ── Internal working types ──────────────────────────────────────────────────
@@ -85,8 +88,9 @@ pub async fn check_continuity_for_story(app: AppHandle, request: ContinuityReque
 
     let database = app.state::<db::Db>();
     let story_name = folder.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| request.folder.clone());
+    let bible = crate::prompts::load_bible(&request.bible_path);
 
-    let book = match extract_book_facts(&app, &request.folder, &story_name, &request.provider, &request.api_key, &request.model).await {
+    let book = match extract_book_facts(&app, &database, &request.folder, &story_name, &request.provider, &request.api_key, &request.model, &bible).await {
         Ok(b) => b,
         Err(e) => return err(&e),
     };
@@ -94,7 +98,7 @@ pub async fn check_continuity_for_story(app: AppHandle, request: ContinuityReque
     { let conn = database.0.lock().unwrap(); let _ = db::replace_continuity_facts(&conn, &request.folder, &flatten_facts(&book)); }
 
     emit(&app, "Comparing facts across chapters for contradictions...");
-    let findings = match judge_contradictions(&app, &request.provider, &request.api_key, &request.model, &[book]).await {
+    let findings = match judge_contradictions(&app, &database, &request.provider, &request.api_key, &request.model, &[book], &bible).await {
         Ok(f) => f,
         Err(e) => return err(&e),
     };
@@ -116,6 +120,7 @@ pub async fn check_continuity_for_story(app: AppHandle, request: ContinuityReque
 pub async fn check_continuity_for_series(app: AppHandle, request: SeriesContinuityRequest) -> GenreResult {
     crate::reset_cancel();
     let database = app.state::<db::Db>();
+    let bible = crate::prompts::load_bible(&request.bible_path);
 
     let books_meta = { let conn = database.0.lock().unwrap(); db::list_series_books(&conn, request.series_id) };
     let books_meta = match books_meta {
@@ -129,7 +134,7 @@ pub async fn check_continuity_for_series(app: AppHandle, request: SeriesContinui
     let mut books: Vec<Book> = Vec::new();
     for meta in &books_meta {
         emit(&app, &format!("— {} —", meta.story_name));
-        let book = match extract_book_facts(&app, &meta.story_folder, &meta.story_name, &request.provider, &request.api_key, &request.model).await {
+        let book = match extract_book_facts(&app, &database, &meta.story_folder, &meta.story_name, &request.provider, &request.api_key, &request.model, &bible).await {
             Ok(b) => b,
             Err(e) => { emit(&app, &format!("  ⚠ Skipping {}: {}", meta.story_name, e)); continue; }
         };
@@ -141,7 +146,7 @@ pub async fn check_continuity_for_series(app: AppHandle, request: SeriesContinui
     if books.is_empty() { return err("Could not extract facts from any book in this series."); }
 
     emit(&app, "Comparing facts across the whole series for contradictions...");
-    let findings = match judge_contradictions(&app, &request.provider, &request.api_key, &request.model, &books).await {
+    let findings = match judge_contradictions(&app, &database, &request.provider, &request.api_key, &request.model, &books, &bible).await {
         Ok(f) => f,
         Err(e) => return err(&e),
     };
@@ -165,11 +170,13 @@ pub async fn check_continuity_for_series(app: AppHandle, request: SeriesContinui
 
 async fn extract_book_facts(
     app: &AppHandle,
+    db: &crate::db::Db,
     story_folder: &str,
     story_name: &str,
     provider: &str,
     api_key: &str,
     model: &str,
+    bible: &str,
 ) -> Result<Book, String> {
     let folder = PathBuf::from(story_folder);
     if !folder.exists() { return Err("Folder does not exist.".to_string()); }
@@ -189,7 +196,7 @@ async fn extract_book_facts(
         if raw.trim().is_empty() { continue; }
         let title = extract_title(&raw).unwrap_or_else(|| fname.clone());
 
-        let facts = match extract_facts_for_chapter(provider, api_key, model, &fname, &truncate_words(&raw, 6000)).await {
+        let facts = match extract_facts_for_chapter(db, provider, api_key, model, &fname, &truncate_words(&raw, 6000), bible).await {
             Ok(f) => f,
             Err(e) => { emit(app, &format!("    ⚠ {}: {}", fname, e)); Vec::new() }
         };
@@ -204,36 +211,22 @@ async fn extract_book_facts(
 }
 
 async fn extract_facts_for_chapter(
+    db: &crate::db::Db,
     provider: &str,
     api_key: &str,
     model: &str,
     filename: &str,
     content: &str,
+    bible: &str,
 ) -> Result<Vec<AiFact>, String> {
-    let system = r#"You are a continuity editor for fiction. Extract only facts likely to matter for continuity — details a careful reader could later catch a contradiction on if they changed without explanation.
+    use std::collections::HashMap;
 
-Cover, when present:
-- Character physical traits (eye color, hair color, height, scars, age)
-- Character relationships and background (who is whose sibling, hometown, stated occupation)
-- Established locations (descriptions, geography, distances between places)
-- Timeline markers (dates, seasons, "X years ago", a character's stated age, day of week)
-- Named objects with a stated property (a specific weapon, a family heirloom, a vehicle)
-- Firmly established plot facts (a death, an injury, a promise made, a secret revealed)
+    let mut vars = HashMap::new();
+    vars.insert("chapter_title", filename);
+    vars.insert("chapter_text", content);
+    vars.insert("bible", bible);
 
-Do NOT include transient action-beat description, generic scenery, subjective narration, or anything unlikely to be referenced again.
-
-Use the character or place's fullest, most formal name as it is introduced in the text (e.g. "Sarah Chen" rather than just "Sarah" or "the detective"), so the same entity can be matched consistently across chapters.
-
-Return ONLY a JSON array, no markdown, no preamble. Maximum 15 items. Be terse.
-Each item exactly:
-{"entity": "<canonical name>", "entity_type": "character|place|object|timeline|other", "attribute": "<short_label>", "value": "<fact in under 10 words>", "snippet": "<verbatim quote, under 12 words>"}
-Keep values and snippets as short as possible. One fact per attribute per entity. No duplicates."#;
-
-    let raw = call_llm_json(
-        provider, api_key, model, system,
-        &format!("Chapter: {}\n\n---\n\n{}", filename, content),
-        4000,
-    ).await?;
+    let raw = crate::prompts::execute_prompt(db, "continuity_extract", provider, api_key, model, vars).await?;
 
     let clean = raw.trim()
         .trim_start_matches("```json").trim_start_matches("```")
@@ -352,10 +345,12 @@ struct AiVerdict {
 
 async fn judge_contradictions(
     app: &AppHandle,
+    database: &crate::db::Db,
     provider: &str,
     api_key: &str,
     model: &str,
     books: &[Book],
+    bible: &str,
 ) -> Result<Vec<db::ContinuityFindingRow>, String> {
     let is_series = books.len() > 1;
 
@@ -436,7 +431,7 @@ async fn judge_contradictions(
     const CHUNK: usize = 15;
     for (chunk_idx, chunk) in candidates.chunks(CHUNK).enumerate() {
         emit(app, &format!("  Judging batch {}/{}...", chunk_idx + 1, candidates.len().div_ceil(CHUNK)));
-        match judge_batch(provider, api_key, model, chunk).await {
+        match judge_batch(database, provider, api_key, model, chunk, bible).await {
             Ok(verdicts) => {
                 for v in verdicts {
                     if v.id >= chunk.len() { continue; }
@@ -465,10 +460,12 @@ async fn judge_contradictions(
 }
 
 async fn judge_batch(
+    database: &crate::db::Db,
     provider: &str,
     api_key: &str,
     model: &str,
     groups: &[CandidateGroup],
+    bible: &str,
 ) -> Result<Vec<AiVerdict>, String> {
     let payload: Vec<serde_json::Value> = groups.iter().enumerate().map(|(i, g)| {
         serde_json::json!({
@@ -484,16 +481,13 @@ async fn judge_batch(
         })
     }).collect();
 
-    let system = r#"You are a meticulous continuity editor for fiction. For each candidate group below, the same named entity has more than one recorded value for the same attribute across chapters (possibly across different books in a series, in reading order).
+    let candidates_json = serde_json::to_string(&payload).unwrap_or_default();
 
-Judge whether each is a genuine continuity error a careful reader could catch, or an explainable/intentional change: aging over time, injury, disguise, dye job, unreliable narration, a later-revealed secret, or simply imprecise-but-compatible wording that isn't actually a contradiction (e.g. "green eyes" vs "emerald eyes" is NOT a contradiction).
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("bible", bible);
+    vars.insert("candidates", candidates_json.as_str());
 
-Return ONLY a JSON array, no markdown, no preamble. Include an item for every input id, even ones you judge as not a real issue:
-{"id": <input id>, "verdict": "contradiction" | "possible" | "likely_intentional", "confidence": <0-100>, "explanation": "<one or two sentences, name the specific conflicting values and where each appears>"}
-
-Reserve "contradiction" for cases you're confident a careful reader would notice and be bothered by. Use "possible" when it could go either way. Use "likely_intentional" for explainable changes or non-issues."#;
-
-    let raw = call_llm(provider, api_key, model, system, &serde_json::to_string(&payload).unwrap_or_default(), 2500).await?;
+    let raw = crate::prompts::execute_prompt(database, "continuity_judge", provider, api_key, model, vars).await?;
     let clean = raw.trim()
         .trim_start_matches("```json").trim_start_matches("```")
         .trim_end_matches("```").trim();
@@ -557,11 +551,13 @@ fn render_findings_json(findings: &[db::ContinuityFindingRow], scope: &str, scop
 pub struct SuggestFixRequest {
     pub provider:   String,
     pub api_key:    String,
-    pub model:      String,  // The prose model (higher quality)
+    pub model:      String,
     pub entity:     String,
     pub attribute:  String,
     pub explanation: String,
     pub occurrences: Vec<SuggestFixOccurrence>,
+    #[serde(default)]
+    pub bible_path: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -581,18 +577,11 @@ pub struct SuggestFixResult {
 }
 
 #[tauri::command]
-pub async fn suggest_continuity_fix(request: SuggestFixRequest) -> SuggestFixResult {
-    let system = r#"You are a fiction editor helping an author fix a continuity error in their manuscript. You will be given:
-- The entity and attribute that has contradicting values
-- Where each value appears (which chapter, with a snippet of surrounding text)
-- A brief explanation of the contradiction
+pub async fn suggest_continuity_fix(app: AppHandle, request: SuggestFixRequest) -> SuggestFixResult {
+    use std::collections::HashMap;
 
-Provide 2-3 concrete, specific suggestions for how to fix this. For each suggestion:
-1. Say which passage to change (cite the chapter and file)
-2. Give the exact revised wording (not vague — actual prose the author can paste)
-3. Briefly explain why this fix works
-
-Keep the author's voice and style. Be concise but specific. Write revised prose that sounds natural, not robotic."#;
+    let database = app.state::<db::Db>();
+    let bible = crate::prompts::load_bible(&request.bible_path);
 
     let mut occurrences_text = String::new();
     for occ in &request.occurrences {
@@ -602,12 +591,16 @@ Keep the author's voice and style. Be concise but specific. Write revised prose 
         ));
     }
 
-    let user = format!(
-        "Entity: {}\nAttribute: {}\nContradiction: {}\n\nOccurrences:{}",
-        request.entity, request.attribute, request.explanation, occurrences_text
-    );
+    let mut vars = HashMap::new();
+    vars.insert("entity", request.entity.as_str());
+    vars.insert("attribute", request.attribute.as_str());
+    vars.insert("explanation", request.explanation.as_str());
+    vars.insert("occurrences", occurrences_text.as_str());
+    vars.insert("bible", bible.as_str());
 
-    match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 2000).await {
+    match crate::prompts::execute_prompt(
+        &database, "continuity_suggest", &request.provider, &request.api_key, &request.model, vars,
+    ).await {
         Ok(suggestions) => SuggestFixResult { success: true, suggestions, error: String::new() },
         Err(e) => SuggestFixResult { success: false, suggestions: String::new(), error: e },
     }

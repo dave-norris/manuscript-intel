@@ -33,6 +33,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::analyze_csv,
             commands::list_models,
+            commands::read_chapter,
+            commands::write_manuscript_fix,
             analysis::chapters::generate_summaries,
             analysis::genres::analyze_genre,
             analysis::genres::rank_genres_for_story,

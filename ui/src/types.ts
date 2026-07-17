@@ -114,6 +114,20 @@ export interface SidebarReportGroup {
   versions: SidebarReportVersion[];
 }
 
+export interface Finding {
+  filePath: string;
+  chapterTitle: string;
+  tellingText: string;
+  context: string;
+  why: string;
+  severity: string;
+  reportType: 'show_dont_tell' | 'continuity';
+  entity?: string;
+  attribute?: string;
+  explanation?: string;
+  occurrences?: { story_name: string; file: string; chapter_title: string; value: string; snippet: string }[];
+}
+
 export interface WinningCatImportResult {
   success: boolean;
   imported: number;

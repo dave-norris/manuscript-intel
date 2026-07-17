@@ -355,3 +355,35 @@ fn fetch_claude_models() -> ModelsResult {
     ];
     ModelsResult { success: true, models, error: String::new() }
 }
+
+// ── Manuscript file operations ────────────────────────────────────────────────
+
+/// Read a chapter file from disk. Returns the full text content.
+#[tauri::command]
+pub async fn read_chapter(file_path: String) -> Result<String, String> {
+    tokio::fs::read_to_string(&file_path)
+        .await
+        .map_err(|e| format!("Could not read {}: {}", file_path, e))
+}
+
+/// Apply a text fix to a manuscript file on disk.
+/// Finds `old_text` in the file and replaces it with `new_text`.
+/// Returns the updated full content so the UI can refresh.
+#[tauri::command]
+pub async fn write_manuscript_fix(file_path: String, old_text: String, new_text: String) -> Result<String, String> {
+    let content = tokio::fs::read_to_string(&file_path)
+        .await
+        .map_err(|e| format!("Could not read {}: {}", file_path, e))?;
+
+    if !content.contains(&old_text) {
+        return Err("Could not find the original text in the file. It may have already been changed.".to_string());
+    }
+
+    let updated = content.replacen(&old_text, &new_text, 1);
+
+    tokio::fs::write(&file_path, &updated)
+        .await
+        .map_err(|e| format!("Could not write {}: {}", file_path, e))?;
+
+    Ok(updated)
+}

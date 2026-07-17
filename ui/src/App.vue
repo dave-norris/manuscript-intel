@@ -15,6 +15,8 @@ import ReportsViewer from './components/ReportsViewer.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
 import StoryForm from './components/StoryForm.vue';
 import SeriesForm from './components/SeriesForm.vue';
+import ManuscriptViewer from './components/ManuscriptViewer.vue';
+import type { Finding } from './types';
 
 // ── Composables ───────────────────────────────────────────────────────────────
 
@@ -34,7 +36,7 @@ provide('series', seriesCtx);
 
 // ── Panel state ───────────────────────────────────────────────────────────────
 
-type Panel = 'analyzer' | 'reports' | 'settings' | 'story-form' | 'series';
+type Panel = 'analyzer' | 'reports' | 'settings' | 'story-form' | 'series' | 'manuscript';
 const activePanel = ref<Panel>('analyzer');
 const prevPanel = ref<Panel>('analyzer');
 
@@ -50,6 +52,19 @@ function showPanel(name: Panel): void {
 }
 
 provide('showPanel', showPanel);
+
+// ── Manuscript editor state ───────────────────────────────────────────────────
+
+const manuscriptFindings = ref<Finding[]>([]);
+const manuscriptStartIndex = ref(0);
+
+function openManuscriptEditor(findings: Finding[], startIndex: number): void {
+  manuscriptFindings.value = findings;
+  manuscriptStartIndex.value = startIndex;
+  activePanel.value = 'manuscript';
+}
+
+provide('openManuscriptEditor', openManuscriptEditor);
 
 // ── Story form state ──────────────────────────────────────────────────────────
 
@@ -130,6 +145,13 @@ onMounted(() => {
       <SettingsPanel v-if="activePanel === 'settings'" />
       <StoryForm v-if="activePanel === 'story-form'" :story="editingStory" />
       <SeriesForm v-if="activePanel === 'series'" :series="editingSeries" />
+      <ManuscriptViewer
+        v-if="activePanel === 'manuscript'"
+        :findings="manuscriptFindings"
+        :start-index="manuscriptStartIndex"
+        :story-folder="storiesCtx.activeFolder.value"
+        @close="showPanel('reports')"
+      />
     </main>
   </div>
 </template>

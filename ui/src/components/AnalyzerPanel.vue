@@ -18,7 +18,10 @@ const settings = useSettings();
 // ── Report types from DB ──────────────────────────────────────────────────────
 
 const { reportTypes, loadReportTypes, getDependants } = useReportTypes();
-onMounted(() => loadReportTypes());
+onMounted(() => {
+  loadReportTypes();
+  fetchCostEstimates();
+});
 
 // ── Local state ───────────────────────────────────────────────────────────────
 
@@ -100,17 +103,12 @@ watch(() => platformCtx.platform.value, () => {
 
 // ── Cost estimation ───────────────────────────────────────────────────────────
 
-interface CostEstimate {
-  report_id: string;
-  estimated_cost: number;
-}
-
-const costEstimates = ref<Map<string, number>>(new Map());
+const costEstimates = ref<Record<string, number>>({});
 
 const totalEstimatedCost = computed(() => {
   let total = 0;
   for (const id of selected.value) {
-    total += costEstimates.value.get(id) || 0;
+    total += costEstimates.value[id] || 0;
   }
   return total;
 });
@@ -123,14 +121,13 @@ function formatCost(cost: number): string {
 
 async function fetchCostEstimates(): Promise<void> {
   const folder = storiesCtx.activeFolder.value;
-  if (!folder || visibleReports.value.length === 0) {
-    costEstimates.value = new Map();
+  if (!folder || visibleReports.value.length === 0 || settings.models.value.length === 0) {
+    costEstimates.value = {};
     return;
   }
 
   // Build model prices for each visible report
   const modelPrices = visibleReports.value.map(r => {
-    // Determine which model is assigned to this report function
     const fnKey = reportToModelFn(r.id);
     const modelId = settings.modelFor(fnKey);
     const modelInfo = settings.models.value.find(m => m.id === modelId);
@@ -142,15 +139,15 @@ async function fetchCostEstimates(): Promise<void> {
   });
 
   try {
-    const result = await invoke<{ success: boolean; estimates: CostEstimate[] }>('estimate_report_costs', {
+    const result = await invoke<{ success: boolean; estimates: { report_id: string; estimated_cost: number }[] }>('estimate_report_costs', {
       request: { folder, model_prices: modelPrices },
     });
     if (result.success) {
-      const map = new Map<string, number>();
+      const obj: Record<string, number> = {};
       for (const est of result.estimates) {
-        map.set(est.report_id, est.estimated_cost);
+        obj[est.report_id] = est.estimated_cost;
       }
-      costEstimates.value = map;
+      costEstimates.value = obj;
     }
   } catch (e) {
     console.error('estimate_report_costs:', e);
@@ -175,9 +172,10 @@ function reportToModelFn(reportId: string): 'default' | 'summaries' | 'genre' | 
   }
 }
 
-// Refresh estimates when folder changes or models are loaded
+// Refresh estimates when folder changes, models are loaded, or report types load
 watch(() => storiesCtx.activeFolder.value, () => fetchCostEstimates());
 watch(() => settings.models.value, () => fetchCostEstimates());
+watch(() => reportTypes.value, () => fetchCostEstimates());
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
@@ -304,7 +302,7 @@ function onStop(): void {
           <div class="report-card-desc">{{ report.description }}</div>
           <div class="report-card-meta">
             <span v-if="report.exists" class="report-card-exists">✓ exists</span>
-            <span v-if="costEstimates.get(report.id)" class="report-card-cost">{{ formatCost(costEstimates.get(report.id) || 0) }}</span>
+            <span v-if="costEstimates[report.id] != null" class="report-card-cost">{{ formatCost(costEstimates[report.id]) }}</span>
           </div>
         </div>
       </div>

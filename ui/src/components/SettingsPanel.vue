@@ -28,7 +28,41 @@ const sortedModels = computed(() => {
     const priceB = b.input_price ?? Infinity;
     return priceA - priceB;
   });
-});const winningcatStatus = ref('');
+});
+
+// ── Model fitness indicators ──────────────────────────────────────────────────
+
+type Tier = 'basic' | 'capable' | 'strong';
+
+function modelTier(m: ModelInfo): Tier {
+  const price = m.input_price ?? 0;
+  if (price <= 0.001) return 'basic';
+  if (price <= 0.01) return 'capable';
+  return 'strong';
+}
+
+const TIER_RANK: Record<Tier, number> = { basic: 0, capable: 1, strong: 2 };
+
+// Minimum tier needed for each function
+const MIN_TIER: Record<string, Tier> = {
+  summaries: 'basic',
+  genre: 'capable',
+  keywords: 'basic',
+  continuity: 'capable',
+  showDontTell: 'capable',
+  prose: 'strong',
+};
+
+function modelFitLabel(m: ModelInfo, fnKey: string): string {
+  const tier = modelTier(m);
+  const min = MIN_TIER[fnKey] || 'basic';
+  if (TIER_RANK[tier] >= TIER_RANK[min]) return ' ✓';
+  return ' ⚠';
+}
+
+function fnOptionLabel(m: ModelInfo, fnKey: string): string {
+  return m.id + modelFitLabel(m, fnKey);
+}const winningcatStatus = ref('');
 const staleStatus = ref('');
 const showStaleRow = ref(false);
 const importDisabled = ref(false);
@@ -178,7 +212,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.summaries">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ m.id }}</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'summaries') }}</option>
           </select>
         </div>
 
@@ -189,7 +223,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.genre">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ m.id }}</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'genre') }}</option>
           </select>
         </div>
 
@@ -200,7 +234,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.keywords">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ m.id }}</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'keywords') }}</option>
           </select>
         </div>
 
@@ -211,7 +245,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.continuity">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ m.id }}</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'continuity') }}</option>
           </select>
         </div>
 
@@ -222,7 +256,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.showDontTell">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ m.id }}</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'showDontTell') }}</option>
           </select>
         </div>
 
@@ -233,7 +267,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.prose">
             <option value="">(Use default)</option>
-            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ m.id }}</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'prose') }}</option>
           </select>
         </div>
       </div>

@@ -39,7 +39,15 @@ const modelAssignments = ref<ModelAssignments>(loadAssignments());
 const canopyApiKey = ref(localStorage.getItem('canopyApiKey') || '');
 const dataforseoLogin = ref(localStorage.getItem('dataforseoLogin') || '');
 const dataforseoPassword = ref(localStorage.getItem('dataforseoPassword') || '');
-const models = ref<ModelInfo[]>([]);
+const models = ref<ModelInfo[]>(loadModelsFromStorage());
+
+function loadModelsFromStorage(): ModelInfo[] {
+  const stored = localStorage.getItem('cachedModels');
+  if (stored) {
+    try { return JSON.parse(stored); } catch { /* ignore */ }
+  }
+  return [];
+}
 
 // ── Convenience getters ───────────────────────────────────────────────────────
 
@@ -65,6 +73,7 @@ async function fetchModels(): Promise<{ success: boolean; error: string }> {
     });
     if (result.success && result.models.length > 0) {
       models.value = result.models;
+      localStorage.setItem('cachedModels', JSON.stringify(result.models));
       return { success: true, error: '' };
     }
     return { success: false, error: result.error || 'No models returned.' };

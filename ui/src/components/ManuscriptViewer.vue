@@ -62,6 +62,7 @@ async function onSuggestFix(): Promise<void> {
           context: finding.value.context,
           why: finding.value.why,
           chapter_title: finding.value.chapterTitle,
+          folder: props.storyFolder,
         }
       });
       if (result.success) suggestion.value = result.suggestions;
@@ -76,6 +77,7 @@ async function onSuggestFix(): Promise<void> {
           attribute: finding.value.attribute || '',
           explanation: finding.value.explanation || '',
           occurrences: finding.value.occurrences || [],
+          folder: props.storyFolder,
         }
       });
       if (result.success) suggestion.value = result.suggestions;

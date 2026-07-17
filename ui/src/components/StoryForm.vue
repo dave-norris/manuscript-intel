@@ -116,8 +116,8 @@ async function onDelete(): Promise<void> {
     </div>
 
     <div class="form-group">
-      <label>Story Bible <span class="form-hint">(optional — markdown file with canon facts, character details, world rules)</span></label>
-      <input v-model="biblePath" type="text" placeholder="/path/to/bible.md" />
+      <label>Story Bible <span class="form-hint">(override — leave blank to auto-discover from Bible/ or Characters/ folders, or bible.md in your manuscript folder)</span></label>
+      <input v-model="biblePath" type="text" placeholder="Auto-detected if present in story folder" />
     </div>
 
     <div v-if="error" class="form-error">{{ error }}</div>

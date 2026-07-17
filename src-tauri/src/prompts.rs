@@ -43,14 +43,110 @@ pub fn load_template(conn: &Connection, template_id: &str) -> Result<PromptTempl
 
 // ── Bible loading ─────────────────────────────────────────────────────────────
 
-/// Load bible text from a file path. Returns empty string if path is empty or file doesn't exist.
+/// Auto-discover bible content from a story folder using conventions:
+///   1. Bible/ or bible/ subfolder — all .md files concatenated
+///   2. Characters/ or characters/ subfolder — all .md files concatenated
+///   3. bible.md or story-bible.md in the folder root
+/// Returns the combined text, or empty string if nothing found.
+pub fn discover_bible(story_folder: &str) -> String {
+    let root = Path::new(story_folder);
+    if !root.exists() { return String::new(); }
+
+    let mut parts: Vec<String> = Vec::new();
+
+    // Check for Bible/ or bible/ subfolder
+    for name in &["Bible", "bible"] {
+        let dir = root.join(name);
+        if dir.is_dir() {
+            let content = read_md_folder(&dir);
+            if !content.is_empty() {
+                parts.push(format!("## Story Bible\n\n{}", content));
+            }
+            break;
+        }
+    }
+
+    // Check for Characters/ or characters/ subfolder
+    for name in &["Characters", "characters"] {
+        let dir = root.join(name);
+        if dir.is_dir() {
+            let content = read_md_folder(&dir);
+            if !content.is_empty() {
+                parts.push(format!("## Characters\n\n{}", content));
+            }
+            break;
+        }
+    }
+
+    // Check for single bible file in root
+    if parts.is_empty() {
+        for name in &["bible.md", "story-bible.md", "Bible.md", "Story-Bible.md"] {
+            let file = root.join(name);
+            if file.is_file() {
+                if let Ok(text) = std::fs::read_to_string(&file) {
+                    parts.push(text);
+                }
+                break;
+            }
+        }
+    }
+
+    let combined = parts.join("\n\n---\n\n");
+
+    // Truncate to 8000 words max
+    let words: Vec<&str> = combined.split_whitespace().collect();
+    if words.len() > 8000 {
+        words[..8000].join(" ") + "\n[Bible truncated]"
+    } else {
+        combined
+    }
+}
+
+/// Read all .md files in a folder, sorted by name, concatenated with separators.
+fn read_md_folder(dir: &Path) -> String {
+    let Ok(entries) = std::fs::read_dir(dir) else { return String::new() };
+
+    let mut files: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .filter(|e| {
+            let p = e.path();
+            p.is_file() && p.extension().map(|ext| ext == "md").unwrap_or(false)
+        })
+        .map(|e| e.path())
+        .collect();
+
+    files.sort();
+
+    let mut parts = Vec::new();
+    for file in files {
+        if let Ok(text) = std::fs::read_to_string(&file) {
+            if !text.trim().is_empty() {
+                parts.push(text);
+            }
+        }
+    }
+    parts.join("\n\n")
+}
+
+/// Load bible for a story: try auto-discovery first, fall back to explicit path.
+pub fn load_bible_for_story(story_folder: &str, explicit_bible_path: &str) -> String {
+    // Try auto-discovery from folder structure
+    let discovered = discover_bible(story_folder);
+    if !discovered.is_empty() {
+        return discovered;
+    }
+
+    // Fall back to explicit path
+    load_bible(explicit_bible_path)
+}
+
+/// Load bible text from a single explicit file path. Returns empty string if not found.
 pub fn load_bible(bible_path: &str) -> String {
     if bible_path.is_empty() { return String::new(); }
     let path = Path::new(bible_path);
     if !path.exists() { return String::new(); }
     match std::fs::read_to_string(path) {
         Ok(text) => {
-            // Truncate to a reasonable size for context (8000 words max)
             let words: Vec<&str> = text.split_whitespace().collect();
             if words.len() > 8000 {
                 words[..8000].join(" ") + "\n[Bible truncated]"

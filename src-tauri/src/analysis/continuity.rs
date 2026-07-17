@@ -88,7 +88,7 @@ pub async fn check_continuity_for_story(app: AppHandle, request: ContinuityReque
 
     let database = app.state::<db::Db>();
     let story_name = folder.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| request.folder.clone());
-    let bible = crate::prompts::load_bible(&request.bible_path);
+    let bible = crate::prompts::load_bible_for_story(&request.folder, &request.bible_path);
 
     let book = match extract_book_facts(&app, &database, &request.folder, &story_name, &request.provider, &request.api_key, &request.model, &bible).await {
         Ok(b) => b,
@@ -120,13 +120,20 @@ pub async fn check_continuity_for_story(app: AppHandle, request: ContinuityReque
 pub async fn check_continuity_for_series(app: AppHandle, request: SeriesContinuityRequest) -> GenreResult {
     crate::reset_cancel();
     let database = app.state::<db::Db>();
-    let bible = crate::prompts::load_bible(&request.bible_path);
 
     let books_meta = { let conn = database.0.lock().unwrap(); db::list_series_books(&conn, request.series_id) };
     let books_meta = match books_meta {
         Ok(b) if !b.is_empty() => b,
         Ok(_) => return err("This series has no books yet. Add stories to it first."),
         Err(e) => return err(&e),
+    };
+
+    // For series bible: try explicit path first, then discover from first book's folder
+    let bible = if !request.bible_path.is_empty() {
+        crate::prompts::load_bible(&request.bible_path)
+    } else {
+        let first_folder = &books_meta[0].story_folder;
+        crate::prompts::discover_bible(first_folder)
     };
 
     emit(&app, &format!("Series has {} book(s) in reading order.", books_meta.len()));
@@ -557,6 +564,8 @@ pub struct SuggestFixRequest {
     pub explanation: String,
     pub occurrences: Vec<SuggestFixOccurrence>,
     #[serde(default)]
+    pub folder:     String,
+    #[serde(default)]
     pub bible_path: String,
 }
 
@@ -581,7 +590,7 @@ pub async fn suggest_continuity_fix(app: AppHandle, request: SuggestFixRequest) 
     use std::collections::HashMap;
 
     let database = app.state::<db::Db>();
-    let bible = crate::prompts::load_bible(&request.bible_path);
+    let bible = crate::prompts::load_bible_for_story(&request.folder, &request.bible_path);
 
     let mut occurrences_text = String::new();
     for occ in &request.occurrences {

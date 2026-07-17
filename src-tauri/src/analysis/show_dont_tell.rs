@@ -65,7 +65,7 @@ async fn check_inner(app: AppHandle, request: ShowDontTellRequest) -> GenreResul
     let chapters = collect_chapters(&folder);
     if chapters.is_empty() { return err("No .md chapter files found."); }
 
-    let bible = crate::prompts::load_bible(&request.bible_path);
+    let bible = crate::prompts::load_bible_for_story(&request.folder, &request.bible_path);
 
     emit(&app, &format!("Checking {} chapter(s) for show-don't-tell violations...", chapters.len()));
 
@@ -235,6 +235,8 @@ pub struct SuggestSdtFixRequest {
     pub why:           String,
     pub chapter_title: String,
     #[serde(default)]
+    pub folder:        String,
+    #[serde(default)]
     pub bible_path:    String,
 }
 
@@ -250,7 +252,7 @@ pub async fn suggest_sdt_fix(app: AppHandle, request: SuggestSdtFixRequest) -> S
     use std::collections::HashMap;
 
     let database = app.state::<db::Db>();
-    let bible = crate::prompts::load_bible(&request.bible_path);
+    let bible = crate::prompts::load_bible_for_story(&request.folder, &request.bible_path);
 
     let mut vars = HashMap::new();
     vars.insert("chapter_title", request.chapter_title.as_str());

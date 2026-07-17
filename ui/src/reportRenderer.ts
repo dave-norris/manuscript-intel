@@ -867,10 +867,22 @@ function renderShowDontTell(data: any): string {
       const color = severityColor[v.severity] || '#7a7a7a';
       html += `<div class="sdt-violation">`;
       html += `<div class="sdt-severity" style="color:${color}">${esc(v.severity)} <a href="#" class="suggest-sdt-fix-link" data-chapter-index="${chIdx}" data-violation-index="${vIdx}">Suggest fix</a></div>`;
-      html += `<blockquote class="sdt-telling">${esc(v.telling_text)}</blockquote>`;
+      html += `<div class="sdt-passage">`;
       if (v.context) {
-        html += `<div class="sdt-context"><span class="muted">Context:</span> ${esc(v.context)}</div>`;
+        // Try to show context with the telling text highlighted in red inline
+        const ctx = v.context as string;
+        const tell = v.telling_text as string;
+        const idx = ctx.indexOf(tell);
+        if (idx >= 0) {
+          html += `${esc(ctx.substring(0, idx))}<span class="sdt-highlight">${esc(tell)}</span>${esc(ctx.substring(idx + tell.length))}`;
+        } else {
+          // Context doesn't contain the exact text — show separately
+          html += `${esc(ctx)} <span class="sdt-highlight">${esc(tell)}</span>`;
+        }
+      } else {
+        html += `<span class="sdt-highlight">${esc(v.telling_text)}</span>`;
       }
+      html += `</div>`;
       html += `<div class="sdt-why">${esc(v.why)}</div>`;
       html += `</div>`;
     });

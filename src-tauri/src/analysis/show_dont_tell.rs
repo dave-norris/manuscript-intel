@@ -77,7 +77,9 @@ async fn check_inner(app: AppHandle, request: ShowDontTellRequest) -> GenreResul
             Err(_) => continue,
         };
 
-        let filename = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let filename = path.strip_prefix(&folder)
+            .unwrap_or(path)
+            .to_string_lossy().to_string();
         let title = extract_title(&content).unwrap_or_else(|| filename.clone());
         let truncated = truncate_words(&content, 4000);
 

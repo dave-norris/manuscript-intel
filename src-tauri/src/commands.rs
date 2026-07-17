@@ -359,11 +359,51 @@ fn fetch_claude_models() -> ModelsResult {
 // ── Manuscript file operations ────────────────────────────────────────────────
 
 /// Read a chapter file from disk. Returns the full text content.
+/// If the exact path doesn't exist, searches recursively in the parent folder
+/// for a file with the same name (handles reports that stored only the filename).
 #[tauri::command]
 pub async fn read_chapter(file_path: String) -> Result<String, String> {
-    tokio::fs::read_to_string(&file_path)
-        .await
-        .map_err(|e| format!("Could not read {}: {}", file_path, e))
+    let path = std::path::PathBuf::from(&file_path);
+
+    // Try the exact path first
+    if path.exists() {
+        return tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|e| format!("Could not read {}: {}", file_path, e));
+    }
+
+    // If not found, search for the filename in parent directories
+    if let Some(filename) = path.file_name() {
+        if let Some(parent) = path.parent() {
+            // Walk up to find the story folder (try parent, then grandparent)
+            for ancestor in [parent, parent.parent().unwrap_or(parent)] {
+                if let Some(found) = find_file_recursive(ancestor, filename.to_str().unwrap_or("")) {
+                    return tokio::fs::read_to_string(&found)
+                        .await
+                        .map_err(|e| format!("Could not read {}: {}", found.display(), e));
+                }
+            }
+        }
+    }
+
+    Err(format!("Could not find {}", file_path))
+}
+
+fn find_file_recursive(dir: &std::path::Path, target_name: &str) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if name.starts_with('.') || name == "_analysis" { continue; }
+        if path.is_dir() {
+            if let Some(found) = find_file_recursive(&path, target_name) {
+                return Some(found);
+            }
+        } else if name == target_name {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Apply a text fix to a manuscript file on disk.
@@ -371,9 +411,23 @@ pub async fn read_chapter(file_path: String) -> Result<String, String> {
 /// Returns the updated full content so the UI can refresh.
 #[tauri::command]
 pub async fn write_manuscript_fix(file_path: String, old_text: String, new_text: String) -> Result<String, String> {
-    let content = tokio::fs::read_to_string(&file_path)
+    let path = std::path::PathBuf::from(&file_path);
+
+    // Resolve the actual path (handles old reports with just filename)
+    let real_path = if path.exists() {
+        path.clone()
+    } else if let (Some(filename), Some(parent)) = (path.file_name(), path.parent()) {
+        let name = filename.to_str().unwrap_or("");
+        [parent, parent.parent().unwrap_or(parent)].iter()
+            .find_map(|dir| find_file_recursive(dir, name))
+            .ok_or_else(|| format!("Could not find {}", file_path))?
+    } else {
+        return Err(format!("Could not find {}", file_path));
+    };
+
+    let content = tokio::fs::read_to_string(&real_path)
         .await
-        .map_err(|e| format!("Could not read {}: {}", file_path, e))?;
+        .map_err(|e| format!("Could not read {}: {}", real_path.display(), e))?;
 
     if !content.contains(&old_text) {
         return Err("Could not find the original text in the file. It may have already been changed.".to_string());
@@ -381,9 +435,94 @@ pub async fn write_manuscript_fix(file_path: String, old_text: String, new_text:
 
     let updated = content.replacen(&old_text, &new_text, 1);
 
-    tokio::fs::write(&file_path, &updated)
+    tokio::fs::write(&real_path, &updated)
         .await
-        .map_err(|e| format!("Could not write {}: {}", file_path, e))?;
+        .map_err(|e| format!("Could not write {}: {}", real_path.display(), e))?;
 
     Ok(updated)
+}
+
+// ── Manuscript file tree ──────────────────────────────────────────────────────
+
+#[derive(Serialize, Clone, Debug)]
+pub struct FileTreeEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub children: Vec<FileTreeEntry>,
+}
+
+/// Returns the manuscript folder tree: directories and .md files, sorted naturally.
+/// Skips hidden files/folders and _analysis directories.
+#[tauri::command]
+pub async fn list_manuscript_files(folder: String) -> Result<Vec<FileTreeEntry>, String> {
+    let root = std::path::PathBuf::from(&folder);
+    if !root.exists() {
+        return Err(format!("Folder does not exist: {}", folder));
+    }
+    Ok(build_file_tree(&root))
+}
+
+fn build_file_tree(dir: &std::path::Path) -> Vec<FileTreeEntry> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+
+    let mut dirs: Vec<FileTreeEntry> = Vec::new();
+    let mut files: Vec<FileTreeEntry> = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+        // Skip hidden and _analysis
+        if name.starts_with('.') || name == "_analysis" { continue; }
+
+        if path.is_dir() {
+            let children = build_file_tree(&path);
+            // Only include directories that contain .md files (directly or nested)
+            if !children.is_empty() {
+                dirs.push(FileTreeEntry {
+                    name,
+                    path: path.to_string_lossy().to_string(),
+                    is_dir: true,
+                    children,
+                });
+            }
+        } else if path.extension().map(|e| e == "md").unwrap_or(false) {
+            files.push(FileTreeEntry {
+                name,
+                path: path.to_string_lossy().to_string(),
+                is_dir: false,
+                children: Vec::new(),
+            });
+        }
+    }
+
+    // Natural sort both
+    dirs.sort_by(|a, b| natural_sort_cmp(&a.name, &b.name));
+    files.sort_by(|a, b| natural_sort_cmp(&a.name, &b.name));
+
+    // Directories first, then files
+    dirs.extend(files);
+    dirs
+}
+
+fn natural_sort_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    fn key(s: &str) -> Vec<u64> {
+        let mut k = Vec::new();
+        let mut num = String::new();
+        for c in s.chars() {
+            if c.is_ascii_digit() {
+                num.push(c);
+            } else {
+                if !num.is_empty() {
+                    k.push(num.parse::<u64>().unwrap_or(0));
+                    num.clear();
+                }
+                k.push(c.to_lowercase().next().unwrap_or(c) as u64 + 1_000_000);
+            }
+        }
+        if !num.is_empty() { k.push(num.parse::<u64>().unwrap_or(0)); }
+        k
+    }
+    key(a).cmp(&key(b))
 }

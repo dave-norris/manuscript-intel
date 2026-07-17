@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { inject, ref } from 'vue';
+import { inject, ref, watch } from 'vue';
 import type { Ref, ComputedRef } from 'vue';
-import type { Story, ReportEnvelope, Series, SidebarReportGroup } from '../types';
+import { invoke } from '@tauri-apps/api/core';
+import type { Story, ReportEnvelope, Series, SidebarReportGroup, Finding } from '../types';
 
 // ── Injections ────────────────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ const platformCtx = inject<{
 }>('platform')!;
 
 const showPanel = inject<(name: string) => void>('showPanel')!;
+const openManuscriptEditor = inject<(findings: Finding[], startIndex: number) => void>('openManuscriptEditor')!;
 
 const seriesCtx = inject<{
   series: Ref<Series[]>;
@@ -40,7 +42,73 @@ const emit = defineEmits<{
   (e: 'open-series-form', series: Series | null): void;
 }>();
 
-// ── Expand/collapse state ─────────────────────────────────────────────────────
+// ── Sidebar mode toggle ───────────────────────────────────────────────────────
+
+type SidebarMode = 'files' | 'reports';
+const sidebarMode = ref<SidebarMode>('reports');
+
+// ── File tree state ───────────────────────────────────────────────────────────
+
+interface FileTreeEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  children: FileTreeEntry[];
+}
+
+const fileTree = ref<FileTreeEntry[]>([]);
+const expandedDirs = ref<Set<string>>(new Set());
+
+async function loadFileTree(): Promise<void> {
+  const folder = storiesCtx.activeFolder.value;
+  if (!folder) { fileTree.value = []; return; }
+  try {
+    fileTree.value = await invoke<FileTreeEntry[]>('list_manuscript_files', { folder });
+    // Auto-expand all directories
+    const expand = new Set<string>();
+    function walk(entries: FileTreeEntry[]) {
+      for (const e of entries) {
+        if (e.is_dir) { expand.add(e.path); walk(e.children); }
+      }
+    }
+    walk(fileTree.value);
+    expandedDirs.value = expand;
+  } catch (e) {
+    console.error('list_manuscript_files:', e);
+    fileTree.value = [];
+  }
+}
+
+function toggleDir(path: string): void {
+  const s = new Set(expandedDirs.value);
+  if (s.has(path)) s.delete(path); else s.add(path);
+  expandedDirs.value = s;
+}
+
+function onFileClick(entry: FileTreeEntry): void {
+  // Open chapter in ManuscriptViewer read mode (empty findings array)
+  openManuscriptEditor([{
+    filePath: entry.path,
+    chapterTitle: entry.name.replace(/\.md$/, ''),
+    tellingText: '',
+    context: '',
+    why: '',
+    severity: '',
+    reportType: 'show_dont_tell',
+  }], 0);
+}
+
+// Reload file tree when story changes
+watch(() => storiesCtx.activeFolder.value, () => {
+  if (sidebarMode.value === 'files') loadFileTree();
+});
+
+// Load file tree when switching to files mode
+watch(sidebarMode, (mode) => {
+  if (mode === 'files' && storiesCtx.activeFolder.value) loadFileTree();
+});
+
+// ── Report expand/collapse state ──────────────────────────────────────────────
 
 const expanded = ref<string | null>(null);
 
@@ -88,14 +156,9 @@ async function onDeleteVersion(id: number, e: Event): Promise<void> {
   }
 }
 
-// ── Timestamp formatting ──────────────────────────────────────────────────────
-
 function formatTimestamp(ts: string): string {
   return new Date(ts).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   });
 }
 </script>
@@ -140,6 +203,82 @@ function formatTimestamp(ts: string): string {
       </div>
     </div>
 
+    <!-- Files / Reports toggle -->
+    <div v-if="storiesCtx.activeFolder.value" class="mode-toggle">
+      <button
+        class="mode-btn"
+        :class="{ active: sidebarMode === 'files' }"
+        @click="sidebarMode = 'files'"
+      >Files</button>
+      <button
+        class="mode-btn"
+        :class="{ active: sidebarMode === 'reports' }"
+        @click="sidebarMode = 'reports'"
+      >Reports</button>
+    </div>
+
+    <!-- Files mode: manuscript tree -->
+    <div v-if="sidebarMode === 'files' && storiesCtx.activeFolder.value" class="files-section">
+      <div v-if="fileTree.length === 0" class="sidebar-hint">No chapters found.</div>
+      <template v-for="entry in fileTree" :key="entry.path">
+        <div v-if="entry.is_dir" class="file-tree-dir">
+          <div class="file-tree-dir-header" @click="toggleDir(entry.path)">
+            <span class="file-tree-arrow">{{ expandedDirs.has(entry.path) ? '▾' : '▸' }}</span>
+            <span class="file-tree-dir-name">{{ entry.name }}</span>
+          </div>
+          <div v-if="expandedDirs.has(entry.path)" class="file-tree-children">
+            <div
+              v-for="child in entry.children"
+              :key="child.path"
+              class="file-tree-file"
+              @click="onFileClick(child)"
+            >{{ child.name.replace(/\.md$/, '') }}</div>
+          </div>
+        </div>
+        <div v-else class="file-tree-file" @click="onFileClick(entry)">
+          {{ entry.name.replace(/\.md$/, '') }}
+        </div>
+      </template>
+    </div>
+
+    <!-- Reports mode -->
+    <div v-if="sidebarMode === 'reports'" class="reports-section">
+      <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint">
+        Select a story to see reports.
+      </div>
+      <template v-else>
+        <div
+          v-for="type in reportsCtx.sidebarGroups.value"
+          :key="type.doc_type"
+          class="report-type"
+        >
+          <div
+            class="report-type-header"
+            :title="type.description"
+            @click="toggleExpand(type.doc_type)"
+          >
+            <span class="report-type-label">{{ type.label }}</span>
+            <span class="report-count">{{ type.count }}</span>
+          </div>
+
+          <div
+            v-if="expanded === type.doc_type && type.versions.length > 0"
+            class="report-versions"
+          >
+            <div
+              v-for="version in type.versions"
+              :key="version.id"
+              class="report-version-item"
+              @click="onVersionClick(version.id)"
+            >
+              <span class="version-label">{{ formatTimestamp(version.generated_at) }}</span>
+              <button class="version-delete" @click="onDeleteVersion(version.id, $event)" title="Delete this report">&times;</button>
+            </div>
+          </div>
+        </div>
+      </template>
+    </div>
+
     <!-- Series section -->
     <div class="series-section">
       <div class="nav-label-row">
@@ -159,53 +298,8 @@ function formatTimestamp(ts: string): string {
       </div>
     </div>
 
-    <!-- Reports section -->
-    <div class="reports-section">
-      <div class="sidebar-section-header">Reports</div>
-      <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint">
-        Select a story to see reports.
-      </div>
-      <template v-else>
-        <div
-          v-for="type in reportsCtx.sidebarGroups.value"
-          :key="type.doc_type"
-          class="report-type"
-        >
-          <div
-            class="report-type-header"
-            :title="type.description"
-            @click="toggleExpand(type.doc_type)"
-          >
-            <span class="report-type-label">
-              {{ type.label }}
-            </span>
-            <span class="report-count">{{ type.count }}</span>
-          </div>
-
-          <!-- Expanded: show versions -->
-          <div
-            v-if="expanded === type.doc_type && type.versions.length > 0"
-            class="report-versions"
-          >
-            <div
-              v-for="version in type.versions"
-              :key="version.id"
-              class="report-version-item"
-              @click="onVersionClick(version.id)"
-            >
-              <span class="version-label">{{ formatTimestamp(version.generated_at) }}</span>
-              <button class="version-delete" @click="onDeleteVersion(version.id, $event)" title="Delete this report">&times;</button>
-            </div>
-          </div>
-        </div>
-      </template>
-    </div>
-
     <!-- Settings at bottom -->
     <div class="nav-section settings-section">
-      <button class="nav-item" @click="showPanel('series')">
-        Series
-      </button>
       <button class="nav-item" @click="showPanel('settings')">
         Settings
       </button>
@@ -290,9 +384,6 @@ function formatTimestamp(ts: string): string {
 }
 
 .stories-section {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
   padding: 0;
 }
 
@@ -350,6 +441,105 @@ function formatTimestamp(ts: string): string {
 .story-item:hover .story-item-edit {
   opacity: 1;
 }
+
+/* ── Mode toggle ───────────────────────────────────────────────────────────── */
+
+.mode-toggle {
+  display: flex;
+  margin: 4px 10px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.mode-btn {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 5px 0;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.mode-btn:first-child {
+  border-right: 1px solid var(--border);
+}
+
+.mode-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.mode-btn:not(.active):hover {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+/* ── File tree ─────────────────────────────────────────────────────────────── */
+
+.files-section {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 6px;
+}
+
+.file-tree-dir {
+  margin: 0;
+}
+
+.file-tree-dir-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: var(--radius);
+}
+
+.file-tree-dir-header:hover {
+  background: var(--surface2);
+}
+
+.file-tree-arrow {
+  font-size: 10px;
+  color: var(--text-muted);
+  width: 12px;
+  text-align: center;
+}
+
+.file-tree-dir-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-tree-children {
+  padding-left: 16px;
+}
+
+.file-tree-file {
+  padding: 4px 8px 4px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-tree-file:hover {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+/* ── Reports section ───────────────────────────────────────────────────────── */
 
 .reports-section {
   flex: 1;
@@ -454,12 +644,15 @@ function formatTimestamp(ts: string): string {
   font-size: 11px;
   color: var(--text-muted);
 }
+
 .series-section {
   padding: 0;
 }
+
 .series-list {
   padding: 0 8px 8px;
 }
+
 .series-book-count {
   font-size: 10px;
   color: var(--text-muted);

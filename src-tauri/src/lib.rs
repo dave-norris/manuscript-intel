@@ -35,6 +35,7 @@ pub fn run() {
             commands::list_models,
             commands::read_chapter,
             commands::write_manuscript_fix,
+            commands::list_manuscript_files,
             analysis::chapters::generate_summaries,
             analysis::genres::analyze_genre,
             analysis::genres::rank_genres_for_story,

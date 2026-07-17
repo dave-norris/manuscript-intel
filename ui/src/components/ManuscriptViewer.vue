@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick } from 'vue';
+import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useSettings } from '../composables/useSettings';
+import ChapterEditor from './ChapterEditor.vue';
 import type { Finding } from '../types';
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -21,62 +22,18 @@ const settings = useSettings();
 // ── State ─────────────────────────────────────────────────────────────────────
 
 const currentIndex = ref(props.startIndex);
-const chapterContent = ref('');
-const loadingChapter = ref(false);
 const suggestion = ref('');
 const loadingSuggestion = ref(false);
 const suggestionError = ref('');
-const applied = ref(false);
 const applyText = ref('');
+
+const editorRef = ref<InstanceType<typeof ChapterEditor> | null>(null);
 
 // ── Computed ──────────────────────────────────────────────────────────────────
 
 const finding = computed(() => props.findings[currentIndex.value]);
 const totalFindings = computed(() => props.findings.length);
-
-const renderedChapter = computed(() => {
-  if (!chapterContent.value || !finding.value) return escHtml(chapterContent.value);
-
-  const text = chapterContent.value;
-  const target = finding.value.tellingText;
-  const idx = text.indexOf(target);
-
-  if (idx < 0) return escHtml(text);
-
-  const before = text.substring(0, idx);
-  const match = text.substring(idx, idx + target.length);
-  const after = text.substring(idx + target.length);
-
-  return escHtml(before)
-    + `<mark id="highlight-target" class="mv-highlight">${escHtml(match)}</mark>`
-    + escHtml(after);
-});
-
-// ── Load chapter ──────────────────────────────────────────────────────────────
-
-async function loadChapter(): Promise<void> {
-  if (!finding.value) return;
-  loadingChapter.value = true;
-  suggestion.value = '';
-  suggestionError.value = '';
-  applied.value = false;
-  applyText.value = '';
-
-  try {
-    chapterContent.value = await invoke<string>('read_chapter', { filePath: finding.value.filePath });
-  } catch (e) {
-    chapterContent.value = 'Error loading chapter: ' + String(e);
-  } finally {
-    loadingChapter.value = false;
-    await nextTick();
-    scrollToHighlight();
-  }
-}
-
-function scrollToHighlight(): void {
-  const el = document.getElementById('highlight-target');
-  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-}
+const isReadMode = computed(() => !finding.value?.tellingText);
 
 // ── Generate suggestion ───────────────────────────────────────────────────────
 
@@ -130,23 +87,18 @@ async function onSuggestFix(): Promise<void> {
   }
 }
 
-// ── Apply fix ─────────────────────────────────────────────────────────────────
+// ── Apply: replace the highlighted text in the editor ─────────────────────────
 
-async function onApply(newText: string): Promise<void> {
-  if (!finding.value) return;
-  try {
-    const updated = await invoke<string>('write_manuscript_fix', {
-      filePath: finding.value.filePath,
-      oldText: finding.value.tellingText,
-      newText,
-    });
-    chapterContent.value = updated;
-    applied.value = true;
-    await nextTick();
-    scrollToHighlight();
-  } catch (e) {
-    suggestionError.value = 'Apply failed: ' + String(e);
-  }
+function onReplace(): void {
+  if (!applyText.value.trim() || !editorRef.value) return;
+  editorRef.value.replaceSelection(applyText.value);
+  applyText.value = '';
+}
+
+function onInsertAtCursor(): void {
+  if (!applyText.value.trim() || !editorRef.value) return;
+  editorRef.value.insertAtCursor(applyText.value);
+  applyText.value = '';
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -154,28 +106,30 @@ async function onApply(newText: string): Promise<void> {
 function onPrev(): void {
   if (currentIndex.value > 0) {
     currentIndex.value--;
+    resetSuggestion();
   }
 }
 
 function onNext(): void {
   if (currentIndex.value < totalFindings.value - 1) {
     currentIndex.value++;
+    resetSuggestion();
   }
 }
 
+function resetSuggestion(): void {
+  suggestion.value = '';
+  suggestionError.value = '';
+  applyText.value = '';
+}
+
 function onClose(): void {
+  // Save before closing
+  editorRef.value?.saveNow();
   emit('close');
 }
 
-// ── Watch index changes to reload chapter ─────────────────────────────────────
-
-watch(currentIndex, () => loadChapter(), { immediate: true });
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function escHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+// ── Suggestion formatting ─────────────────────────────────────────────────────
 
 function formatSuggestion(text: string): string {
   if (!text) return '';
@@ -206,32 +160,35 @@ function formatSuggestion(text: string): string {
     <!-- Header -->
     <div class="mv-header">
       <div class="mv-header-left">
-        <button class="mv-back" @click="onClose">&larr; Back to report</button>
+        <button class="mv-back" @click="onClose">&larr; Back</button>
         <span class="mv-chapter-title">{{ finding?.chapterTitle || '' }}</span>
       </div>
-      <div class="mv-nav">
+      <div v-if="!isReadMode" class="mv-nav">
         <span class="mv-nav-label">{{ currentIndex + 1 }} of {{ totalFindings }}</span>
         <button class="mv-nav-btn" :disabled="currentIndex === 0" @click="onPrev">&larr; Prev</button>
         <button class="mv-nav-btn" :disabled="currentIndex === totalFindings - 1" @click="onNext">Next &rarr;</button>
       </div>
     </div>
 
-    <!-- Body: manuscript + suggestion panel -->
-    <div class="mv-body">
-      <!-- Left: chapter prose -->
+    <!-- Body: editor + suggestion panel -->
+    <div class="mv-body" :class="{ 'read-mode': isReadMode }">
+      <!-- Left: Tiptap editor -->
       <div class="mv-chapter">
-        <div v-if="loadingChapter" class="mv-loading">Loading chapter...</div>
-        <div v-else class="mv-prose" v-html="renderedChapter"></div>
+        <ChapterEditor
+          ref="editorRef"
+          :file-path="finding?.filePath || ''"
+          :highlight-text="isReadMode ? '' : (finding?.tellingText || '')"
+        />
       </div>
 
-      <!-- Right: suggestion panel -->
-      <div class="mv-suggestion-panel">
+      <!-- Right: suggestion panel (only in fix mode) -->
+      <div v-if="!isReadMode" class="mv-suggestion-panel">
         <div class="mv-finding-info">
           <div class="mv-finding-severity" :class="'sev-' + (finding?.severity || 'minor')">{{ finding?.severity }}</div>
           <div class="mv-finding-why">{{ finding?.why }}</div>
         </div>
 
-        <div v-if="!suggestion && !loadingSuggestion && !applied" class="mv-suggest-action">
+        <div v-if="!suggestion && !loadingSuggestion" class="mv-suggest-action">
           <button class="btn" @click="onSuggestFix" :disabled="loadingSuggestion">Suggest Fix</button>
         </div>
 
@@ -239,19 +196,18 @@ function formatSuggestion(text: string): string {
 
         <div v-if="suggestionError" class="mv-error">{{ suggestionError }}</div>
 
-        <div v-if="suggestion && !applied" class="mv-suggestion-content">
+        <div v-if="suggestion" class="mv-suggestion-content">
           <div class="mv-suggestion-text" v-html="formatSuggestion(suggestion)"></div>
           <div class="mv-apply-section">
-            <label class="mv-apply-label">Replace with:</label>
-            <textarea v-model="applyText" class="mv-apply-input" rows="3" placeholder="Paste or type the replacement text here"></textarea>
+            <label class="mv-apply-label">Replacement text:</label>
+            <textarea v-model="applyText" class="mv-apply-input" rows="3" placeholder="Paste or type the replacement text"></textarea>
             <div class="mv-apply-actions">
-              <button class="btn" @click="onApply(applyText)" :disabled="!applyText.trim()">Apply</button>
+              <button class="btn btn-sm" @click="onReplace" :disabled="!applyText.trim()">Replace selected</button>
+              <button class="btn btn-sm btn-secondary" @click="onInsertAtCursor" :disabled="!applyText.trim()">Insert at cursor</button>
               <button class="mv-skip-btn" @click="onNext">Skip</button>
             </div>
           </div>
         </div>
-
-        <div v-if="applied" class="mv-applied">✓ Applied</div>
       </div>
     </div>
   </div>
@@ -264,7 +220,6 @@ function formatSuggestion(text: string): string {
   height: 100%;
 }
 
-/* Header */
 .mv-header {
   display: flex;
   align-items: center;
@@ -290,9 +245,7 @@ function formatSuggestion(text: string): string {
   border-radius: var(--radius);
 }
 
-.mv-back:hover {
-  background: var(--surface2);
-}
+.mv-back:hover { background: var(--surface2); }
 
 .mv-chapter-title {
   font-size: 13px;
@@ -321,15 +274,8 @@ function formatSuggestion(text: string): string {
   cursor: pointer;
 }
 
-.mv-nav-btn:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.mv-nav-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
+.mv-nav-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.mv-nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* Body */
 .mv-body {
@@ -340,25 +286,13 @@ function formatSuggestion(text: string): string {
 
 .mv-chapter {
   flex: 0 0 60%;
-  overflow-y: auto;
-  padding: 20px 24px;
+  overflow: hidden;
   border-right: 1px solid var(--border);
 }
 
-.mv-prose {
-  font-size: 14px;
-  line-height: 1.8;
-  color: var(--text);
-  white-space: pre-wrap;
-  word-wrap: break-word;
-}
-
-.mv-prose :deep(.mv-highlight) {
-  background: rgba(231, 76, 60, 0.12);
-  color: #e74c3c;
-  font-weight: 600;
-  padding: 1px 3px;
-  border-radius: 2px;
+.read-mode .mv-chapter {
+  flex: 1;
+  border-right: none;
 }
 
 /* Suggestion panel */
@@ -396,9 +330,7 @@ function formatSuggestion(text: string): string {
   line-height: 1.5;
 }
 
-.mv-suggest-action {
-  padding: 8px 0;
-}
+.mv-suggest-action { padding: 8px 0; }
 
 .mv-loading {
   color: var(--text-muted);
@@ -407,14 +339,9 @@ function formatSuggestion(text: string): string {
   padding: 8px 0;
 }
 
-.mv-error {
-  color: #e74c3c;
-  font-size: 12px;
-}
+.mv-error { color: #e74c3c; font-size: 12px; }
 
-.mv-suggestion-content {
-  flex: 1;
-}
+.mv-suggestion-content { flex: 1; }
 
 .mv-suggestion-text {
   font-size: 13px;
@@ -435,12 +362,6 @@ function formatSuggestion(text: string): string {
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 12px;
-}
-
-.mv-applied {
-  color: #27ae60;
-  font-weight: 600;
-  font-size: 13px;
 }
 
 .mv-apply-section {
@@ -474,6 +395,7 @@ function formatSuggestion(text: string): string {
 
 .mv-apply-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
   align-items: center;
@@ -489,10 +411,7 @@ function formatSuggestion(text: string): string {
   cursor: pointer;
 }
 
-.mv-skip-btn:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
+.mv-skip-btn:hover { border-color: var(--accent); color: var(--text); }
 
 .btn {
   background: var(--accent);
@@ -508,4 +427,14 @@ function formatSuggestion(text: string): string {
 
 .btn:hover { background: var(--accent-dim); }
 .btn:disabled { background: var(--surface2); color: var(--text-muted); cursor: not-allowed; }
+
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+
+.btn-secondary {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.btn-secondary:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 </style>

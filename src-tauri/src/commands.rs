@@ -275,11 +275,9 @@ async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
                 .unwrap_or("");
             if id.is_empty() { return None; }
 
-            // Pricing: per 1K tokens in the new API
-            let input_price = m["pricing"]["input"].as_f64()
-                .map(|p| p * 1000.0);  // Convert per-1K to per-1M for display
-            let output_price = m["pricing"]["output"].as_f64()
-                .map(|p| p * 1000.0);
+            // Pricing: pass through raw values from API
+            let input_price = m["pricing"]["input"].as_f64();
+            let output_price = m["pricing"]["output"].as_f64();
 
             Some(ModelInfo {
                 id: id.to_string(),
@@ -555,4 +553,147 @@ fn natural_sort_cmp(a: &str, b: &str) -> std::cmp::Ordering {
         k
     }
     key(a).cmp(&key(b))
+}
+
+// ── Cost estimation ───────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct CostEstimateRequest {
+    pub folder: String,
+    /// Map of report_id → (input_price_per_token, output_price_per_token)
+    /// Prices as returned by the API (per-1K tokens).
+    pub model_prices: Vec<ReportModelPrice>,
+}
+
+#[derive(Deserialize)]
+pub struct ReportModelPrice {
+    pub report_id:    String,
+    pub input_price:  f64,  // per 1K tokens
+    pub output_price: f64,  // per 1K tokens
+}
+
+#[derive(Serialize)]
+pub struct CostEstimateResult {
+    pub success: bool,
+    pub chapter_count: usize,
+    pub total_words: usize,
+    pub estimates: Vec<ReportCostEstimate>,
+    pub error: String,
+}
+
+#[derive(Serialize)]
+pub struct ReportCostEstimate {
+    pub report_id: String,
+    pub estimated_cost: f64,  // in USD
+    pub calls: usize,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+}
+
+/// Estimate the AI cost for each report based on manuscript size and model pricing.
+#[tauri::command]
+pub async fn estimate_report_costs(request: CostEstimateRequest) -> CostEstimateResult {
+    use crate::analysis::chapters::collect_chapters;
+
+    let folder = std::path::PathBuf::from(&request.folder);
+    if !folder.exists() {
+        return CostEstimateResult {
+            success: false, chapter_count: 0, total_words: 0,
+            estimates: Vec::new(), error: "Folder does not exist.".to_string(),
+        };
+    }
+
+    let chapters = collect_chapters(&folder);
+    let chapter_count = chapters.len();
+
+    // Count words per chapter
+    let word_counts: Vec<usize> = chapters.iter().map(|p| {
+        std::fs::read_to_string(p)
+            .map(|c| c.split_whitespace().count())
+            .unwrap_or(0)
+    }).collect();
+    let total_words: usize = word_counts.iter().sum();
+
+    // Token estimation constants
+    const WORDS_TO_TOKENS: f64 = 1.3;  // average for English prose
+    const SYSTEM_PROMPT_TOKENS: usize = 400;  // approximate for our prompts
+
+    // Per-report parameters: (truncation_limit_words, output_max_tokens, is_per_chapter, fixed_calls)
+    struct ReportParams {
+        truncation: usize,
+        output_max: usize,
+        per_chapter: bool,
+        fixed_calls: usize,
+    }
+
+    let params_for = |report_id: &str| -> ReportParams {
+        match report_id {
+            "chapter_summaries" => ReportParams { truncation: 8000, output_max: 600, per_chapter: true, fixed_calls: 0 },
+            "continuity_check"  => ReportParams { truncation: 6000, output_max: 4000, per_chapter: true, fixed_calls: 3 }, // extract (per ch) + judge (few batches)
+            "show_dont_tell"    => ReportParams { truncation: 4000, output_max: 4000, per_chapter: true, fixed_calls: 0 },
+            "genre_analysis"    => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 1 },
+            "genre_ranking"     => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 1 },
+            "kdp_categories"    => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 2 },
+            "bisac_classification" => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 2 },
+            "kdp_keywords"      => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 1 },
+            "mi_search_terms"   => ReportParams { truncation: 0, output_max: 300, per_chapter: false, fixed_calls: 1 },
+            "discovery_keywords" => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 1 },
+            "zeigarnik_analysis" => ReportParams { truncation: 0, output_max: 0, per_chapter: false, fixed_calls: 0 }, // no AI
+            _ => ReportParams { truncation: 4000, output_max: 1000, per_chapter: false, fixed_calls: 1 },
+        }
+    };
+
+    let mut estimates = Vec::new();
+
+    for rp in &request.model_prices {
+        let params = params_for(&rp.report_id);
+
+        // Skip non-AI reports
+        if params.output_max == 0 && params.fixed_calls == 0 && !params.per_chapter {
+            estimates.push(ReportCostEstimate {
+                report_id: rp.report_id.clone(),
+                estimated_cost: 0.0,
+                calls: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+            });
+            continue;
+        }
+
+        let (calls, total_input_tokens, total_output_tokens) = if params.per_chapter {
+            // Per-chapter reports: sum input tokens across all chapters
+            let input_tokens: usize = word_counts.iter().map(|&wc| {
+                let truncated = if params.truncation > 0 { wc.min(params.truncation) } else { wc };
+                (truncated as f64 * WORDS_TO_TOKENS) as usize + SYSTEM_PROMPT_TOKENS
+            }).sum();
+            let output_tokens = chapter_count * params.output_max;
+            let calls = chapter_count + params.fixed_calls;
+            (calls, input_tokens, output_tokens)
+        } else {
+            // Fixed-call reports: use a rough input estimate
+            let input_tokens = params.fixed_calls * (2000 + SYSTEM_PROMPT_TOKENS);
+            let output_tokens = params.fixed_calls * params.output_max;
+            (params.fixed_calls, input_tokens, output_tokens)
+        };
+
+        // Cost = (input_tokens / 1000 * input_price) + (output_tokens / 1000 * output_price)
+        let cost = (total_input_tokens as f64 / 1000.0 * rp.input_price)
+                 + (total_output_tokens as f64 / 1000.0 * rp.output_price);
+
+        estimates.push(ReportCostEstimate {
+            report_id: rp.report_id.clone(),
+            estimated_cost: (cost * 1000.0).round() / 1000.0,  // round to 3 decimal places
+            calls,
+            input_tokens: total_input_tokens,
+            output_tokens: total_output_tokens,
+        });
+    }
+
+    CostEstimateResult {
+        success: true,
+        chapter_count,
+        total_words,
+        estimates,
+        error: String::new(),
+    }
 }

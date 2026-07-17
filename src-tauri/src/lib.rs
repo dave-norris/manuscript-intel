@@ -38,6 +38,7 @@ pub fn run() {
             commands::save_chapter,
             commands::write_manuscript_fix,
             commands::list_manuscript_files,
+            commands::estimate_report_costs,
             analysis::chapters::generate_summaries,
             analysis::genres::analyze_genre,
             analysis::genres::rank_genres_for_story,

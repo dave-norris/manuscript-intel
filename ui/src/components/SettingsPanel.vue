@@ -38,7 +38,7 @@ function modelLabel(m: ModelInfo): string {
   let label = m.id;
   if (m.owned_by) label += ` (${m.owned_by})`;
   if (m.input_price != null && m.output_price != null) {
-    label += ` — $${m.input_price}/$${m.output_price} per 1M tokens`;
+    label += ` — $${m.input_price}/$${m.output_price} per 1K tokens`;
   }
   return label;
 }

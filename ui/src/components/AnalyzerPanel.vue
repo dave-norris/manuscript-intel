@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { inject, ref, computed, watch, onMounted } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import type { ContinuityScope } from '../composables/useAnalysis';
+import { useSettings } from '../composables/useSettings';
 import { storiesKey, analysisKey, seriesKey, platformKey } from '../injectionKeys';
 import LogStream from './LogStream.vue';
 import { useReportTypes } from '../composables/useReportTypes';
@@ -11,6 +13,7 @@ const storiesCtx = inject(storiesKey)!;
 const analysisCtx = inject(analysisKey)!;
 const seriesCtx = inject(seriesKey)!;
 const platformCtx = inject(platformKey)!;
+const settings = useSettings();
 
 // ── Report types from DB ──────────────────────────────────────────────────────
 
@@ -95,6 +98,87 @@ watch(() => platformCtx.platform.value, () => {
   selected.value = [];
 });
 
+// ── Cost estimation ───────────────────────────────────────────────────────────
+
+interface CostEstimate {
+  report_id: string;
+  estimated_cost: number;
+}
+
+const costEstimates = ref<Map<string, number>>(new Map());
+
+const totalEstimatedCost = computed(() => {
+  let total = 0;
+  for (const id of selected.value) {
+    total += costEstimates.value.get(id) || 0;
+  }
+  return total;
+});
+
+function formatCost(cost: number): string {
+  if (cost === 0) return 'Free';
+  if (cost < 0.01) return '<$0.01';
+  return `~$${cost.toFixed(2)}`;
+}
+
+async function fetchCostEstimates(): Promise<void> {
+  const folder = storiesCtx.activeFolder.value;
+  if (!folder || visibleReports.value.length === 0) {
+    costEstimates.value = new Map();
+    return;
+  }
+
+  // Build model prices for each visible report
+  const modelPrices = visibleReports.value.map(r => {
+    // Determine which model is assigned to this report function
+    const fnKey = reportToModelFn(r.id);
+    const modelId = settings.modelFor(fnKey);
+    const modelInfo = settings.models.value.find(m => m.id === modelId);
+    return {
+      report_id: r.id,
+      input_price: modelInfo?.input_price ?? 0,
+      output_price: modelInfo?.output_price ?? 0,
+    };
+  });
+
+  try {
+    const result = await invoke<{ success: boolean; estimates: CostEstimate[] }>('estimate_report_costs', {
+      request: { folder, model_prices: modelPrices },
+    });
+    if (result.success) {
+      const map = new Map<string, number>();
+      for (const est of result.estimates) {
+        map.set(est.report_id, est.estimated_cost);
+      }
+      costEstimates.value = map;
+    }
+  } catch (e) {
+    console.error('estimate_report_costs:', e);
+  }
+}
+
+/** Map report_id to the modelFor() function key */
+function reportToModelFn(reportId: string): 'default' | 'summaries' | 'genre' | 'keywords' | 'continuity' | 'showDontTell' | 'prose' {
+  switch (reportId) {
+    case 'chapter_summaries': return 'summaries';
+    case 'genre_analysis':
+    case 'genre_ranking': return 'genre';
+    case 'kdp_keywords':
+    case 'kdp_categories':
+    case 'bisac_classification':
+    case 'mi_search_terms':
+    case 'discovery_keywords':
+    case 'keyword_search': return 'keywords';
+    case 'continuity_check': return 'continuity';
+    case 'show_dont_tell': return 'showDontTell';
+    default: return 'default';
+  }
+}
+
+// Refresh estimates when folder changes or models are loaded
+watch(() => storiesCtx.activeFolder.value, () => fetchCostEstimates());
+watch(() => settings.models.value, () => fetchCostEstimates());
+
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 function onGetReports(): void {
@@ -155,6 +239,10 @@ function onStop(): void {
         @click="onGetReports"
       >Get Reports</button>
 
+      <span v-if="selected.length > 0 && totalEstimatedCost > 0" class="cost-total">
+        {{ formatCost(totalEstimatedCost) }}
+      </span>
+
       <button
         v-if="platformCtx.isKdp.value"
         class="btn btn-secondary"
@@ -214,7 +302,10 @@ function onStop(): void {
         <div class="report-card-content">
           <div class="report-card-label">{{ report.label }}</div>
           <div class="report-card-desc">{{ report.description }}</div>
-          <div v-if="report.exists" class="report-card-exists">✓ exists</div>
+          <div class="report-card-meta">
+            <span v-if="report.exists" class="report-card-exists">✓ exists</span>
+            <span v-if="costEstimates.get(report.id)" class="report-card-cost">{{ formatCost(costEstimates.get(report.id) || 0) }}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -361,6 +452,28 @@ function onStop(): void {
   color: var(--accent);
   font-weight: 500;
   margin-top: 2px;
+}
+
+.report-card-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.report-card-cost {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.cost-total {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 4px 10px;
+  background: var(--surface2);
+  border-radius: var(--radius);
 }
 
 /* ── Actions ───────────────────────────────────────────────────────────────── */

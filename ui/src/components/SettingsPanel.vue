@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject, ref } from 'vue';
+import { inject, ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { settingsKey, showPanelKey } from '../injectionKeys';
 import type { ModelInfo, WinningCatImportResult, StaleCleanupResult } from '../types';
@@ -11,7 +11,24 @@ const savedMsg = ref('');
 const modelFetchStatus = ref('');
 const canopyTestStatus = ref('');
 const dataforseoTestStatus = ref('');
-const winningcatStatus = ref('');
+
+// ── Sorted models: user-selectable sort order ─────────────────────────────────
+
+type ModelSort = 'price' | 'provider';
+const modelSort = ref<ModelSort>('price');
+
+const sortedModels = computed(() => {
+  return [...settingsCtx.models.value].sort((a, b) => {
+    if (modelSort.value === 'provider') {
+      const provA = a.owned_by.toLowerCase();
+      const provB = b.owned_by.toLowerCase();
+      if (provA !== provB) return provA.localeCompare(provB);
+    }
+    const priceA = a.input_price ?? Infinity;
+    const priceB = b.input_price ?? Infinity;
+    return priceA - priceB;
+  });
+});const winningcatStatus = ref('');
 const staleStatus = ref('');
 const showStaleRow = ref(false);
 const importDisabled = ref(false);
@@ -130,11 +147,11 @@ async function onRemoveStale(): Promise<void> {
       </label>
       <div class="model-row">
         <select v-model="settingsCtx.modelAssignments.value.default">
-          <option v-if="settingsCtx.models.value.length === 0" value="" disabled>
+          <option v-if="sortedModels.length === 0" value="" disabled>
             No models loaded
           </option>
           <option
-            v-for="m in settingsCtx.models.value"
+            v-for="m in sortedModels"
             :key="m.id"
             :value="m.id"
           >{{ modelLabel(m) }}</option>
@@ -143,8 +160,15 @@ async function onRemoveStale(): Promise<void> {
       </div>
       <div class="model-fetch-status">{{ modelFetchStatus }}</div>
 
+      <!-- Sort toggle -->
+      <div v-if="sortedModels.length > 0" class="model-sort-row">
+        <span class="model-sort-label">Sort:</span>
+        <button class="model-sort-btn" :class="{ active: modelSort === 'price' }" @click="modelSort = 'price'">Price</button>
+        <button class="model-sort-btn" :class="{ active: modelSort === 'provider' }" @click="modelSort = 'provider'">Provider</button>
+      </div>
+
       <!-- Per-function model assignments -->
-      <div v-if="settingsCtx.models.value.length > 0" class="model-assignments">
+      <div v-if="sortedModels.length > 0" class="model-assignments">
         <div class="model-assign-header">Model per function</div>
 
         <div class="model-assign-row">
@@ -154,7 +178,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.summaries">
             <option value="">(Use default)</option>
-            <option v-for="m in settingsCtx.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ m.id }}</option>
           </select>
         </div>
 
@@ -165,7 +189,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.genre">
             <option value="">(Use default)</option>
-            <option v-for="m in settingsCtx.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ m.id }}</option>
           </select>
         </div>
 
@@ -176,7 +200,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.keywords">
             <option value="">(Use default)</option>
-            <option v-for="m in settingsCtx.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ m.id }}</option>
           </select>
         </div>
 
@@ -187,7 +211,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.continuity">
             <option value="">(Use default)</option>
-            <option v-for="m in settingsCtx.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ m.id }}</option>
           </select>
         </div>
 
@@ -198,7 +222,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.showDontTell">
             <option value="">(Use default)</option>
-            <option v-for="m in settingsCtx.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ m.id }}</option>
           </select>
         </div>
 
@@ -209,7 +233,7 @@ async function onRemoveStale(): Promise<void> {
           </div>
           <select v-model="settingsCtx.modelAssignments.value.prose">
             <option value="">(Use default)</option>
-            <option v-for="m in settingsCtx.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ m.id }}</option>
           </select>
         </div>
       </div>
@@ -371,6 +395,38 @@ async function onRemoveStale(): Promise<void> {
   font-size: 12px;
   color: var(--text-muted);
   min-height: 16px;
+}
+
+.model-sort-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-sort-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.model-sort-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.model-sort-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.model-sort-btn:not(.active):hover {
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .model-assignments {

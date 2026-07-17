@@ -238,6 +238,70 @@ async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
         Err(e) => return ModelsResult { success: false, models: Vec::new(), error: format!("Client error: {}", e) },
     };
 
+    // Use the new API endpoint with type=llm filter to get only chat models with pricing
+    let resp = match client
+        .get("https://aihubmix.com/api/v1/models?type=llm")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => {
+            // Fallback to legacy endpoint if new API fails
+            return fetch_tokenmix_models_legacy(&client, api_key).await;
+        }
+    };
+
+    let json: Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return fetch_tokenmix_models_legacy(&client, api_key).await,
+    };
+
+    if let Some(err) = json.get("error") {
+        let msg = err["message"].as_str().unwrap_or("unknown");
+        return ModelsResult {
+            success: false, models: Vec::new(),
+            error: format!("API error: {}", msg),
+        };
+    }
+
+    let models: Vec<ModelInfo> = json["data"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .filter_map(|m| {
+            let id = m["model_id"].as_str()
+                .or_else(|| m["id"].as_str())
+                .unwrap_or("");
+            if id.is_empty() { return None; }
+
+            // Pricing: per 1K tokens in the new API
+            let input_price = m["pricing"]["input"].as_f64()
+                .map(|p| p * 1000.0);  // Convert per-1K to per-1M for display
+            let output_price = m["pricing"]["output"].as_f64()
+                .map(|p| p * 1000.0);
+
+            Some(ModelInfo {
+                id: id.to_string(),
+                owned_by: m["owned_by"].as_str()
+                    .or_else(|| m["desc"].as_str().map(|d| &d[..d.len().min(40)]))
+                    .unwrap_or("")
+                    .to_string(),
+                input_price,
+                output_price,
+            })
+        })
+        .collect();
+
+    if models.is_empty() {
+        return fetch_tokenmix_models_legacy(&client, api_key).await;
+    }
+
+    ModelsResult { success: true, models, error: String::new() }
+}
+
+/// Legacy /v1/models endpoint fallback (no pricing, no type filter)
+async fn fetch_tokenmix_models_legacy(client: &reqwest::Client, api_key: &str) -> ModelsResult {
     let resp = match client
         .get("https://api.tokenmix.ai/v1/models")
         .header("Authorization", format!("Bearer {}", api_key))
@@ -273,13 +337,9 @@ async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
         .iter()
         .map(|m| {
             let input_price = m["pricing"]["input"].as_f64()
-                .or_else(|| m["pricing"]["prompt"].as_f64())
-                .or_else(|| m["input_price"].as_f64())
-                .or_else(|| m["price"]["input"].as_f64());
+                .or_else(|| m["pricing"]["prompt"].as_f64());
             let output_price = m["pricing"]["output"].as_f64()
-                .or_else(|| m["pricing"]["completion"].as_f64())
-                .or_else(|| m["output_price"].as_f64())
-                .or_else(|| m["price"]["output"].as_f64());
+                .or_else(|| m["pricing"]["completion"].as_f64());
             ModelInfo {
                 id: m["id"].as_str().unwrap_or("").to_string(),
                 owned_by: m["owned_by"].as_str().unwrap_or("").to_string(),
@@ -289,60 +349,8 @@ async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
         })
         .filter(|m| !m.id.is_empty())
         .collect();
-
-    // If no pricing was found, try /v1/models/pricing
-    let models = if models.iter().all(|m| m.input_price.is_none()) {
-        if let Ok(pricing_models) = fetch_tokenmix_pricing(&client, api_key).await {
-            models.into_iter().map(|mut m| {
-                if let Some(pm) = pricing_models.iter().find(|p| p.id == m.id) {
-                    m.input_price = pm.input_price;
-                    m.output_price = pm.output_price;
-                }
-                m
-            }).collect()
-        } else {
-            models
-        }
-    } else {
-        models
-    };
 
     ModelsResult { success: true, models, error: String::new() }
-}
-
-async fn fetch_tokenmix_pricing(client: &reqwest::Client, api_key: &str) -> Result<Vec<ModelInfo>, ()> {
-    let resp = client
-        .get("https://api.tokenmix.ai/v1/models/pricing")
-        .header("Authorization", format!("Bearer {}", api_key))
-        .send()
-        .await
-        .map_err(|_| ())?;
-
-    let json: Value = resp.json().await.map_err(|_| ())?;
-
-    let models = json["data"].as_array()
-        .unwrap_or(&Vec::new())
-        .iter()
-        .map(|m| {
-            let input_price = m["pricing"]["input"].as_f64()
-                .or_else(|| m["pricing"]["prompt"].as_f64())
-                .or_else(|| m["input_price"].as_f64())
-                .or_else(|| m["price"]["input"].as_f64());
-            let output_price = m["pricing"]["output"].as_f64()
-                .or_else(|| m["pricing"]["completion"].as_f64())
-                .or_else(|| m["output_price"].as_f64())
-                .or_else(|| m["price"]["output"].as_f64());
-            ModelInfo {
-                id: m["id"].as_str().unwrap_or("").to_string(),
-                owned_by: m["owned_by"].as_str().unwrap_or("").to_string(),
-                input_price,
-                output_price,
-            }
-        })
-        .filter(|m| !m.id.is_empty())
-        .collect();
-
-    Ok(models)
 }
 
 fn fetch_claude_models() -> ModelsResult {

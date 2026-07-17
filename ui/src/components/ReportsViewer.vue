@@ -61,8 +61,16 @@ const isContinuityReport = computed(() => {
   } catch { return false; }
 });
 
+const isShowDontTellReport = computed(() => {
+  if (!report.value || report.value.format !== 'json') return false;
+  try {
+    const data = JSON.parse(report.value.content);
+    return data.schema === 'show_dont_tell_v1';
+  } catch { return false; }
+});
+
 const showSuggestionPanel = computed(() =>
-  isContinuityReport.value && (activeSuggestion.value || loadingSuggestion.value || suggestionError.value)
+  (isContinuityReport.value || isShowDontTellReport.value) && (activeSuggestion.value || loadingSuggestion.value || suggestionError.value)
 );
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -146,6 +154,51 @@ async function onSuggestFix(findingIndex: number): Promise<void> {
   }
 }
 
+async function onSuggestSdtFix(chapterIndex: number, violationIndex: number): Promise<void> {
+  if (!report.value || report.value.format !== 'json') return;
+
+  const data = JSON.parse(report.value.content);
+  const chapters: any[] = data.chapters || [];
+  const chapter = chapters[chapterIndex];
+  if (!chapter) return;
+  const violations: any[] = chapter.violations || [];
+  const violation = violations[violationIndex];
+  if (!violation) return;
+
+  const proseModel = settings.proseModel.value || settings.model.value;
+  if (!proseModel) {
+    suggestionError.value = 'No model selected. Set a model in Settings.';
+    return;
+  }
+
+  activeSuggestion.value = '';
+  suggestionError.value = '';
+  loadingSuggestion.value = true;
+
+  try {
+    const result = await invoke<{ success: boolean; suggestions: string; error: string }>('suggest_sdt_fix', {
+      request: {
+        provider: settings.provider.value,
+        api_key: settings.apiKey.value,
+        model: proseModel,
+        telling_text: violation.telling_text,
+        context: violation.context,
+        why: violation.why,
+        chapter_title: chapter.title || chapter.file || '',
+      }
+    });
+    if (result.success) {
+      activeSuggestion.value = result.suggestions;
+    } else {
+      suggestionError.value = result.error || 'Unknown error';
+    }
+  } catch (e) {
+    suggestionError.value = String(e);
+  } finally {
+    loadingSuggestion.value = false;
+  }
+}
+
 // ── Click delegation for "Suggest fix" links ──────────────────────────────────
 
 const contentRef = ref<HTMLElement | null>(null);
@@ -156,6 +209,12 @@ function onContentClick(e: MouseEvent): void {
     e.preventDefault();
     const idx = parseInt(target.dataset.findingIndex || '', 10);
     if (!isNaN(idx)) onSuggestFix(idx);
+  }
+  if (target.classList.contains('suggest-sdt-fix-link')) {
+    e.preventDefault();
+    const chIdx = parseInt(target.dataset.chapterIndex || '', 10);
+    const vIdx = parseInt(target.dataset.violationIndex || '', 10);
+    if (!isNaN(chIdx) && !isNaN(vIdx)) onSuggestSdtFix(chIdx, vIdx);
   }
 }
 

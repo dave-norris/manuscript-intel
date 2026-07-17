@@ -196,3 +196,49 @@ Maximum 10 violations per chapter — focus on the most impactful ones."#;
     }
     Ok(good)
 }
+
+// ── Suggest fix for a show-don't-tell violation ──────────────────────────────
+
+#[derive(serde::Deserialize)]
+pub struct SuggestSdtFixRequest {
+    pub provider:      String,
+    pub api_key:       String,
+    pub model:         String,
+    pub telling_text:  String,
+    pub context:       String,
+    pub why:           String,
+    pub chapter_title: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct SuggestSdtFixResult {
+    pub success:     bool,
+    pub suggestions: String,
+    pub error:       String,
+}
+
+#[tauri::command]
+pub async fn suggest_sdt_fix(request: SuggestSdtFixRequest) -> SuggestSdtFixResult {
+    use crate::commands::call_llm;
+
+    let system = r#"You are a fiction editor helping an author rewrite a "telling" passage to "show" instead. You will be given:
+- The passage that tells instead of shows
+- Surrounding context
+- Why it's considered telling
+
+Provide 2-3 alternative rewrites that SHOW instead of TELL. For each:
+1. Give the revised prose (ready to paste — match the author's voice and tense)
+2. One sentence explaining the technique used (body language, sensory detail, action, dialogue, etc.)
+
+Keep rewrites concise — replace only the telling passage, not the surrounding context. Maintain the author's style and point of view."#;
+
+    let user = format!(
+        "Chapter: {}\n\nTelling passage: \"{}\"\n\nContext: \"{}\"\n\nWhy it's telling: {}",
+        request.chapter_title, request.telling_text, request.context, request.why
+    );
+
+    match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 1500).await {
+        Ok(suggestions) => SuggestSdtFixResult { success: true, suggestions, error: String::new() },
+        Err(e) => SuggestSdtFixResult { success: false, suggestions: String::new(), error: e },
+    }
+}

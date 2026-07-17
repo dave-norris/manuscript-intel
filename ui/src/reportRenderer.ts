@@ -858,25 +858,25 @@ function renderShowDontTell(data: any): string {
     major: '#e74c3c',
   };
 
-  for (const ch of chapters) {
+  chapters.forEach((ch: any, chIdx: number) => {
     const violations: any[] = ch.violations || [];
     html += `<section class="report-section">`;
     html += `<h3>${esc(ch.title || ch.file)} <span class="muted">(${violations.length})</span></h3>`;
 
-    for (const v of violations) {
+    violations.forEach((v: any, vIdx: number) => {
       const color = severityColor[v.severity] || '#7a7a7a';
       html += `<div class="sdt-violation">`;
-      html += `<div class="sdt-severity" style="color:${color}">${esc(v.severity)}</div>`;
+      html += `<div class="sdt-severity" style="color:${color}">${esc(v.severity)} <a href="#" class="suggest-sdt-fix-link" data-chapter-index="${chIdx}" data-violation-index="${vIdx}">Suggest fix</a></div>`;
       html += `<blockquote class="sdt-telling">${esc(v.telling_text)}</blockquote>`;
       if (v.context) {
         html += `<div class="sdt-context"><span class="muted">Context:</span> ${esc(v.context)}</div>`;
       }
       html += `<div class="sdt-why">${esc(v.why)}</div>`;
       html += `</div>`;
-    }
+    });
 
     html += `</section>`;
-  }
+  });
 
   return html;
 }

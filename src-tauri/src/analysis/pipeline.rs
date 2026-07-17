@@ -983,10 +983,16 @@ pub(crate) fn render_kdp_paste_section(
 #[derive(serde::Deserialize)]
 pub struct CraftPipelineRequest {
     pub folder:           String,
-    pub selected:         Vec<String>,  // e.g. ["chapter_summaries", "zeigarnik_analysis", "continuity_check"]
+    pub selected:         Vec<String>,
     pub provider:         String,
     pub api_key:          String,
-    pub model:            String,
+    pub model:            String,           // default fallback
+    #[serde(default)]
+    pub model_summaries:  String,           // override for chapter summaries
+    #[serde(default)]
+    pub model_continuity: String,           // override for continuity check
+    #[serde(default)]
+    pub model_sdt:        String,           // override for show don't tell
     /// "manuscript" or "series"
     #[serde(default)]
     pub continuity_scope: String,
@@ -1010,6 +1016,11 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
     let folder = PathBuf::from(&request.folder);
     if !folder.exists() { return err("Folder does not exist."); }
 
+    // Resolve per-function models (fall back to default)
+    let model_summaries = if request.model_summaries.is_empty() { &request.model } else { &request.model_summaries };
+    let model_continuity = if request.model_continuity.is_empty() { &request.model } else { &request.model_continuity };
+    let model_sdt = if request.model_sdt.is_empty() { &request.model } else { &request.model_sdt };
+
     crate::reset_cancel();
     let database = app.state::<db::Db>();
     let run_ts = chrono::Utc::now().to_rfc3339();
@@ -1021,13 +1032,13 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
 
     // ── Chapter Summaries ─────────────────────────────────────────────────
     if request.selected.contains(&"chapter_summaries".to_string()) {
-        emit(&app, &format!("Generating chapter summaries... [{}: {}]", request.provider, request.model));
+        emit(&app, &format!("Generating chapter summaries... [{}: {}]", request.provider, model_summaries));
         let chapters = collect_chapters(&folder);
         if chapters.is_empty() { return err("No .md chapter files found."); }
 
         let (done, skipped) = phase1_summaries(
             &app, &database, &chapters, &request.folder,
-            &request.provider, &request.api_key, &request.model,
+            &request.provider, &request.api_key, model_summaries,
         ).await;
         emit(&app, &format!("✓ Chapter summaries complete ({} new, {} skipped).", done, skipped));
 
@@ -1067,14 +1078,14 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
     // ── Continuity Check ──────────────────────────────────────────────────
     if request.selected.contains(&"continuity_check".to_string()) {
         if request.continuity_scope == "series" && request.series_id > 0 {
-            emit(&app, &format!("Running continuity check across the series... [{}: {}]", request.provider, request.model));
+            emit(&app, &format!("Running continuity check across the series... [{}: {}]", request.provider, model_continuity));
             let cr = super::continuity::check_continuity_for_series(
                 app.clone(),
                 super::continuity::SeriesContinuityRequest {
                     series_id: request.series_id,
                     provider: request.provider.clone(),
                     api_key: request.api_key.clone(),
-                    model: request.model.clone(),
+                    model: model_continuity.clone(),
                 },
             ).await;
             if cr.success {
@@ -1084,14 +1095,14 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
                 return cr;
             }
         } else {
-            emit(&app, &format!("Running continuity check for this manuscript... [{}: {}]", request.provider, request.model));
+            emit(&app, &format!("Running continuity check for this manuscript... [{}: {}]", request.provider, model_continuity));
             let cr = super::continuity::check_continuity_for_story(
                 app.clone(),
                 super::continuity::ContinuityRequest {
                     folder: request.folder.clone(),
                     provider: request.provider.clone(),
                     api_key: request.api_key.clone(),
-                    model: request.model.clone(),
+                    model: model_continuity.clone(),
                 },
             ).await;
             if cr.success {
@@ -1112,7 +1123,7 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
                 folder: request.folder.clone(),
                 provider: request.provider.clone(),
                 api_key: request.api_key.clone(),
-                model: request.model.clone(),
+                model: model_sdt.clone(),
             },
         ).await;
         if !sdt.success {

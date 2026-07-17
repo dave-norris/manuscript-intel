@@ -7,8 +7,7 @@ import type { ModelInfo, WinningCatImportResult, StaleCleanupResult } from '../t
 const settingsCtx = inject<{
   provider: Ref<string>;
   apiKey: Ref<string>;
-  model: Ref<string>;
-  proseModel: Ref<string>;
+  modelAssignments: Ref<{ default: string; summaries: string; genre: string; keywords: string; continuity: string; showDontTell: string; prose: string }>;
   canopyApiKey: Ref<string>;
   dataforseoLogin: Ref<string>;
   dataforseoPassword: Ref<string>;
@@ -139,11 +138,11 @@ async function onRemoveStale(): Promise<void> {
 
       <!-- Model -->
       <label>
-        Model
-        <span class="model-hint">Select a provider and fetch available models.</span>
+        Default Model
+        <span class="model-hint">Fetch models first, then assign each function below.</span>
       </label>
       <div class="model-row">
-        <select v-model="settingsCtx.model.value">
+        <select v-model="settingsCtx.modelAssignments.value.default">
           <option v-if="settingsCtx.models.value.length === 0" value="" disabled>
             No models loaded
           </option>
@@ -157,20 +156,75 @@ async function onRemoveStale(): Promise<void> {
       </div>
       <div class="model-fetch-status">{{ modelFetchStatus }}</div>
 
-      <!-- Prose Model -->
-      <label>
-        Prose Model
-        <span class="model-hint">Used for creative suggestions (continuity fixes, rewrites). Pick a higher-quality model.</span>
-      </label>
-      <div class="model-row">
-        <select v-model="settingsCtx.proseModel.value">
-          <option value="">(Same as analysis model)</option>
-          <option
-            v-for="m in settingsCtx.models.value"
-            :key="m.id"
-            :value="m.id"
-          >{{ modelLabel(m) }}</option>
-        </select>
+      <!-- Per-function model assignments -->
+      <div v-if="settingsCtx.models.value.length > 0" class="model-assignments">
+        <div class="model-assign-header">Model per function</div>
+
+        <div class="model-assign-row">
+          <div class="model-assign-label">
+            <strong>Chapter Summaries</strong>
+            <span class="model-recommend">Fast model. Structured extraction — accuracy matters more than creativity. A smaller, cheaper model works well.</span>
+          </div>
+          <select v-model="settingsCtx.modelAssignments.value.summaries">
+            <option value="">(Use default)</option>
+            <option v-for="m in settingsCtx.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
+          </select>
+        </div>
+
+        <div class="model-assign-row">
+          <div class="model-assign-label">
+            <strong>Genre Analysis</strong>
+            <span class="model-recommend">Classification task. Needs broad book-market knowledge. Mid-tier model is sufficient.</span>
+          </div>
+          <select v-model="settingsCtx.modelAssignments.value.genre">
+            <option value="">(Use default)</option>
+            <option v-for="m in settingsCtx.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
+          </select>
+        </div>
+
+        <div class="model-assign-row">
+          <div class="model-assign-label">
+            <strong>Keywords &amp; Categories</strong>
+            <span class="model-recommend">Short structured output. Fast model works — speed over depth.</span>
+          </div>
+          <select v-model="settingsCtx.modelAssignments.value.keywords">
+            <option value="">(Use default)</option>
+            <option v-for="m in settingsCtx.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
+          </select>
+        </div>
+
+        <div class="model-assign-row">
+          <div class="model-assign-label">
+            <strong>Continuity Check</strong>
+            <span class="model-recommend">Needs reasoning ability to spot contradictions across chapters. Use a capable model (e.g. GPT-4o, Claude Sonnet).</span>
+          </div>
+          <select v-model="settingsCtx.modelAssignments.value.continuity">
+            <option value="">(Use default)</option>
+            <option v-for="m in settingsCtx.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
+          </select>
+        </div>
+
+        <div class="model-assign-row">
+          <div class="model-assign-label">
+            <strong>Show Don't Tell</strong>
+            <span class="model-recommend">Literary judgment — needs to understand prose craft. Use a strong model (e.g. Claude Sonnet, GPT-4o).</span>
+          </div>
+          <select v-model="settingsCtx.modelAssignments.value.showDontTell">
+            <option value="">(Use default)</option>
+            <option v-for="m in settingsCtx.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
+          </select>
+        </div>
+
+        <div class="model-assign-row">
+          <div class="model-assign-label">
+            <strong>Prose Suggestions</strong>
+            <span class="model-recommend">Creative rewriting. Use the highest-quality model you have — this writes prose the author will paste into their manuscript.</span>
+          </div>
+          <select v-model="settingsCtx.modelAssignments.value.prose">
+            <option value="">(Use default)</option>
+            <option v-for="m in settingsCtx.models.value" :key="m.id" :value="m.id">{{ m.id }}</option>
+          </select>
+        </div>
       </div>
 
       <!-- Save -->
@@ -330,6 +384,58 @@ async function onRemoveStale(): Promise<void> {
   font-size: 12px;
   color: var(--text-muted);
   min-height: 16px;
+}
+
+.model-assignments {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+
+.model-assign-header {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.model-assign-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.model-assign-row:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.model-assign-label strong {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.model-recommend {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+  margin-top: 2px;
+  font-style: italic;
+}
+
+.model-assign-row select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 8px;
 }
 
 .settings-saved {

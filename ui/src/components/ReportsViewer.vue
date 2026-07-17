@@ -114,7 +114,7 @@ async function onSuggestFix(findingIndex: number): Promise<void> {
   const finding = findings[findingIndex];
   if (!finding) return;
 
-  const proseModel = settings.proseModel.value || settings.model.value;
+  const proseModel = settings.modelFor('prose');
   if (!proseModel) {
     suggestionError.value = 'No model selected. Set a model in Settings.';
     return;
@@ -165,7 +165,7 @@ async function onSuggestSdtFix(chapterIndex: number, violationIndex: number): Pr
   const violation = violations[violationIndex];
   if (!violation) return;
 
-  const proseModel = settings.proseModel.value || settings.model.value;
+  const proseModel = settings.modelFor('prose');
   if (!proseModel) {
     suggestionError.value = 'No model selected. Set a model in Settings.';
     return;

@@ -143,29 +143,27 @@ async fn extract_violations(
     provider: &str, api_key: &str, model: &str,
     filename: &str, content: &str,
 ) -> Result<Vec<AiViolation>, String> {
-    let system = r#"You are a fiction editor checking for "telling" instead of "showing."
+    let system = r#"You check fiction for TELLING instead of SHOWING. Output ONLY a JSON array.
 
-TELLING means the author directly states emotions, judgments, or internal states rather than letting the reader infer them from action, dialogue, body language, or sensory detail.
+A violation is when the author DIRECTLY STATES an emotion, judgment, or conclusion that should be inferred by the reader from action, dialogue, or sensory detail.
 
-Examples of telling:
-- "She felt nervous." (states emotion directly)
-- "He was a kind man." (states judgment)
-- "The party was boring." (states conclusion)
-- "She realized he was lying." (tells the realization instead of showing the clues)
+Flag ONLY clear violations. Do NOT flag:
+- Internal monologue that reveals character voice
+- Montage/summary passages that compress time intentionally
+- Metaphors, similes, or sensory comparisons
+- A character's self-aware observations in close POV
+- Stylistic choices that serve pacing or rhythm
 
-NOT violations (these are showing):
-- "Her hands trembled as she reached for the door." (physical action implies nerves)
-- "He always remembered birthdays." (behavior implies kindness)
-- Dialogue, action scenes, sensory descriptions
+For each violation return exactly:
+{"telling_text":"<exact quote, max 15 words>","context":"<1-2 surrounding sentences>","why":"<one sentence>","severity":"minor|moderate|major"}
 
-For each violation found, return:
-- telling_text: the exact words from the manuscript that tell (keep short, one sentence max)
-- context: 1-2 sentences of surrounding text so the author can locate it
-- why: one sentence explaining what is being told instead of shown
-- severity: "minor" (quick fix), "moderate" (weakens the scene), or "major" (undermines a key moment)
-
-Return ONLY a JSON array. No markdown, no preamble. If no violations are found, return [].
-Maximum 10 violations per chapter — focus on the most impactful ones."#;
+Rules:
+- severity "major" = undermines a key emotional beat
+- severity "moderate" = weakens the scene noticeably
+- severity "minor" = could be tighter but doesn't hurt much
+- Maximum 8 per chapter. Only flag what genuinely weakens the prose.
+- Return [] if the chapter is clean.
+- Do NOT include reasoning, preamble, or markdown. ONLY the JSON array."#;
 
     let user = format!("Chapter: {}\n\n---\n\n{}", filename, content);
 
@@ -175,16 +173,44 @@ Maximum 10 violations per chapter — focus on the most impactful ones."#;
         .trim_start_matches("```json").trim_start_matches("```")
         .trim_end_matches("```").trim();
 
+    // If the model dumped reasoning before the JSON, extract just the array
+    let json_str = if clean.starts_with('[') {
+        clean.to_string()
+    } else if let Some(start) = clean.find('[') {
+        // Find the matching closing bracket
+        let bytes = clean.as_bytes();
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escape = false;
+        let mut end = clean.len();
+        for (i, &b) in bytes[start..].iter().enumerate() {
+            if escape { escape = false; continue; }
+            match b {
+                b'\\' if in_string => escape = true,
+                b'"' => in_string = !in_string,
+                b'[' if !in_string => depth += 1,
+                b']' if !in_string => {
+                    depth -= 1;
+                    if depth == 0 { end = start + i + 1; break; }
+                }
+                _ => {}
+            }
+        }
+        clean[start..end].to_string()
+    } else {
+        clean.to_string()
+    };
+
     // Try full parse first
-    if let Ok(violations) = serde_json::from_str::<Vec<AiViolation>>(clean) {
+    if let Ok(violations) = serde_json::from_str::<Vec<AiViolation>>(&json_str) {
         return Ok(violations.into_iter()
             .filter(|v| !v.telling_text.is_empty())
             .collect());
     }
 
     // Fallback: parse individually from Value array
-    let arr = serde_json::from_str::<Vec<serde_json::Value>>(clean)
-        .map_err(|e| format!("Parse error: {} | got: {}", e, &clean[..clean.len().min(200)]))?;
+    let arr = serde_json::from_str::<Vec<serde_json::Value>>(&json_str)
+        .map_err(|e| format!("Parse error: {} | got: {}", e, &json_str[..json_str.len().min(200)]))?;
 
     let mut good = Vec::new();
     for item in arr {

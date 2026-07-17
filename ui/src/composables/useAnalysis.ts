@@ -110,7 +110,8 @@ export type ContinuityScope = { mode: 'manuscript' } | { mode: 'series'; seriesI
 async function runCraftAnalysis(folder: string, selected: string[], continuityScope: ContinuityScope): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
 
-  const { provider, apiKey, model } = getSettings();
+  const s = useSettings();
+  const { provider, apiKey } = getSettings();
   clearLog();
   isWorking.value = true;
 
@@ -121,7 +122,10 @@ async function runCraftAnalysis(folder: string, selected: string[], continuitySc
         selected,
         provider,
         api_key: apiKey,
-        model,
+        model: s.modelFor('default'),
+        model_summaries: s.modelFor('summaries'),
+        model_continuity: s.modelFor('continuity'),
+        model_sdt: s.modelFor('showDontTell'),
         continuity_scope: continuityScope.mode,
         series_id: continuityScope.mode === 'series' ? continuityScope.seriesId : 0,
       },

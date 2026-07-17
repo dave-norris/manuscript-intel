@@ -406,6 +406,28 @@ fn find_file_recursive(dir: &std::path::Path, target_name: &str) -> Option<std::
     None
 }
 
+/// Save a chapter file to disk (full overwrite). Used by the editor's auto-save.
+#[tauri::command]
+pub async fn save_chapter(file_path: String, content: String) -> Result<(), String> {
+    let path = std::path::PathBuf::from(&file_path);
+
+    // Resolve the actual path (handles old reports with just filename)
+    let real_path = if path.exists() {
+        path.clone()
+    } else if let (Some(filename), Some(parent)) = (path.file_name(), path.parent()) {
+        let name = filename.to_str().unwrap_or("");
+        [parent, parent.parent().unwrap_or(parent)].iter()
+            .find_map(|dir| find_file_recursive(dir, name))
+            .ok_or_else(|| format!("Could not find {}", file_path))?
+    } else {
+        return Err(format!("Could not find {}", file_path));
+    };
+
+    tokio::fs::write(&real_path, &content)
+        .await
+        .map_err(|e| format!("Could not write {}: {}", real_path.display(), e))
+}
+
 /// Apply a text fix to a manuscript file on disk.
 /// Finds `old_text` in the file and replaces it with `new_text`.
 /// Returns the updated full content so the UI can refresh.

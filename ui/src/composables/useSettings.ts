@@ -15,10 +15,6 @@ export interface ModelAssignments {
   prose:         string;  // Creative suggestions / rewrites
 }
 
-const MODEL_KEYS: (keyof ModelAssignments)[] = [
-  'default', 'summaries', 'genre', 'keywords', 'continuity', 'showDontTell', 'prose'
-];
-
 function loadAssignments(): ModelAssignments {
   const stored = localStorage.getItem('modelAssignments');
   const defaults: ModelAssignments = {
@@ -115,8 +111,6 @@ async function testDataforseo(): Promise<{ success: boolean; error: string }> {
     return { success: false, error: String(e) };
   }
 }
-
-export { MODEL_KEYS };
 
 export function useSettings() {
   return {

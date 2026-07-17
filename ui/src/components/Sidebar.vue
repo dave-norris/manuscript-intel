@@ -1,39 +1,17 @@
 <script setup lang="ts">
 import { inject, ref, watch } from 'vue';
-import type { Ref, ComputedRef } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import type { Story, ReportEnvelope, Series, SidebarReportGroup, Finding } from '../types';
+import { storiesKey, reportsKey, platformKey, showPanelKey, openManuscriptEditorKey, seriesKey } from '../injectionKeys';
+import type { Story, Series } from '../types';
 
 // ── Injections ────────────────────────────────────────────────────────────────
 
-const storiesCtx = inject<{
-  stories: Ref<Story[]>;
-  activeStoryId: Ref<string | null>;
-  activeStory: ComputedRef<Story | null>;
-  activeFolder: ComputedRef<string>;
-  setActiveStory: (id: string | null) => void;
-}>('stories')!;
-
-const reportsCtx = inject<{
-  sidebarGroups: Ref<SidebarReportGroup[]>;
-  currentReport: Ref<ReportEnvelope | null>;
-  loadSidebarReports: (folder: string, platform: string) => Promise<void>;
-  openReport: (id: number) => Promise<ReportEnvelope>;
-  deleteReport: (id: number) => Promise<void>;
-  closeReport: () => void;
-}>('reports')!;
-
-const platformCtx = inject<{
-  platform: Ref<'kdp' | 'wide' | 'craft'>;
-}>('platform')!;
-
-const showPanel = inject<(name: string) => void>('showPanel')!;
-const openManuscriptEditor = inject<(findings: Finding[], startIndex: number) => void>('openManuscriptEditor')!;
-
-const seriesCtx = inject<{
-  series: Ref<Series[]>;
-  loadSeries: () => Promise<void>;
-}>('series')!;
+const storiesCtx = inject(storiesKey)!;
+const reportsCtx = inject(reportsKey)!;
+const platformCtx = inject(platformKey)!;
+const showPanel = inject(showPanelKey)!;
+const openManuscriptEditor = inject(openManuscriptEditorKey)!;
+const seriesCtx = inject(seriesKey)!;
 
 // ── Emits ─────────────────────────────────────────────────────────────────────
 

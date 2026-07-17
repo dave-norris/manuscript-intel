@@ -1,37 +1,16 @@
 <script setup lang="ts">
 import { inject, ref, computed, watch, onMounted } from 'vue';
-import type { Ref, ComputedRef } from 'vue';
-import type { Story, AnalysisState, SeriesRow } from '../types';
 import type { ContinuityScope } from '../composables/useAnalysis';
+import { storiesKey, analysisKey, seriesKey, platformKey } from '../injectionKeys';
 import LogStream from './LogStream.vue';
 import { useReportTypes } from '../composables/useReportTypes';
 
 // ── Injections ────────────────────────────────────────────────────────────────
 
-const storiesCtx = inject<{
-  activeStory: ComputedRef<Story | null>;
-  activeFolder: ComputedRef<string>;
-}>('stories')!;
-
-const analysisCtx = inject<{
-  analysisState: Ref<AnalysisState | null>;
-  isWorking: Ref<boolean>;
-  runAnalyze: (folder: string, forceResummarize: boolean, platform: string) => Promise<void>;
-  runCraftAnalysis: (folder: string, selected: string[], continuityScope: ContinuityScope) => Promise<void>;
-  runMarketIntel: (folder: string) => Promise<void>;
-  cancelOperation: () => Promise<void>;
-}>('analysis')!;
-
-const seriesCtx = inject<{
-  series: Ref<SeriesRow[]>;
-  loadSeries: () => Promise<void>;
-}>('series')!;
-
-const platformCtx = inject<{
-  platform: Ref<'kdp' | 'wide' | 'craft'>;
-  isKdp: ComputedRef<boolean>;
-  setPlatform: (p: 'kdp' | 'wide' | 'craft') => void;
-}>('platform')!;
+const storiesCtx = inject(storiesKey)!;
+const analysisCtx = inject(analysisKey)!;
+const seriesCtx = inject(seriesKey)!;
+const platformCtx = inject(platformKey)!;
 
 // ── Report types from DB ──────────────────────────────────────────────────────
 
@@ -213,7 +192,7 @@ function onStop(): void {
         class="continuity-series-select"
       >
         <option :value="null" disabled>Choose a series…</option>
-        <option v-for="s in seriesCtx.series.value" :key="s.id" :value="s.id">{{ s.name }} ({{ s.book_count }} books)</option>
+        <option v-for="s in seriesCtx.series.value" :key="s.id" :value="s.id">{{ s.name }} ({{ s.books.length }} books)</option>
       </select>
       <span v-if="seriesCtx.series.value.length === 0" class="continuity-scope-hint">No series yet — create one in the Series panel.</span>
     </div>

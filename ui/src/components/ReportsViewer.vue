@@ -1,29 +1,17 @@
 <script setup lang="ts">
 import { inject, ref, computed, onMounted, onUnmounted } from 'vue';
-import type { Ref, ComputedRef } from 'vue';
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { renderReport } from '../reportRenderer';
-import type { Story, ReportEnvelope, SidebarReportGroup, Finding } from '../types';
+import { storiesKey, reportsKey, platformKey, showPanelKey, openManuscriptEditorKey } from '../injectionKeys';
+import type { Finding } from '../types';
 
 // ── Injections ────────────────────────────────────────────────────────────────
 
-const reportsCtx = inject<{
-  sidebarGroups: Ref<SidebarReportGroup[]>;
-  currentReport: Ref<ReportEnvelope | null>;
-  loadSidebarReports: (folder: string, platform: string) => Promise<void>;
-  deleteReport: (id: number) => Promise<void>;
-  closeReport: () => void;
-}>('reports')!;
-
-const storiesCtx = inject<{
-  activeStory: ComputedRef<Story | null>;
-  activeFolder: ComputedRef<string>;
-}>('stories')!;
-
-const platformCtx = inject<{ platform: Ref<'kdp' | 'wide' | 'craft'> }>('platform')!;
-
-const showPanel = inject<(name: string) => void>('showPanel')!;
-const openManuscriptEditor = inject<(findings: Finding[], startIndex: number) => void>('openManuscriptEditor')!;
+const reportsCtx = inject(reportsKey)!;
+const storiesCtx = inject(storiesKey)!;
+const platformCtx = inject(platformKey)!;
+const showPanel = inject(showPanelKey)!;
+const openManuscriptEditor = inject(openManuscriptEditorKey)!;
 
 // ── Local state ───────────────────────────────────────────────────────────────
 

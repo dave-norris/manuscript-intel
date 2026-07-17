@@ -144,46 +144,23 @@ async function runCraftAnalysis(folder: string, selected: string[], continuitySc
 async function runMarketIntel(folder: string): Promise<void> {
   if (!folder) { appendLog('✗ No story selected.'); return; }
   const { provider, apiKey, model, canopyApiKey } = getSettings();
-  if (!canopyApiKey) { appendLog('✗ No Canopy API key set. Go to Settings.'); return; }
-  if (!apiKey) { appendLog('✗ No AI API key set. Go to Settings.'); return; }
-  if (!model) { appendLog('✗ No model selected. Go to Settings.'); return; }
 
-  appendLog('Running Market Intel (Canopy API)...');
-  appendLog('  → Competition analysis');
-  appendLog('  → Review mining');
-  appendLog('  → Author catalog analysis');
+  clearLog();
   isWorking.value = true;
 
-  // Competition
   try {
-    const compResult = await invoke<GenreResult>('analyze_competition_canopy', {
-      request: { folder, api_key: apiKey, model, store: 'Kindle', provider, canopy_api_key: canopyApiKey },
+    const result = await invoke<GenreResult>('run_market_intel', {
+      request: { folder, provider, api_key: apiKey, model, canopy_api_key: canopyApiKey },
     });
-    if (compResult.success) { appendLog('✓ Competition analysis complete.'); }
-    else { appendLog('✗ Competition: ' + compResult.error); }
-  } catch (e) { appendLog('✗ Competition: ' + String(e)); }
-
-  // Reviews
-  try {
-    const revResult = await invoke<{ success: boolean; error: string }>('mine_competitor_reviews', {
-      request: { folder, canopy_api_key: canopyApiKey, api_key: apiKey, model, provider },
-    });
-    if (revResult.success) { appendLog('✓ Review mining complete.'); }
-    else { appendLog('✗ Reviews: ' + revResult.error); }
-  } catch (e) { appendLog('✗ Reviews: ' + String(e)); }
-
-  // Authors
-  try {
-    const authResult = await invoke<{ success: boolean; error: string }>('analyze_comp_authors', {
-      request: { folder, canopy_api_key: canopyApiKey, api_key: apiKey, model, provider },
-    });
-    if (authResult.success) { appendLog('✓ Author analysis complete.'); }
-    else { appendLog('✗ Authors: ' + authResult.error); }
-  } catch (e) { appendLog('✗ Authors: ' + String(e)); }
-
-  appendLog('✓ Market Intel complete. View reports in the sidebar.');
-  isWorking.value = false;
-  saveLog(folder, new Date().toISOString());
+    if (!result.success) {
+      appendLog('✗ ' + result.error);
+    }
+  } catch (e) {
+    appendLog('✗ ' + String(e));
+  } finally {
+    isWorking.value = false;
+    saveLog(folder, new Date().toISOString());
+  }
 }
 
 async function cancelOperation(): Promise<void> {

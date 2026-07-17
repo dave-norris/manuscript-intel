@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useSettings } from '../composables/useSettings';
+import { formatMarkdown } from '../formatMarkdown';
 import ChapterEditor from './ChapterEditor.vue';
 import type { Finding } from '../types';
 
@@ -128,31 +129,6 @@ function onClose(): void {
   editorRef.value?.saveNow();
   emit('close');
 }
-
-// ── Suggestion formatting ─────────────────────────────────────────────────────
-
-function formatSuggestion(text: string): string {
-  if (!text) return '';
-  return text
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/^### (.+)$/gm, '<h4>$1</h4>')
-    .replace(/^## (.+)$/gm, '<h3>$1</h3>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/```([\s\S]*?)```/g, '<pre>$1</pre>')
-    .replace(/^- (.+)$/gm, '<li>$1</li>')
-    .replace(/(<li>.*<\/li>\n?)+/g, (m) => `<ul>${m}</ul>`)
-    .replace(/\n{2,}/g, '</p><p>')
-    .replace(/^/, '<p>').replace(/$/, '</p>')
-    .replace(/<p><\/p>/g, '')
-    .replace(/<p>(<h[3-4]>)/g, '$1')
-    .replace(/(<\/h[3-4]>)<\/p>/g, '$1')
-    .replace(/<p>(<ul>)/g, '$1')
-    .replace(/(<\/ul>)<\/p>/g, '$1')
-    .replace(/<p>(<pre>)/g, '$1')
-    .replace(/(<\/pre>)<\/p>/g, '$1');
-}
 </script>
 
 <template>
@@ -197,7 +173,7 @@ function formatSuggestion(text: string): string {
         <div v-if="suggestionError" class="mv-error">{{ suggestionError }}</div>
 
         <div v-if="suggestion" class="mv-suggestion-content">
-          <div class="mv-suggestion-text" v-html="formatSuggestion(suggestion)"></div>
+          <div class="mv-suggestion-text" v-html="formatMarkdown(suggestion)"></div>
           <div class="mv-apply-section">
             <label class="mv-apply-label">Replacement text:</label>
             <textarea v-model="applyText" class="mv-apply-input" rows="3" placeholder="Paste or type the replacement text"></textarea>

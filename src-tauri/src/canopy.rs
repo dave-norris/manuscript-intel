@@ -1262,3 +1262,68 @@ fn empty_deep_stats() -> DeepCategoryStats {
         sales_rank_25: "N/A".to_string(), sales_rank_50: "N/A".to_string(),
     }
 }
+
+// ── Market Intel pipeline (single command) ────────────────────────────────────
+
+use crate::analysis::GenreResult;
+
+#[derive(Deserialize)]
+pub struct MarketIntelRequest {
+    pub folder:         String,
+    pub provider:       String,
+    pub api_key:        String,
+    pub model:          String,
+    pub canopy_api_key: String,
+}
+
+/// Runs competition analysis, review mining, and author analysis in one command.
+#[tauri::command]
+pub async fn run_market_intel(app: AppHandle, request: MarketIntelRequest) -> GenreResult {
+    fn emit(app: &AppHandle, msg: &str) { let _ = app.emit("genre:log", msg); }
+
+    if request.canopy_api_key.is_empty() { return GenreResult { success: false, report: String::new(), error: "No Canopy API key set. Go to Settings.".to_string(), run_ts: String::new() }; }
+    if request.api_key.is_empty() { return GenreResult { success: false, report: String::new(), error: "No AI API key set. Go to Settings.".to_string(), run_ts: String::new() }; }
+    if request.model.is_empty() { return GenreResult { success: false, report: String::new(), error: "No model selected. Go to Settings.".to_string(), run_ts: String::new() }; }
+
+    emit(&app, "Running Market Intel (Canopy API)...");
+    emit(&app, "  → Competition analysis");
+    emit(&app, "  → Review mining");
+    emit(&app, "  → Author catalog analysis");
+
+    // Competition
+    let comp_result = analyze_competition_canopy(app.clone(), CompetitionCanopyRequest {
+        folder: request.folder.clone(),
+        api_key: request.api_key.clone(),
+        model: request.model.clone(),
+        store: "Kindle".to_string(),
+        provider: request.provider.clone(),
+        canopy_api_key: request.canopy_api_key.clone(),
+    }).await;
+    if comp_result.success { emit(&app, "✓ Competition analysis complete."); }
+    else { emit(&app, &format!("✗ Competition: {}", comp_result.error)); }
+
+    // Reviews
+    let rev_result = mine_competitor_reviews(app.clone(), ReviewMiningRequest {
+        folder: request.folder.clone(),
+        canopy_api_key: request.canopy_api_key.clone(),
+        api_key: request.api_key.clone(),
+        model: request.model.clone(),
+        provider: request.provider.clone(),
+    }).await;
+    if rev_result.success { emit(&app, "✓ Review mining complete."); }
+    else { emit(&app, &format!("✗ Reviews: {}", rev_result.error)); }
+
+    // Authors
+    let auth_result = analyze_comp_authors(app.clone(), AuthorAnalysisRequest {
+        folder: request.folder.clone(),
+        canopy_api_key: request.canopy_api_key.clone(),
+        api_key: request.api_key.clone(),
+        model: request.model.clone(),
+        provider: request.provider.clone(),
+    }).await;
+    if auth_result.success { emit(&app, "✓ Author analysis complete."); }
+    else { emit(&app, &format!("✗ Authors: {}", auth_result.error)); }
+
+    emit(&app, "✓ Market Intel complete.");
+    GenreResult { success: true, report: String::new(), error: String::new(), run_ts: chrono::Utc::now().to_rfc3339() }
+}

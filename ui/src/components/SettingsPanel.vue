@@ -1,24 +1,11 @@
 <script setup lang="ts">
 import { inject, ref } from 'vue';
-import type { Ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { settingsKey, showPanelKey } from '../injectionKeys';
 import type { ModelInfo, WinningCatImportResult, StaleCleanupResult } from '../types';
 
-const settingsCtx = inject<{
-  provider: Ref<string>;
-  apiKey: Ref<string>;
-  modelAssignments: Ref<{ default: string; summaries: string; genre: string; keywords: string; continuity: string; showDontTell: string; prose: string }>;
-  canopyApiKey: Ref<string>;
-  dataforseoLogin: Ref<string>;
-  dataforseoPassword: Ref<string>;
-  models: Ref<ModelInfo[]>;
-  fetchModels: () => Promise<{ success: boolean; error: string }>;
-  saveSettings: () => void;
-  testCanopy: () => Promise<{ success: boolean; error: string }>;
-  testDataforseo: () => Promise<{ success: boolean; error: string }>;
-}>('settings')!;
-
-const showPanel = inject<(name: string) => void>('showPanel')!;
+const settingsCtx = inject(settingsKey)!;
+const showPanel = inject(showPanelKey)!;
 
 const savedMsg = ref('');
 const modelFetchStatus = ref('');

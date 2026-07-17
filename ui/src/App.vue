@@ -6,6 +6,10 @@ import { usePlatform } from './composables/usePlatform';
 import { useSettings } from './composables/useSettings';
 import { useReports } from './composables/useReports';
 import { useSeries } from './composables/useSeries';
+import {
+  storiesKey, analysisKey, platformKey, settingsKey,
+  reportsKey, seriesKey, showPanelKey, openManuscriptEditorKey,
+} from './injectionKeys';
 import type { Story } from './types';
 
 import TitleBar from './components/TitleBar.vue';
@@ -27,12 +31,12 @@ const settingsCtx = useSettings();
 const reportsCtx = useReports();
 const seriesCtx = useSeries();
 
-provide('stories', storiesCtx);
-provide('analysis', analysisCtx);
-provide('platform', platformCtx);
-provide('settings', settingsCtx);
-provide('reports', reportsCtx);
-provide('series', seriesCtx);
+provide(storiesKey, storiesCtx);
+provide(analysisKey, analysisCtx);
+provide(platformKey, platformCtx);
+provide(settingsKey, settingsCtx);
+provide(reportsKey, reportsCtx);
+provide(seriesKey, seriesCtx);
 
 // ── Panel state ───────────────────────────────────────────────────────────────
 
@@ -51,7 +55,7 @@ function showPanel(name: Panel): void {
   activePanel.value = name;
 }
 
-provide('showPanel', showPanel);
+provide(showPanelKey, showPanel as (name: string) => void);
 
 // ── Manuscript editor state ───────────────────────────────────────────────────
 
@@ -64,7 +68,7 @@ function openManuscriptEditor(findings: Finding[], startIndex: number): void {
   activePanel.value = 'manuscript';
 }
 
-provide('openManuscriptEditor', openManuscriptEditor);
+provide(openManuscriptEditorKey, openManuscriptEditor);
 
 // ── Story form state ──────────────────────────────────────────────────────────
 

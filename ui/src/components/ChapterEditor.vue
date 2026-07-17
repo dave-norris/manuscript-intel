@@ -3,6 +3,7 @@ import { ref, watch, onBeforeUnmount, nextTick } from 'vue';
 import { useEditor, EditorContent } from '@tiptap/vue-3';
 import StarterKit from '@tiptap/starter-kit';
 import Highlight from '@tiptap/extension-highlight';
+import { Markdown } from 'tiptap-markdown';
 import { invoke } from '@tauri-apps/api/core';
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -31,6 +32,11 @@ const editor = useEditor({
       heading: { levels: [1, 2, 3] },
     }),
     Highlight.configure({ multicolor: true }),
+    Markdown.configure({
+      html: false,
+      transformPastedText: true,
+      transformCopiedText: true,
+    }),
   ],
   content: '',
   editorProps: {
@@ -50,15 +56,14 @@ async function loadFile(filePath: string): Promise<void> {
   try {
     const text = await invoke<string>('read_chapter', { filePath });
     content.value = text;
-    // Convert markdown to HTML for Tiptap
-    const html = markdownToEditorHtml(text);
-    editor.value?.commands.setContent(html);
+    // The Markdown extension handles conversion automatically
+    editor.value?.commands.setContent(text);
     await nextTick();
     if (props.highlightText) {
       highlightTarget(props.highlightText);
     }
   } catch (e) {
-    editor.value?.commands.setContent(`<p style="color:red">Error loading: ${e}</p>`);
+    editor.value?.commands.setContent(`Error loading: ${e}`);
   }
 }
 
@@ -73,12 +78,10 @@ async function saveNow(): Promise<void> {
   if (!editor.value || !props.filePath) return;
   saving.value = true;
   try {
-    // Get plain text from editor (preserving markdown structure)
-    const text = editorHtmlToMarkdown(editor.value.getHTML());
-    await invoke<string>('write_manuscript_fix', {
+    const text = ((editor.value.storage as any).markdown as { getMarkdown: () => string }).getMarkdown();
+    await invoke<void>('save_chapter', {
       filePath: props.filePath,
-      oldText: content.value,
-      newText: text,
+      content: text,
     });
     content.value = text;
     saveStatus.value = 'Saved';
@@ -191,46 +194,6 @@ watch(() => props.highlightText, (text) => {
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer);
 });
-
-// ── Markdown <-> HTML conversion (simple, prose-focused) ──────────────────────
-
-function markdownToEditorHtml(md: string): string {
-  return md
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/^---$/gm, '<hr>')
-    .split(/\n{2,}/)
-    .map(block => {
-      if (block.startsWith('<h') || block.startsWith('<hr')) return block;
-      return `<p>${block.replace(/\n/g, '<br>')}</p>`;
-    })
-    .join('');
-}
-
-function editorHtmlToMarkdown(html: string): string {
-  return html
-    .replace(/<h1>(.*?)<\/h1>/g, '# $1\n\n')
-    .replace(/<h2>(.*?)<\/h2>/g, '## $1\n\n')
-    .replace(/<h3>(.*?)<\/h3>/g, '### $1\n\n')
-    .replace(/<strong>(.*?)<\/strong>/g, '**$1**')
-    .replace(/<em>(.*?)<\/em>/g, '*$1*')
-    .replace(/<mark[^>]*>(.*?)<\/mark>/g, '$1')
-    .replace(/<hr\s*\/?>/g, '---\n\n')
-    .replace(/<br\s*\/?>/g, '\n')
-    .replace(/<\/p>\s*<p>/g, '\n\n')
-    .replace(/<\/?p>/g, '')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/\n{3,}/g, '\n\n')
-    .trim() + '\n';
-}
 </script>
 
 <template>

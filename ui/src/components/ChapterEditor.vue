@@ -21,7 +21,8 @@ const emit = defineEmits<{
 
 const saving = ref(false);
 const saveStatus = ref('');
-const content = ref('');
+const content = ref('');  // Original content as loaded from disk
+const dirty = ref(false);
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ── Editor setup ──────────────────────────────────────────────────────────────
@@ -43,9 +44,12 @@ const editor = useEditor({
     attributes: {
       class: 'chapter-editor-content',
     },
+    handleDOMEvents: {
+      blur: () => { if (dirty.value) scheduleSave(); return false; },
+    },
   },
   onUpdate: () => {
-    scheduleSave();
+    dirty.value = true;
   },
 });
 
@@ -75,15 +79,24 @@ function scheduleSave(): void {
 }
 
 async function saveNow(): Promise<void> {
-  if (!editor.value || !props.filePath) return;
+  if (!editor.value || !props.filePath || !dirty.value) return;
+
+  const text = ((editor.value.storage as any).markdown as { getMarkdown: () => string }).getMarkdown();
+
+  // Don't write if nothing actually changed (prevents git noise)
+  if (text === content.value) {
+    dirty.value = false;
+    return;
+  }
+
   saving.value = true;
   try {
-    const text = ((editor.value.storage as any).markdown as { getMarkdown: () => string }).getMarkdown();
     await invoke<void>('save_chapter', {
       filePath: props.filePath,
       content: text,
     });
     content.value = text;
+    dirty.value = false;
     saveStatus.value = 'Saved';
     emit('saved');
     setTimeout(() => { saveStatus.value = ''; }, 1500);
@@ -161,6 +174,7 @@ function highlightTarget(text: string): void {
 function insertAtCursor(text: string): void {
   if (!editor.value) return;
   editor.value.chain().focus().insertContent(text).run();
+  dirty.value = true;
   scheduleSave();
 }
 
@@ -170,16 +184,16 @@ function replaceSelection(text: string): void {
   if (!editor.value) return;
   const { from, to } = editor.value.state.selection;
   if (from === to) {
-    // No selection — insert at cursor
     insertAtCursor(text);
   } else {
     editor.value.chain().focus().deleteSelection().insertContent(text).run();
+    dirty.value = true;
     scheduleSave();
   }
 }
 
 // Expose methods to parent
-defineExpose({ insertAtCursor, replaceSelection, highlightTarget, saveNow });
+defineExpose({ insertAtCursor, replaceSelection, highlightTarget, saveNow, dirty });
 
 // ── Watch file path changes ───────────────────────────────────────────────────
 
@@ -198,9 +212,10 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="chapter-editor">
-    <div class="editor-status" v-if="saving || saveStatus">
+    <div class="editor-status" v-if="saving || saveStatus || dirty">
       <span v-if="saving" class="status-saving">Saving...</span>
-      <span v-else class="status-saved">{{ saveStatus }}</span>
+      <span v-else-if="saveStatus" class="status-saved">{{ saveStatus }}</span>
+      <span v-else-if="dirty" class="status-dirty">Unsaved</span>
     </div>
     <EditorContent :editor="editor" class="editor-wrapper" />
   </div>
@@ -229,6 +244,11 @@ onBeforeUnmount(() => {
 
 .status-saved {
   color: #27ae60;
+}
+
+.status-dirty {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .editor-wrapper {

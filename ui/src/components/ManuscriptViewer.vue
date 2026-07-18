@@ -69,6 +69,21 @@ async function onSuggestFix(): Promise<void> {
       });
       if (result.success) suggestion.value = result.suggestions;
       else suggestionError.value = result.error;
+    } else if (finding.value.reportType === 'ai_isms') {
+      const result = await invoke<{ success: boolean; suggestions: string; error: string }>('suggest_ai_isms_fix', {
+        request: {
+          provider: settings.provider.value,
+          api_key: settings.apiKey.value,
+          model: proseModel,
+          telling_text: finding.value.tellingText,
+          context: finding.value.context,
+          why: finding.value.why,
+          chapter_title: finding.value.chapterTitle,
+          folder: props.storyFolder,
+        }
+      });
+      if (result.success) suggestion.value = result.suggestions;
+      else suggestionError.value = result.error;
     } else if (finding.value.reportType === 'continuity') {
       const result = await invoke<{ success: boolean; suggestions: string; error: string }>('suggest_continuity_fix', {
         request: {

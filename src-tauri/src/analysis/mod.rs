@@ -19,6 +19,7 @@ pub mod pipeline;
 pub mod zeigarnik;
 pub mod continuity;
 pub mod show_dont_tell;
+pub mod ai_isms;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};

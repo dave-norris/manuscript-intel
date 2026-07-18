@@ -51,6 +51,7 @@ export interface AnalysisState {
   has_zeigarnik: boolean;
   has_continuity_check: boolean;
   has_show_dont_tell: boolean;
+  has_ai_isms: boolean;
 }
 
 export interface SeriesRow {
@@ -122,7 +123,7 @@ export interface Finding {
   context: string;
   why: string;
   severity: string;
-  reportType: 'show_dont_tell' | 'continuity';
+  reportType: 'show_dont_tell' | 'ai_isms' | 'continuity';
   entity?: string;
   attribute?: string;
   explanation?: string;

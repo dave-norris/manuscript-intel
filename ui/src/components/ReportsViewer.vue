@@ -66,6 +66,18 @@ function onClose(): void {
 // ── Open manuscript editor for a finding ──────────────────────────────────────
 
 function openEditorForSdt(chapterIndex: number, violationIndex: number): void {
+  openEditorForPassageReport(chapterIndex, violationIndex, 'show_dont_tell');
+}
+
+function openEditorForAiIsms(chapterIndex: number, violationIndex: number): void {
+  openEditorForPassageReport(chapterIndex, violationIndex, 'ai_isms');
+}
+
+function openEditorForPassageReport(
+  chapterIndex: number,
+  violationIndex: number,
+  reportType: 'show_dont_tell' | 'ai_isms',
+): void {
   if (!report.value || report.value.format !== 'json') return;
   const folder = storiesCtx.activeFolder.value;
   if (!folder) return;
@@ -73,7 +85,6 @@ function openEditorForSdt(chapterIndex: number, violationIndex: number): void {
   const data = JSON.parse(report.value.content);
   const chapters: any[] = data.chapters || [];
 
-  // Build findings array from all SDT violations
   const findings: Finding[] = [];
   let targetIdx = 0;
 
@@ -90,7 +101,7 @@ function openEditorForSdt(chapterIndex: number, violationIndex: number): void {
         context: v.context || '',
         why: v.why || '',
         severity: v.severity || 'minor',
-        reportType: 'show_dont_tell',
+        reportType,
       });
     });
   });
@@ -157,6 +168,12 @@ function onContentClick(e: MouseEvent): void {
     const chIdx = parseInt(target.dataset.chapterIndex || '', 10);
     const vIdx = parseInt(target.dataset.violationIndex || '', 10);
     if (!isNaN(chIdx) && !isNaN(vIdx)) openEditorForSdt(chIdx, vIdx);
+  }
+  if (target.classList.contains('suggest-ai-isms-fix-link')) {
+    e.preventDefault();
+    const chIdx = parseInt(target.dataset.chapterIndex || '', 10);
+    const vIdx = parseInt(target.dataset.violationIndex || '', 10);
+    if (!isNaN(chIdx) && !isNaN(vIdx)) openEditorForAiIsms(chIdx, vIdx);
   }
 }
 

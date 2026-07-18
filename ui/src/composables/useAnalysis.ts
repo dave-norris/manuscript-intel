@@ -126,6 +126,7 @@ async function runCraftAnalysis(folder: string, selected: string[], continuitySc
         model_summaries: s.modelFor('summaries'),
         model_continuity: s.modelFor('continuity'),
         model_sdt: s.modelFor('showDontTell'),
+        model_ai_isms: s.modelFor('aiIsms'),
         continuity_scope: continuityScope.mode,
         series_id: continuityScope.mode === 'series' ? continuityScope.seriesId : 0,
       },

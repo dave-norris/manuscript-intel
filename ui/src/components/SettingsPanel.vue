@@ -50,6 +50,7 @@ const MIN_TIER: Record<string, Tier> = {
   keywords: 'basic',
   continuity: 'capable',
   showDontTell: 'capable',
+  aiIsms: 'capable',
   prose: 'strong',
 };
 
@@ -285,6 +286,17 @@ async function onRemoveStale(): Promise<void> {
           <select v-model="settingsCtx.modelAssignments.value.showDontTell">
             <option value="">(Use default)</option>
             <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'showDontTell') }}</option>
+          </select>
+        </div>
+
+        <div class="model-assign-row">
+          <div class="model-assign-label">
+            <strong>AI-isms</strong>
+            <span class="model-recommend">Literary judgment — spots synthetic / template-sounding prose. Use a strong model (e.g. Claude Sonnet, GPT-4o).</span>
+          </div>
+          <select v-model="settingsCtx.modelAssignments.value.aiIsms">
+            <option value="">(Use default)</option>
+            <option v-for="m in sortedModels" :key="m.id" :value="m.id">{{ fnOptionLabel(m, 'aiIsms') }}</option>
           </select>
         </div>
 

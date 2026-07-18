@@ -64,6 +64,8 @@ pub fn run() {
             analysis::continuity::suggest_continuity_fix,
             analysis::show_dont_tell::check_show_dont_tell,
             analysis::show_dont_tell::suggest_sdt_fix,
+            analysis::ai_isms::check_ai_isms,
+            analysis::ai_isms::suggest_ai_isms_fix,
             genre_taxonomy::get_genre_taxonomy,
             db::list_genres_cmd,
             db::list_report_types_cmd,

@@ -54,6 +54,7 @@ const existsMap = computed(() => {
     zeigarnik_analysis: state.has_zeigarnik,
     continuity_check: state.has_continuity_check,
     show_dont_tell: state.has_show_dont_tell,
+    ai_isms: state.has_ai_isms,
   } as Record<string, boolean>;
 });
 
@@ -155,7 +156,7 @@ async function fetchCostEstimates(): Promise<void> {
 }
 
 /** Map report_id to the modelFor() function key */
-function reportToModelFn(reportId: string): 'default' | 'summaries' | 'genre' | 'keywords' | 'continuity' | 'showDontTell' | 'prose' {
+function reportToModelFn(reportId: string): 'default' | 'summaries' | 'genre' | 'keywords' | 'continuity' | 'showDontTell' | 'aiIsms' | 'prose' {
   switch (reportId) {
     case 'chapter_summaries': return 'summaries';
     case 'genre_analysis':
@@ -168,6 +169,7 @@ function reportToModelFn(reportId: string): 'default' | 'summaries' | 'genre' | 
     case 'keyword_search': return 'keywords';
     case 'continuity_check': return 'continuity';
     case 'show_dont_tell': return 'showDontTell';
+    case 'ai_isms': return 'aiIsms';
     default: return 'default';
   }
 }

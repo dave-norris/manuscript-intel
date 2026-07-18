@@ -267,6 +267,11 @@ pub fn preprocess_for_sdt(content: &str) -> String {
     truncate_words(content, 4000)
 }
 
+/// Preprocess chapter text for AI-isms checking (same truncation as SDT).
+pub fn preprocess_for_ai_isms(content: &str) -> String {
+    truncate_words(content, 4000)
+}
+
 /// Preprocess chapter text for genre summary: aggressive truncation to 2000 words.
 #[allow(dead_code)]
 pub fn preprocess_for_genre(content: &str) -> String {

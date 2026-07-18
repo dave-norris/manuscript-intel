@@ -12,6 +12,7 @@ export interface ModelAssignments {
   keywords:      string;  // Keywords, search terms, BISAC
   continuity:    string;  // Continuity checker (fact extraction + judgment)
   showDontTell:  string;  // Show Don't Tell analysis
+  aiIsms:        string;  // AI-isms check
   prose:         string;  // Creative suggestions / rewrites
 }
 
@@ -62,7 +63,7 @@ function cloneStructure(s: FolderStructure): FolderStructure {
 function loadAssignments(): ModelAssignments {
   const stored = localStorage.getItem('modelAssignments');
   const defaults: ModelAssignments = {
-    default: '', summaries: '', genre: '', keywords: '', continuity: '', showDontTell: '', prose: ''
+    default: '', summaries: '', genre: '', keywords: '', continuity: '', showDontTell: '', aiIsms: '', prose: ''
   };
   if (stored) {
     try { return { ...defaults, ...JSON.parse(stored) }; } catch { /* use defaults */ }

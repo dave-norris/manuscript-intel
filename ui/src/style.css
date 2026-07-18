@@ -819,7 +819,8 @@ html, body {
   margin-bottom: 10px;
 }
 .suggest-fix-link,
-.suggest-sdt-fix-link {
+.suggest-sdt-fix-link,
+.suggest-ai-isms-fix-link {
   font-size: 11px;
   color: var(--accent);
   cursor: pointer;
@@ -828,7 +829,8 @@ html, body {
   font-weight: 500;
 }
 .suggest-fix-link:hover,
-.suggest-sdt-fix-link:hover {
+.suggest-sdt-fix-link:hover,
+.suggest-ai-isms-fix-link:hover {
   text-decoration: underline;
 }
 

@@ -42,6 +42,7 @@ pub struct AnalysisState {
     pub has_zeigarnik:              bool,
     pub has_continuity_check:       bool,
     pub has_show_dont_tell:         bool,
+    pub has_ai_isms:                bool,
 }
 
 // ── Folder picker ────────────────────────────────────────────────────────────
@@ -91,6 +92,7 @@ pub async fn check_analysis_state(app: AppHandle, folder: String) -> AnalysisSta
             has_zeigarnik:              db::has_zeigarnik_analysis(&conn, &folder),
             has_continuity_check:       db::get_document(&conn, &folder, "continuity_check").is_some(),
             has_show_dont_tell:         db::get_document(&conn, &folder, "show_dont_tell").is_some(),
+            has_ai_isms:                db::get_document(&conn, &folder, "ai_isms").is_some(),
         }
     }).await.unwrap()
 }
@@ -997,6 +999,8 @@ pub struct CraftPipelineRequest {
     pub model_continuity: String,           // override for continuity check
     #[serde(default)]
     pub model_sdt:        String,           // override for show don't tell
+    #[serde(default)]
+    pub model_ai_isms:    String,           // override for AI-isms check
     /// "manuscript" or "series"
     #[serde(default)]
     pub continuity_scope: String,
@@ -1026,6 +1030,7 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
     let model_summaries = if request.model_summaries.is_empty() { &request.model } else { &request.model_summaries };
     let model_continuity = if request.model_continuity.is_empty() { &request.model } else { &request.model_continuity };
     let model_sdt = if request.model_sdt.is_empty() { &request.model } else { &request.model_sdt };
+    let model_ai_isms = if request.model_ai_isms.is_empty() { &request.model } else { &request.model_ai_isms };
 
     crate::reset_cancel();
     let database = app.state::<db::Db>();
@@ -1138,6 +1143,25 @@ async fn run_craft_pipeline_inner(app: AppHandle, request: CraftPipelineRequest)
         if !sdt.success {
             emit(&app, &format!("✗ Show Don't Tell: {}", sdt.error));
             return sdt;
+        }
+        if crate::is_cancelled() { return err("Cancelled."); }
+    }
+
+    // ── AI-isms ───────────────────────────────────────────────────────────
+    if request.selected.contains(&"ai_isms".to_string()) {
+        let ai = super::ai_isms::check_ai_isms(
+            app.clone(),
+            super::ai_isms::AiIsmsRequest {
+                folder: request.folder.clone(),
+                provider: request.provider.clone(),
+                api_key: request.api_key.clone(),
+                model: model_ai_isms.clone(),
+                bible_path: request.bible_path.clone(),
+            },
+        ).await;
+        if !ai.success {
+            emit(&app, &format!("✗ AI-isms: {}", ai.error));
+            return ai;
         }
         if crate::is_cancelled() { return err("Cancelled."); }
     }

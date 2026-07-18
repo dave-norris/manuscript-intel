@@ -503,6 +503,7 @@ fn seed_report_types(conn: &Connection) -> Result<(), String> {
         ("zeigarnik_analysis", "Zeigarnik Effect", "Analyzes open loops and unresolved tension to maintain reader engagement.", "craft", ""),
         ("continuity_check", "Continuity Check", "AI-assisted scan for contradicted facts — within a manuscript or across a whole series.", "craft", ""),
         ("show_dont_tell", "Show Don't Tell", "AI-assisted check for telling instead of showing — flags violations with surrounding manuscript text.", "craft", ""),
+        ("ai_isms", "AI-isms", "AI-assisted check for prose habits that often read as machine-generated — flags passages with surrounding manuscript text.", "craft", ""),
     ];
 
     for (id, label, description, platforms, depends_on) in rows {
@@ -610,6 +611,55 @@ Provide 2-3 alternative rewrites that SHOW instead of TELL. For each:
 
 Keep rewrites concise — replace only the telling passage, not the surrounding context. Maintain the author's style and point of view."#,
             "Chapter: {chapter_title}\n\nTelling passage: \"{telling_text}\"\n\nContext: \"{context}\"\n\nWhy it's telling: {why}\n\n{bible}",
+            1500, 0
+        ),
+        (
+            "ai_isms_check",
+            "AI-isms: Check",
+            r#"You check fiction for AI-isms — prose habits that often sound machine-generated or template-written. Output ONLY a JSON array.
+
+Flag passages that feel synthetic, generic, or LLM-flavored, including:
+- Stock AI vocabulary: delve, tapestry, testament to, landscape of, in the realm of, pivotal, underscore, foster, embark, nestled, amidst
+- Throat-clearing / essay filler: "It's important to note", "In a world where", "Little did they know"
+- Overused antithesis templates: "Not X, but Y" / "It wasn't just X — it was Y"
+- Perfectly polished parallel lists or rule-of-three padding that adds no meaning
+- Vague atmospheric abstraction instead of concrete sensory detail
+- Sudden thesaurus inflation or oddly formal diction that breaks voice
+- Em-dash heavy explanatory asides that lecture the reader
+
+Do NOT flag:
+- Deliberate stylistic voice that fits the character/narrator
+- Genre-appropriate elevated or lyrical prose
+- A single unusual word used once with intent
+- Normal literary metaphor or sensory writing
+
+For each flag return exactly:
+{"telling_text":"<exact quote, max 15 words>","context":"<1-2 surrounding sentences>","why":"<one sentence naming the AI-ism>","severity":"minor|moderate|major"}
+
+Rules:
+- severity "major" = loudly synthetic; breaks immersion
+- severity "moderate" = noticeably template-like
+- severity "minor" = mild habit that could be tighter
+- Maximum 8 per chapter. Prefer clear hits over nitpicks.
+- Return [] if the chapter is clean.
+- Do NOT include reasoning, preamble, or markdown. ONLY the JSON array."#,
+            "Chapter: {chapter_title}\n\n{bible}\n\n---\n\n{chapter_text}",
+            4000, 1
+        ),
+        (
+            "ai_isms_suggest",
+            "AI-isms: Suggest Fix",
+            r#"You are a fiction editor helping an author remove AI-sounding prose. You will be given:
+- The passage that reads as an AI-ism
+- Surrounding context
+- Why it was flagged
+
+Provide 2-3 alternative rewrites that sound human and specific. For each:
+1. Give the revised prose (ready to paste — match the author's voice and tense)
+2. One sentence explaining what you changed (concreteness, voice, cut filler, etc.)
+
+Keep rewrites concise — replace only the flagged passage, not the surrounding context. Maintain POV and style."#,
+            "Chapter: {chapter_title}\n\nFlagged passage: \"{telling_text}\"\n\nContext: \"{context}\"\n\nWhy it was flagged: {why}\n\n{bible}",
             1500, 0
         ),
         (

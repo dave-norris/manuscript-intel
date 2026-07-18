@@ -634,6 +634,7 @@ pub async fn estimate_report_costs(request: CostEstimateRequest) -> CostEstimate
             "chapter_summaries" => ReportParams { truncation: 8000, output_max: 600, per_chapter: true, fixed_calls: 0 },
             "continuity_check"  => ReportParams { truncation: 6000, output_max: 4000, per_chapter: true, fixed_calls: 3 }, // extract (per ch) + judge (few batches)
             "show_dont_tell"    => ReportParams { truncation: 4000, output_max: 4000, per_chapter: true, fixed_calls: 0 },
+            "ai_isms"           => ReportParams { truncation: 4000, output_max: 4000, per_chapter: true, fixed_calls: 0 },
             "genre_analysis"    => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 1 },
             "genre_ranking"     => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 1 },
             "kdp_categories"    => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 2 },

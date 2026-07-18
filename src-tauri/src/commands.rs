@@ -697,3 +697,152 @@ pub async fn estimate_report_costs(request: CostEstimateRequest) -> CostEstimate
         error: String::new(),
     }
 }
+
+// ── AI Chat with context ──────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ChatMessage {
+    pub role: String,   // "user" or "assistant"
+    pub content: String,
+}
+
+#[derive(Deserialize)]
+pub struct ChatRequest {
+    pub provider:       String,
+    pub api_key:        String,
+    pub model:          String,
+    pub message:        String,
+    pub chapter_text:   String,
+    pub chapter_title:  String,
+    pub bible:          String,
+    pub history:        Vec<ChatMessage>,
+}
+
+#[derive(Serialize)]
+pub struct ChatResponse {
+    pub success: bool,
+    pub reply:   String,
+    pub error:   String,
+}
+
+/// Contextual AI chat for the Writing panel.
+/// Sends the user's message with the current chapter and bible as context.
+#[tauri::command]
+pub async fn chat_with_context(request: ChatRequest) -> ChatResponse {
+    if request.api_key.is_empty() || request.model.is_empty() {
+        return ChatResponse { success: false, reply: String::new(), error: "Set an API key and model in Settings.".to_string() };
+    }
+
+    let system = format!(
+        r#"You are a fiction writing assistant. You help the author with their manuscript — brainstorming, rewrites, continuity questions, prose feedback, and anything else they ask about their story.
+
+You have access to:
+- The chapter the author is currently editing
+- The story bible (character details, world rules, canon facts)
+
+Be concise and direct. Match the author's voice when suggesting prose. If they paste text and ask for a rewrite, give the revised version ready to paste back.
+
+{}
+
+---
+
+Current chapter: {}
+---
+{}"#,
+        if request.bible.is_empty() { String::new() } else { format!("Story Bible:\n{}\n\n---", request.bible) },
+        request.chapter_title,
+        if request.chapter_text.len() > 12000 {
+            format!("{}...[truncated]", &request.chapter_text[..12000])
+        } else {
+            request.chapter_text.clone()
+        }
+    );
+
+    // Build messages array: system + history + new user message
+    let mut messages = Vec::new();
+    messages.push(json!({"role": "system", "content": system}));
+    for msg in &request.history {
+        messages.push(json!({"role": msg.role, "content": msg.content}));
+    }
+    messages.push(json!({"role": "user", "content": request.message}));
+
+    let body = json!({
+        "model": request.model,
+        "max_tokens": 2000,
+        "messages": messages,
+    });
+
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return ChatResponse { success: false, reply: String::new(), error: format!("Client error: {}", e) },
+    };
+
+    let base_url = match request.provider.as_str() {
+        "claude" => "https://api.anthropic.com/v1/messages",
+        _ => "https://api.tokenmix.ai/v1/chat/completions",
+    };
+
+    // For Claude, use their native API format
+    if request.provider == "claude" {
+        let claude_messages: Vec<serde_json::Value> = request.history.iter()
+            .map(|m| json!({"role": m.role, "content": m.content}))
+            .chain(std::iter::once(json!({"role": "user", "content": request.message})))
+            .collect();
+
+        let claude_body = json!({
+            "model": request.model,
+            "max_tokens": 2000,
+            "system": system,
+            "messages": claude_messages,
+        });
+
+        let resp = match client.post(base_url)
+            .header("x-api-key", &request.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .json(&claude_body)
+            .send().await
+        {
+            Ok(r) => r,
+            Err(e) => return ChatResponse { success: false, reply: String::new(), error: format!("Request failed: {}", e) },
+        };
+
+        let json: Value = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => return ChatResponse { success: false, reply: String::new(), error: format!("Parse failed: {}", e) },
+        };
+
+        if let Some(err) = json.get("error") {
+            return ChatResponse { success: false, reply: String::new(), error: format!("Claude: {}", err["message"].as_str().unwrap_or("unknown")) };
+        }
+
+        let reply = json["content"][0]["text"].as_str().unwrap_or("").to_string();
+        return ChatResponse { success: true, reply, error: String::new() };
+    }
+
+    // OpenAI-compatible (TokenMix)
+    let resp = match client.post(base_url)
+        .header("Authorization", format!("Bearer {}", request.api_key))
+        .header("content-type", "application/json")
+        .json(&body)
+        .send().await
+    {
+        Ok(r) => r,
+        Err(e) => return ChatResponse { success: false, reply: String::new(), error: format!("Request failed: {}", e) },
+    };
+
+    let json: Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => return ChatResponse { success: false, reply: String::new(), error: format!("Parse failed: {}", e) },
+    };
+
+    if let Some(err) = json.get("error") {
+        return ChatResponse { success: false, reply: String::new(), error: format!("API: {}", err["message"].as_str().unwrap_or("unknown")) };
+    }
+
+    let reply = json["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string();
+    ChatResponse { success: true, reply, error: String::new() }
+}

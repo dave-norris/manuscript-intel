@@ -10,7 +10,7 @@ import {
   storiesKey, analysisKey, platformKey, settingsKey,
   reportsKey, seriesKey, showPanelKey, openManuscriptEditorKey,
 } from './injectionKeys';
-import type { Story } from './types';
+import type { Story, Finding, Series } from './types';
 
 import TitleBar from './components/TitleBar.vue';
 import Sidebar from './components/Sidebar.vue';
@@ -20,7 +20,7 @@ import SettingsPanel from './components/SettingsPanel.vue';
 import StoryForm from './components/StoryForm.vue';
 import SeriesForm from './components/SeriesForm.vue';
 import ManuscriptViewer from './components/ManuscriptViewer.vue';
-import type { Finding } from './types';
+import WritingPanel from './components/WritingPanel.vue';
 
 // ── Composables ───────────────────────────────────────────────────────────────
 
@@ -38,7 +38,15 @@ provide(settingsKey, settingsCtx);
 provide(reportsKey, reportsCtx);
 provide(seriesKey, seriesCtx);
 
-// ── Panel state ───────────────────────────────────────────────────────────────
+// ── Top-level mode ────────────────────────────────────────────────────────────
+
+type AppMode = 'analyzer' | 'writing';
+const appMode = ref<AppMode>('analyzer');
+
+provide('appMode', appMode);
+provide('setAppMode', (mode: AppMode) => { appMode.value = mode; });
+
+// ── Panel state (within Analyzer mode) ────────────────────────────────────────
 
 type Panel = 'analyzer' | 'reports' | 'settings' | 'story-form' | 'series' | 'manuscript';
 const activePanel = ref<Panel>('analyzer');
@@ -57,7 +65,7 @@ function showPanel(name: Panel): void {
 
 provide(showPanelKey, showPanel as (name: string) => void);
 
-// ── Manuscript editor state ───────────────────────────────────────────────────
+// ── Manuscript editor state (for report findings) ─────────────────────────────
 
 const manuscriptFindings = ref<Finding[]>([]);
 const manuscriptStartIndex = ref(0);
@@ -70,6 +78,19 @@ function openManuscriptEditor(findings: Finding[], startIndex: number): void {
 
 provide(openManuscriptEditorKey, openManuscriptEditor);
 
+// ── Writing mode state ────────────────────────────────────────────────────────
+
+const writingFilePath = ref('');
+const writingChapterTitle = ref('');
+
+function openInWritingMode(filePath: string, title: string): void {
+  writingFilePath.value = filePath;
+  writingChapterTitle.value = title;
+  appMode.value = 'writing';
+}
+
+provide('openInWritingMode', openInWritingMode);
+
 // ── Story form state ──────────────────────────────────────────────────────────
 
 const editingStory = ref<Story | null>(null);
@@ -81,7 +102,6 @@ function openStoryForm(story: Story | null): void {
 
 // ── Series form state ─────────────────────────────────────────────────────────
 
-import type { Series } from './types';
 const editingSeries = ref<Series | null>(null);
 
 function openSeriesForm(series: Series | null): void {
@@ -91,7 +111,6 @@ function openSeriesForm(series: Series | null): void {
 
 // ── Watchers ──────────────────────────────────────────────────────────────────
 
-// When active story changes, refresh analysis state and reports
 watch(() => storiesCtx.activeStoryId.value, (id) => {
   if (id && storiesCtx.activeFolder.value) {
     analysisCtx.refreshState(storiesCtx.activeFolder.value);
@@ -102,14 +121,12 @@ watch(() => storiesCtx.activeStoryId.value, (id) => {
   }
 });
 
-// When platform changes, reload sidebar (backend filters by platform)
 watch(() => platformCtx.platform.value, () => {
   if (storiesCtx.activeFolder.value) {
     reportsCtx.loadSidebarReports(storiesCtx.activeFolder.value, platformCtx.platform.value);
   }
 });
 
-// When analysis finishes, refresh state and reports
 watch(() => analysisCtx.isWorking.value, (working, wasWorking) => {
   if (wasWorking && !working && storiesCtx.activeFolder.value) {
     analysisCtx.refreshState(storiesCtx.activeFolder.value);
@@ -127,7 +144,6 @@ onMounted(() => {
     }
   });
 
-  // Load initial data
   storiesCtx.loadStories().then(() => {
     const folder = storiesCtx.activeFolder.value;
     if (folder) {
@@ -144,18 +160,29 @@ onMounted(() => {
     <TitleBar />
     <Sidebar @open-story-form="openStoryForm" @open-series-form="openSeriesForm" />
     <main id="main">
-      <AnalyzerPanel v-if="activePanel === 'analyzer'" />
-      <ReportsViewer v-if="activePanel === 'reports'" />
-      <SettingsPanel v-if="activePanel === 'settings'" />
-      <StoryForm v-if="activePanel === 'story-form'" :story="editingStory" />
-      <SeriesForm v-if="activePanel === 'series'" :series="editingSeries" />
-      <ManuscriptViewer
-        v-if="activePanel === 'manuscript'"
-        :findings="manuscriptFindings"
-        :start-index="manuscriptStartIndex"
+      <!-- Writing mode -->
+      <WritingPanel
+        v-if="appMode === 'writing'"
+        :file-path="writingFilePath"
+        :chapter-title="writingChapterTitle"
         :story-folder="storiesCtx.activeFolder.value"
-        @close="showPanel('reports')"
       />
+
+      <!-- Analyzer mode panels -->
+      <template v-if="appMode === 'analyzer'">
+        <AnalyzerPanel v-if="activePanel === 'analyzer'" />
+        <ReportsViewer v-if="activePanel === 'reports'" />
+        <SettingsPanel v-if="activePanel === 'settings'" />
+        <StoryForm v-if="activePanel === 'story-form'" :story="editingStory" />
+        <SeriesForm v-if="activePanel === 'series'" :series="editingSeries" />
+        <ManuscriptViewer
+          v-if="activePanel === 'manuscript'"
+          :findings="manuscriptFindings"
+          :start-index="manuscriptStartIndex"
+          :story-folder="storiesCtx.activeFolder.value"
+          @close="showPanel('reports')"
+        />
+      </template>
     </main>
   </div>
 </template>

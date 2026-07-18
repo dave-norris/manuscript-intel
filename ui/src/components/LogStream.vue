@@ -1,12 +1,8 @@
 <script setup lang="ts">
 import { inject, ref, watch, nextTick, computed } from 'vue';
-import type { Ref } from 'vue';
-import type { LogLine } from '../types';
+import { analysisKey } from '../injectionKeys';
 
-const analysisCtx = inject<{
-  logLines: Ref<LogLine[]>;
-  clearLog: () => void;
-}>('analysis')!;
+const analysisCtx = inject(analysisKey)!;
 
 const paneRef = ref<HTMLElement | null>(null);
 const userScrolledUp = ref(false);

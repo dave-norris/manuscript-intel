@@ -1,19 +1,11 @@
 <script setup lang="ts">
 import { inject, ref, watch } from 'vue';
-import type { Ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { storiesKey, showPanelKey } from '../injectionKeys';
 import type { Story, StoriesResult } from '../types';
 
-const storiesCtx = inject<{
-  stories: Ref<Story[]>;
-  activeStoryId: Ref<string | null>;
-  setActiveStory: (id: string | null) => void;
-  addStory: (name: string, folder: string) => Promise<StoriesResult>;
-  updateStory: (id: string, name: string, folder: string, biblePath: string) => Promise<StoriesResult>;
-  deleteStory: (id: string) => Promise<StoriesResult>;
-}>('stories')!;
-
-const showPanel = inject<(name: string) => void>('showPanel')!;
+const storiesCtx = inject(storiesKey)!;
+const showPanel = inject(showPanelKey)!;
 
 const props = defineProps<{
   story: Story | null;

@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import { inject, ref, watch, computed } from 'vue';
-import type { Ref } from 'vue';
 import type { Story, Series, SeriesResult } from '../types';
+import { storiesKey, showPanelKey } from '../injectionKeys';
 import { useSeries } from '../composables/useSeries';
 
-const storiesCtx = inject<{
-  stories: Ref<Story[]>;
-}>('stories')!;
-
-const showPanel = inject<(name: string) => void>('showPanel')!;
+const storiesCtx = inject(storiesKey)!;
+const showPanel = inject(showPanelKey)!;
 const { createSeries, updateSeries, deleteSeries } = useSeries();
 
 const props = defineProps<{

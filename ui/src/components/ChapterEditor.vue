@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onBeforeUnmount, nextTick } from 'vue';
+import { ref, watch, onBeforeUnmount, nextTick, computed } from 'vue';
 import { useEditor, EditorContent } from '@tiptap/vue-3';
 import StarterKit from '@tiptap/starter-kit';
 import Highlight from '@tiptap/extension-highlight';
@@ -46,10 +46,28 @@ const editor = useEditor({
     },
     handleDOMEvents: {
       blur: () => { if (dirty.value) scheduleSave(); return false; },
+      keydown: (view: any, event: KeyboardEvent) => {
+        // Cmd+D (Mac) or Ctrl+D (Win) = pin selection
+        if ((event.metaKey || event.ctrlKey) && event.key === 'd') {
+          event.preventDefault();
+          pinSelection();
+          return true;
+        }
+        // Escape = clear pins
+        if (event.key === 'Escape' && pinnedSelections.value.length > 0) {
+          event.preventDefault();
+          clearPins();
+          return true;
+        }
+        return false;
+      },
     },
   },
   onUpdate: () => {
     dirty.value = true;
+  },
+  onSelectionUpdate: () => {
+    updateSelection();
   },
 });
 
@@ -192,8 +210,47 @@ function replaceSelection(text: string): void {
   }
 }
 
+// ── Track selected text + pinned selections ───────────────────────────────────
+
+const selectedText = ref('');
+const pinnedSelections = ref<string[]>([]);
+
+function updateSelection(): void {
+  if (!editor.value) { selectedText.value = ''; return; }
+  const { from, to } = editor.value.state.selection;
+  if (from === to) { selectedText.value = ''; return; }
+  selectedText.value = editor.value.state.doc.textBetween(from, to, ' ');
+}
+
+/** Pin the current selection as a highlighted range for AI context. */
+function pinSelection(): void {
+  if (!editor.value || !selectedText.value) return;
+  pinnedSelections.value.push(selectedText.value);
+  // Apply highlight mark to visually show the pin
+  editor.value.chain().setHighlight().run();
+}
+
+/** Clear all pinned selections and remove highlights. */
+function clearPins(): void {
+  pinnedSelections.value = [];
+  if (editor.value) {
+    editor.value.chain().selectAll().unsetHighlight().run();
+    // Restore cursor to end
+    editor.value.commands.setTextSelection(editor.value.state.doc.content.size);
+  }
+}
+
+/** All text the AI should see: pinned selections + current selection. */
+const allSelectedText = computed(() => {
+  const parts = [...pinnedSelections.value];
+  if (selectedText.value && !parts.includes(selectedText.value)) {
+    parts.push(selectedText.value);
+  }
+  return parts.join('\n\n---\n\n');
+});
+
 // Expose methods to parent
-defineExpose({ insertAtCursor, replaceSelection, highlightTarget, saveNow, dirty });
+defineExpose({ insertAtCursor, replaceSelection, highlightTarget, saveNow, dirty, selectedText: allSelectedText, pinSelection, clearPins, pinnedCount: computed(() => pinnedSelections.value.length) });
 
 // ── Watch file path changes ───────────────────────────────────────────────────
 
@@ -263,6 +320,18 @@ onBeforeUnmount(() => {
   line-height: 1.8;
   color: var(--text);
   min-height: 100%;
+  caret-color: var(--accent);
+}
+
+/* Keep selection visible when editor loses focus */
+.editor-wrapper :deep(.chapter-editor-content)::selection,
+.editor-wrapper :deep(.chapter-editor-content) *::selection {
+  background: rgba(232, 97, 44, 0.25);
+}
+
+.editor-wrapper :deep(.chapter-editor-content:not(:focus))::selection,
+.editor-wrapper :deep(.chapter-editor-content:not(:focus)) *::selection {
+  background: rgba(232, 97, 44, 0.15);
 }
 
 .editor-wrapper :deep(.chapter-editor-content p) {

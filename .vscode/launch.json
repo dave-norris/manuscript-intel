@@ -7,7 +7,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/src-tauri/target/debug/manuscript-intel",
       "args": [],
-      "cwd": "${workspaceFolder}/src-tauri",
+      "cwd": "${workspaceFolder}",
       "preLaunchTask": "cargo:build-debug",
       "env": {
         "RUST_BACKTRACE": "1"

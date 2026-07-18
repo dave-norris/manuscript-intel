@@ -89,12 +89,55 @@ pub struct AddStoryRequest {
 }
 
 #[derive(Deserialize)]
+pub struct InitStoryRequest {
+    pub name:          String,
+    pub parent_folder: String,
+}
+
+#[derive(Deserialize)]
 pub struct UpdateStoryRequest {
     pub id:     String,
     pub name:   String,
     pub folder: String,
     #[serde(default)]
     pub bible_path: String,
+}
+
+/// Subfolders created for a brand-new empty story.
+const STORY_SUBDIRS: &[&str] = &[
+    "Bible",
+    "Characters",
+    "Manuscript",
+    "Publishing/Cover",
+    "Research",
+];
+
+/// Turn a story name into a safe single path segment.
+fn sanitize_folder_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            c if c.is_control() => '-',
+            c => c,
+        })
+        .collect::<String>()
+        .trim()
+        .trim_matches('.')
+        .to_string();
+    if cleaned.is_empty() {
+        "Untitled Story".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn ensure_story_scaffold(story_dir: &std::path::Path) -> Result<(), String> {
+    for sub in STORY_SUBDIRS {
+        fs::create_dir_all(story_dir.join(sub))
+            .map_err(|e| format!("Cannot create {}/: {}", sub, e))?;
+    }
+    Ok(())
 }
 
 /// List all stories.
@@ -106,12 +149,33 @@ pub async fn list_stories(app: AppHandle) -> StoriesResult {
     }
 }
 
-/// Add a new story. Creates _analysis/ folder inside the story folder.
+fn register_story(app: &AppHandle, name: String, folder: String) -> StoriesResult {
+    let now = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let story = Story {
+        id:         new_id(),
+        name,
+        folder,
+        created:    now,
+        bible_path: String::new(),
+    };
+
+    match load_stories(app) {
+        Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },
+        Ok(mut stories) => {
+            stories.push(story);
+            match save_stories(app, &stories) {
+                Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },
+                Ok(_)  => StoriesResult { success: true, stories, error: String::new() },
+            }
+        }
+    }
+}
+
+/// Add a story that already has a folder on disk.
 #[tauri::command]
 pub async fn add_story(app: AppHandle, request: AddStoryRequest) -> StoriesResult {
     let folder = PathBuf::from(&request.folder);
 
-    // Validate folder exists
     if !folder.exists() {
         return StoriesResult {
             success: false, stories: Vec::new(),
@@ -119,34 +183,51 @@ pub async fn add_story(app: AppHandle, request: AddStoryRequest) -> StoriesResul
         };
     }
 
-    // Create _analysis/ subfolder
-    let analysis_dir = folder.join("_analysis");
-    if let Err(e) = fs::create_dir_all(&analysis_dir) {
+    register_story(&app, request.name.trim().to_string(), request.folder.clone())
+}
+
+/// Create a new empty story folder named after the story, with Bible / Characters /
+/// Manuscript / Publishing/Cover / Research subfolders, then register it.
+#[tauri::command]
+pub async fn init_story(app: AppHandle, request: InitStoryRequest) -> StoriesResult {
+    let name = request.name.trim().to_string();
+    if name.is_empty() {
         return StoriesResult {
             success: false, stories: Vec::new(),
-            error: format!("Cannot create _analysis folder: {}", e),
+            error: "Please enter a story name.".to_string(),
         };
     }
 
-    let now = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let story = Story {
-        id:      new_id(),
-        name:    request.name.trim().to_string(),
-        folder:  request.folder.clone(),
-        created: now,
-        bible_path: String::new(),
-    };
-
-    match load_stories(&app) {
-        Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },
-        Ok(mut stories) => {
-            stories.push(story);
-            match save_stories(&app, &stories) {
-                Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },
-                Ok(_)  => StoriesResult { success: true, stories, error: String::new() },
-            }
-        }
+    let parent = PathBuf::from(&request.parent_folder);
+    if !parent.is_dir() {
+        return StoriesResult {
+            success: false, stories: Vec::new(),
+            error: format!("Parent folder does not exist: {}", request.parent_folder),
+        };
     }
+
+    let story_dir = parent.join(sanitize_folder_name(&name));
+    if story_dir.exists() {
+        return StoriesResult {
+            success: false, stories: Vec::new(),
+            error: format!(
+                "A folder already exists at: {}",
+                story_dir.to_string_lossy()
+            ),
+        };
+    }
+
+    if let Err(e) = ensure_story_scaffold(&story_dir) {
+        // Best-effort cleanup if we partially created the tree
+        let _ = fs::remove_dir_all(&story_dir);
+        return StoriesResult { success: false, stories: Vec::new(), error: e };
+    }
+
+    register_story(
+        &app,
+        name,
+        story_dir.to_string_lossy().to_string(),
+    )
 }
 
 /// Update a story's name and/or folder.
@@ -159,9 +240,6 @@ pub async fn update_story(app: AppHandle, request: UpdateStoryRequest) -> Storie
             error: format!("Folder does not exist: {}", request.folder),
         };
     }
-
-    // Ensure _analysis/ exists
-    let _ = fs::create_dir_all(folder.join("_analysis"));
 
     match load_stories(&app) {
         Err(e) => StoriesResult { success: false, stories: Vec::new(), error: e },

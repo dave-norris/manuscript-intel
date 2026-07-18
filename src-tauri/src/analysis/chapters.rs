@@ -127,9 +127,14 @@ Write 2-3 dense paragraphs. Be specific."#;
 
 // ── File helpers (manuscript source files only — these stay on disk) ──────────
 
+/// Collect chapter `.md` files from `Manuscript/` (or `manuscript/`) only.
+/// Other story folders (Bible, Characters, Publishing, etc.) are ignored.
 pub(crate) fn collect_chapters(folder: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    collect_md_recursive(folder, &mut files);
+    let Some(manuscript_dir) = resolve_manuscript_dir(folder) else {
+        return files;
+    };
+    collect_md_recursive(&manuscript_dir, &mut files);
     files.sort_by(|a, b| {
         natural_sort_key(a.to_string_lossy().as_ref())
             .cmp(&natural_sort_key(b.to_string_lossy().as_ref()))
@@ -137,12 +142,22 @@ pub(crate) fn collect_chapters(folder: &Path) -> Vec<PathBuf> {
     files
 }
 
+fn resolve_manuscript_dir(story_folder: &Path) -> Option<PathBuf> {
+    for name in &["Manuscript", "manuscript"] {
+        let dir = story_folder.join(name);
+        if dir.is_dir() {
+            return Some(dir);
+        }
+    }
+    None
+}
+
 fn collect_md_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let path = entry.path();
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if name.starts_with('.') || name == "_analysis" { continue; }
+        if name.starts_with('.') { continue; }
         if path.is_dir() {
             collect_md_recursive(&path, out);
         } else if path.extension().map(|e| e == "md").unwrap_or(false) {

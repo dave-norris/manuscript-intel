@@ -1,0 +1,28 @@
+---
+description: Rust for functionality, Vue for rendering
+alwaysApply: true
+---
+
+# Architecture Split
+
+Manuscript Intel is a Tauri app: **Rust owns behavior**, **Vue owns presentation**.
+
+## Rust (`src-tauri/`)
+
+- File system, scaffolding, discovery, analysis, DB, dialogs, IPC commands
+- Business rules (what counts as a chapter, folder layout, validation)
+- Prefer new `#[tauri::command]`s over doing work in the UI
+
+## Vue (`ui/`)
+
+- Layout, forms, panels, styling, user interaction
+- Call Tauri via `invoke` / composables; render results
+- Do **not** reimplement filesystem, parsing, or analysis in the frontend
+
+```typescript
+// ❌ BAD — Vue deciding/creating story structure
+await mkdir(`${parent}/${name}/Manuscript`)
+
+// ✅ GOOD — Vue collects input, Rust does the work
+await invoke('init_story', { request: { name, parent_folder: parent } })
+```

@@ -47,12 +47,16 @@ pub struct AnalysisState {
 // ── Folder picker ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn pick_manuscript_folder(app: AppHandle) -> Result<String, String> {
+pub async fn pick_manuscript_folder(
+    app: AppHandle,
+    title: Option<String>,
+) -> Result<String, String> {
     use tauri_plugin_dialog::FilePath;
+    let dialog_title = title.unwrap_or_else(|| "Select Manuscript Folder".to_string());
     let (tx, rx) = std::sync::mpsc::channel();
     app.dialog()
         .file()
-        .set_title("Select Manuscript Folder")
+        .set_title(dialog_title)
         .pick_folder(move |result| { let _ = tx.send(result); });
     match rx.recv() {
         Ok(Some(FilePath::Path(p))) => Ok(p.to_string_lossy().to_string()),

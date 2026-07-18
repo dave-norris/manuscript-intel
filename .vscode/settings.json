@@ -1,0 +1,4 @@
+{
+  "autoOpenLocalhostUrls": false,
+  "lldb-dap.executable-path": "/Library/Developer/CommandLineTools/usr/bin/lldb-dap"
+}

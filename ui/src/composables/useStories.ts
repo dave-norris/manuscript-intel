@@ -36,6 +36,16 @@ async function addStory(name: string, folder: string): Promise<StoriesResult> {
   return result;
 }
 
+async function initStory(name: string, parentFolder: string): Promise<StoriesResult> {
+  const result = await invoke<StoriesResult>('init_story', {
+    request: { name, parent_folder: parentFolder },
+  });
+  if (result.success) {
+    stories.value = result.stories;
+  }
+  return result;
+}
+
 async function updateStory(id: string, name: string, folder: string, biblePath: string = ''): Promise<StoriesResult> {
   const result = await invoke<StoriesResult>('update_story', { request: { id, name, folder, bible_path: biblePath } });
   if (result.success) {
@@ -64,6 +74,7 @@ export function useStories() {
     loadStories,
     setActiveStory,
     addStory,
+    initStory,
     updateStory,
     deleteStory,
   };

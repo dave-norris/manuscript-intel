@@ -40,6 +40,11 @@
         "cwd": "${workspaceFolder}/ui"
       },
       "isBackground": true,
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared",
+        "showReuseMessage": false
+      },
       "problemMatcher": [
         {
           "owner": "vite",
@@ -52,7 +57,7 @@
           "background": {
             "activeOnStart": true,
             "beginsPattern": "^\\s*VITE",
-            "endsPattern": "Local:\\s+http"
+            "endsPattern": "ready in"
           }
         }
       ]

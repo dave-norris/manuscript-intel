@@ -506,8 +506,12 @@ fn build_file_tree(dir: &std::path::Path) -> Vec<FileTreeEntry> {
 
         if path.is_dir() {
             let children = build_file_tree(&path);
-            // Only include directories that contain .md files (directly or nested)
-            if !children.is_empty() {
+            let keep_empty = matches!(
+                name.to_ascii_lowercase().as_str(),
+                "bible" | "characters" | "manuscript" | "publishing" | "cover" | "research"
+            );
+            // Include dirs that have content, or known story scaffold folders
+            if !children.is_empty() || keep_empty {
                 dirs.push(FileTreeEntry {
                     name,
                     path: path.to_string_lossy().to_string(),

@@ -25,6 +25,7 @@ export interface StoriesContext {
   loadStories: () => Promise<void>;
   setActiveStory: (id: string | null) => void;
   addStory: (name: string, folder: string) => Promise<StoriesResult>;
+  initStory: (name: string, parentFolder: string) => Promise<StoriesResult>;
   updateStory: (id: string, name: string, folder: string, biblePath?: string) => Promise<StoriesResult>;
   deleteStory: (id: string) => Promise<StoriesResult>;
 }

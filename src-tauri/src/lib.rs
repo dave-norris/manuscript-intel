@@ -93,6 +93,7 @@ pub fn run() {
             dataforseo::search_google_keywords,
             stories::list_stories,
             stories::add_story,
+            stories::init_story,
             stories::update_story,
             stories::delete_story,
             series::list_series,

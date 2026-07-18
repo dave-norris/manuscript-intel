@@ -170,7 +170,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="reports-viewer">
+  <div v-if="report" class="reports-viewer">
     <div class="reports-viewer-header">
       <span class="reports-viewer-title">{{ reportTitle }}</span>
       <div class="reports-viewer-actions">
@@ -180,6 +180,10 @@ onUnmounted(() => {
       </div>
     </div>
     <div class="reports-viewer-content" ref="contentRef" v-html="renderedHtml"></div>
+  </div>
+  <div v-else class="reports-viewer reports-empty">
+    <p>No report selected.</p>
+    <button class="btn btn-sm" @click="onClose">Back</button>
   </div>
 </template>
 
@@ -220,6 +224,14 @@ onUnmounted(() => {
   flex: 1;
   overflow-y: auto;
   user-select: text;
+}
+
+.reports-empty {
+  align-items: flex-start;
+  gap: 12px;
+  padding: 20px;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 /* Buttons */

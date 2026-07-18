@@ -1,9 +1,10 @@
 // folder_structure.rs — Configurable story folder layout
 //
-// The app only cares about three purpose folders:
-//   manuscript — chapter .md files (analysis)
+// The app only cares about these purpose folders:
+//   manuscript — chapter .md files (analysis); always includes Act-1/2/3
 //   bible      — story bible docs
 //   characters — character docs (merged into bible discovery)
+//   locations  — location docs (merged into bible discovery)
 //
 // Everything else is an optional scaffold path (`extra`) that Create empty
 // story will create, but the app never reads specially.
@@ -20,6 +21,9 @@ use tauri::Manager;
 
 use crate::db::Db;
 
+/// Fixed act subfolders always created under the manuscript folder.
+pub const MANUSCRIPT_ACTS: &[&str] = &["Act-1", "Act-2", "Act-3"];
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FolderStructure {
     /// Chapter `.md` files (analysis reads only here)
@@ -28,6 +32,8 @@ pub struct FolderStructure {
     pub bible: String,
     /// Character docs (merged into bible discovery)
     pub characters: String,
+    /// Location docs (merged into bible discovery)
+    pub locations: String,
     /// Additional relative paths created on "Create empty story" (app ignores them)
     #[serde(default)]
     pub extra: Vec<String>,
@@ -39,7 +45,8 @@ impl Default for FolderStructure {
             manuscript: "Manuscript".into(),
             bible: "Bible".into(),
             characters: "Characters".into(),
-            // User-wanted defaults; not used by app logic
+            locations: "Locations".into(),
+            // Optional only — Acts are part of manuscript, not extras
             extra: vec!["Publishing/Cover".into(), "Research".into()],
         }
     }
@@ -58,13 +65,32 @@ impl FolderStructure {
         if self.characters.trim().is_empty() { "Characters" } else { self.characters.as_str() }
     }
 
+    pub fn locations(&self) -> &str {
+        if self.locations.trim().is_empty() { "Locations" } else { self.locations.as_str() }
+    }
+
+    /// Manuscript/Act-1, Manuscript/Act-2, Manuscript/Act-3
+    pub fn manuscript_act_dirs(&self) -> Vec<String> {
+        let root = self.manuscript();
+        MANUSCRIPT_ACTS
+            .iter()
+            .map(|act| format!("{}/{}", root, act))
+            .collect()
+    }
+
     /// All relative paths created when scaffolding a new story.
-    pub fn scaffold_dirs(&self) -> Vec<&str> {
-        let mut dirs = vec![self.manuscript(), self.bible(), self.characters()];
+    pub fn scaffold_dirs(&self) -> Vec<String> {
+        let mut dirs = vec![
+            self.manuscript().to_string(),
+            self.bible().to_string(),
+            self.characters().to_string(),
+            self.locations().to_string(),
+        ];
+        dirs.extend(self.manuscript_act_dirs());
         for p in &self.extra {
             let t = p.trim();
             if !t.is_empty() {
-                dirs.push(t);
+                dirs.push(t.to_string());
             }
         }
         dirs
@@ -92,11 +118,23 @@ impl FolderStructure {
         }
     }
 
+    fn is_manuscript_act_path(path: &str, manuscript: &str) -> bool {
+        let path = path.replace('\\', "/");
+        let prefix = format!("{}/", manuscript.trim_matches('/'));
+        if let Some(rest) = path.strip_prefix(&prefix) {
+            return MANUSCRIPT_ACTS.iter().any(|a| rest.eq_ignore_ascii_case(a));
+        }
+        MANUSCRIPT_ACTS.iter().any(|a| path.eq_ignore_ascii_case(a))
+    }
+
     pub fn normalized(mut self) -> Self {
         let defaults = Self::default();
         self.manuscript = Self::sanitize_path(&self.manuscript, &defaults.manuscript);
         self.bible = Self::sanitize_path(&self.bible, &defaults.bible);
         self.characters = Self::sanitize_path(&self.characters, &defaults.characters);
+        self.locations = Self::sanitize_path(&self.locations, &defaults.locations);
+        let manuscript = self.manuscript.clone();
+        // Acts belong to Manuscript — never store them as optional extras
         self.extra = self
             .extra
             .into_iter()
@@ -105,7 +143,12 @@ impl FolderStructure {
                 if trimmed.is_empty() || trimmed.contains("..") {
                     None
                 } else {
-                    Some(trimmed.replace('\\', "/"))
+                    let path = trimmed.replace('\\', "/");
+                    if Self::is_manuscript_act_path(&path, &manuscript) {
+                        None
+                    } else {
+                        Some(path)
+                    }
                 }
             })
             .collect();
@@ -160,6 +203,7 @@ fn from_legacy_list(folders: Vec<LegacyListEntry>) -> FolderStructure {
         manuscript: "Manuscript".into(),
         bible: "Bible".into(),
         characters: "Characters".into(),
+        locations: "Locations".into(),
         extra: Vec::new(),
     };
     for e in folders {
@@ -171,7 +215,7 @@ fn from_legacy_list(folders: Vec<LegacyListEntry>) -> FolderStructure {
             "manuscript" => s.manuscript = path.into(),
             "bible" => s.bible = path.into(),
             "characters" => s.characters = path.into(),
-            // Former purpose roles become extras
+            "locations" => s.locations = path.into(),
             "publishing" | "research" | _ => s.extra.push(path.replace('\\', "/")),
         }
     }
@@ -194,6 +238,7 @@ fn read_from_db(conn: &Connection) -> Result<FolderStructure, String> {
         manuscript: "Manuscript".into(),
         bible: "Bible".into(),
         characters: "Characters".into(),
+        locations: "Locations".into(),
         extra: Vec::new(),
     };
     let mut any = false;
@@ -208,7 +253,7 @@ fn read_from_db(conn: &Connection) -> Result<FolderStructure, String> {
             "manuscript" => s.manuscript = path.into(),
             "bible" => s.bible = path.into(),
             "characters" => s.characters = path.into(),
-            // publishing/research and anything else → extra
+            "locations" => s.locations = path.into(),
             _ => s.extra.push(path.replace('\\', "/")),
         }
     }
@@ -226,6 +271,7 @@ fn write_to_db(conn: &Connection, structure: &FolderStructure) -> Result<(), Str
         (structure.manuscript().to_string(), "manuscript".into()),
         (structure.bible().to_string(), "bible".into()),
         (structure.characters().to_string(), "characters".into()),
+        (structure.locations().to_string(), "locations".into()),
     ];
     for p in &structure.extra {
         let t = p.trim();
@@ -273,6 +319,7 @@ fn migrate_legacy_json(app: &AppHandle) -> Option<FolderStructure> {
             manuscript: flat.manuscript.unwrap_or_else(|| "Manuscript".into()),
             bible: flat.bible.unwrap_or_else(|| "Bible".into()),
             characters: flat.characters.unwrap_or_else(|| "Characters".into()),
+            locations: "Locations".into(),
             extra,
         }
         .normalized()
@@ -301,9 +348,8 @@ pub fn load(app: &AppHandle) -> FolderStructure {
         let _ = write_to_db(&conn, &seeded);
         seeded
     } else {
-        let s = read_from_db(&conn).unwrap_or_default();
-        // Normalize & rewrite so publishing/research roles become extras
-        let s = s.normalized();
+        // normalized() strips Act-* out of extras (they belong to Manuscript)
+        let s = read_from_db(&conn).unwrap_or_default().normalized();
         let _ = write_to_db(&conn, &s);
         s
     };

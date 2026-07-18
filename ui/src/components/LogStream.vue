@@ -146,8 +146,8 @@ const lines = computed(() => analysisCtx.logLines.value);
 }
 
 .log-text :deep(code) {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--overlay);
+  border: 1px solid var(--overlay-border);
   border-radius: 3px;
   padding: 1px 5px;
   font-size: 11px;

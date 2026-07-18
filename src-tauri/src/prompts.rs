@@ -69,6 +69,13 @@ pub fn discover_bible(story_folder: &str) -> String {
         }
     }
 
+    if let Some(dir) = crate::folder_structure::resolve_subdir(root, structure.locations()) {
+        let content = read_md_folder(&dir);
+        if !content.is_empty() {
+            parts.push(format!("## Locations\n\n{}", content));
+        }
+    }
+
     // Check for single bible file in root
     if parts.is_empty() {
         for name in &["bible.md", "story-bible.md", "Bible.md", "Story-Bible.md"] {

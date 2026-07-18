@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { inject, ref, watch } from 'vue';
-import type { Ref } from 'vue';
+import { inject, ref, watch, type Ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { storiesKey, reportsKey, platformKey, showPanelKey, openManuscriptEditorKey, seriesKey } from '../injectionKeys';
 import type { Story, Series } from '../types';
+import FileTreeNodes, { type FileTreeEntry } from './FileTreeNodes.vue';
 
 // ── Injections ────────────────────────────────────────────────────────────────
 
@@ -17,6 +17,8 @@ const seriesCtx = inject(seriesKey)!;
 const appMode = inject<Ref<'analyzer' | 'writing'>>('appMode')!;
 const setAppMode = inject<(mode: 'analyzer' | 'writing') => void>('setAppMode')!;
 const openInWritingMode = inject<(filePath: string, title: string) => void>('openInWritingMode')!;
+const openNewDocumentForm = inject<(location?: string) => void>('openNewDocumentForm')!;
+const fileTreeTick = inject<Ref<number>>('fileTreeTick')!;
 
 // ── Emits ─────────────────────────────────────────────────────────────────────
 
@@ -28,26 +30,27 @@ const emit = defineEmits<{
 // ── Sidebar mode toggle ───────────────────────────────────────────────────────
 
 type SidebarMode = 'files' | 'reports';
-const sidebarMode = ref<SidebarMode>('reports');
+const sidebarMode = ref<SidebarMode>('files');
 
 // ── File tree state ───────────────────────────────────────────────────────────
 
-interface FileTreeEntry {
-  name: string;
-  path: string;
-  is_dir: boolean;
-  children: FileTreeEntry[];
-}
-
 const fileTree = ref<FileTreeEntry[]>([]);
 const expandedDirs = ref<Set<string>>(new Set());
+
+function relativeLocation(absolutePath: string): string {
+  const root = storiesCtx.activeFolder.value.replace(/[/\\]+$/, '');
+  const full = absolutePath.replace(/\\/g, '/');
+  const base = root.replace(/\\/g, '/');
+  if (full === base) return '';
+  if (full.startsWith(base + '/')) return full.slice(base.length + 1);
+  return absolutePath;
+}
 
 async function loadFileTree(): Promise<void> {
   const folder = storiesCtx.activeFolder.value;
   if (!folder) { fileTree.value = []; return; }
   try {
     fileTree.value = await invoke<FileTreeEntry[]>('list_manuscript_files', { folder });
-    // Auto-expand all directories
     const expand = new Set<string>();
     function walk(entries: FileTreeEntry[]) {
       for (const e of entries) {
@@ -69,6 +72,10 @@ function toggleDir(path: string): void {
 }
 
 function onFileClick(entry: FileTreeEntry): void {
+  if (entry.is_dir) {
+    toggleDir(entry.path);
+    return;
+  }
   if (appMode.value === 'writing') {
     openInWritingMode(entry.path, entry.name.replace(/\.md$/, ''));
   } else {
@@ -84,12 +91,23 @@ function onFileClick(entry: FileTreeEntry): void {
   }
 }
 
-// Reload file tree when story changes
-watch(() => storiesCtx.activeFolder.value, () => {
-  if (sidebarMode.value === 'files' || appMode.value === 'writing') loadFileTree();
+function onAddInFolder(entry: FileTreeEntry): void {
+  openNewDocumentForm(relativeLocation(entry.path));
+}
+
+function onAddDocument(): void {
+  openNewDocumentForm();
+}
+
+watch(() => storiesCtx.activeFolder.value, (folder) => {
+  if (folder) loadFileTree();
+  else fileTree.value = [];
+}, { immediate: true });
+
+watch(fileTreeTick, () => {
+  if (storiesCtx.activeFolder.value) loadFileTree();
 });
 
-// Load file tree when switching to files mode or writing mode
 watch(sidebarMode, (mode) => {
   if (mode === 'files' && storiesCtx.activeFolder.value) loadFileTree();
 });
@@ -98,6 +116,13 @@ watch(appMode, (mode) => {
   if (mode === 'writing' && storiesCtx.activeFolder.value) {
     sidebarMode.value = 'files';
     loadFileTree();
+  }
+});
+
+// If stories load with a saved selection, keep Files visible
+watch(() => storiesCtx.stories.value.length, (n) => {
+  if (n > 0 && !storiesCtx.activeStoryId.value) {
+    storiesCtx.setActiveStory(storiesCtx.stories.value[0].id);
   }
 });
 
@@ -113,6 +138,7 @@ function toggleExpand(docType: string): void {
 
 function onStoryClick(story: Story): void {
   storiesCtx.setActiveStory(story.id);
+  sidebarMode.value = 'files';
   showPanel('analyzer');
 }
 
@@ -158,13 +184,11 @@ function formatTimestamp(ts: string): string {
 
 <template>
   <aside id="sidebar">
-    <!-- Mode tabs -->
     <div class="nav-section mode-tabs">
       <button class="mode-tab" :class="{ active: appMode === 'analyzer' }" @click="setAppMode('analyzer')">Analyzer</button>
       <button class="mode-tab" :class="{ active: appMode === 'writing' }" @click="setAppMode('writing'); sidebarMode = 'files'">Writing</button>
     </div>
 
-    <!-- Stories section -->
     <div class="stories-section">
       <div class="nav-label-row">
         <span class="nav-label">Stories</span>
@@ -195,45 +219,47 @@ function formatTimestamp(ts: string): string {
       </div>
     </div>
 
-    <!-- Files / Reports toggle (only in analyzer mode) -->
-    <div v-if="storiesCtx.activeFolder.value && appMode === 'analyzer'" class="mode-toggle">
-      <button
-        class="mode-btn"
-        :class="{ active: sidebarMode === 'files' }"
-        @click="sidebarMode = 'files'"
-      >Files</button>
-      <button
-        class="mode-btn"
-        :class="{ active: sidebarMode === 'reports' }"
-        @click="sidebarMode = 'reports'"
-      >Reports</button>
+    <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint files-hint">
+      Select a story to browse files.
     </div>
 
-    <!-- Files mode: manuscript tree (also shown always in writing mode) -->
+    <div v-if="storiesCtx.activeFolder.value && appMode === 'analyzer'" class="mode-toggle-row">
+      <div class="mode-toggle">
+        <button
+          class="mode-btn"
+          :class="{ active: sidebarMode === 'files' }"
+          @click="sidebarMode = 'files'"
+        >Files</button>
+        <button
+          class="mode-btn"
+          :class="{ active: sidebarMode === 'reports' }"
+          @click="sidebarMode = 'reports'"
+        >Reports</button>
+      </div>
+      <button
+        v-if="sidebarMode === 'files'"
+        class="btn-new-story"
+        title="New document"
+        @click="onAddDocument"
+      >+</button>
+    </div>
+
     <div v-if="(sidebarMode === 'files' || appMode === 'writing') && storiesCtx.activeFolder.value" class="files-section">
-      <div v-if="fileTree.length === 0" class="sidebar-hint">No chapters found.</div>
-      <template v-for="entry in fileTree" :key="entry.path">
-        <div v-if="entry.is_dir" class="file-tree-dir">
-          <div class="file-tree-dir-header" @click="toggleDir(entry.path)">
-            <span class="file-tree-arrow">{{ expandedDirs.has(entry.path) ? '▾' : '▸' }}</span>
-            <span class="file-tree-dir-name">{{ entry.name }}</span>
-          </div>
-          <div v-if="expandedDirs.has(entry.path)" class="file-tree-children">
-            <div
-              v-for="child in entry.children"
-              :key="child.path"
-              class="file-tree-file"
-              @click="onFileClick(child)"
-            >{{ child.name.replace(/\.md$/, '') }}</div>
-          </div>
-        </div>
-        <div v-else class="file-tree-file" @click="onFileClick(entry)">
-          {{ entry.name.replace(/\.md$/, '') }}
-        </div>
-      </template>
+      <div v-if="appMode === 'writing'" class="nav-label-row files-header">
+        <span class="nav-label">Files</span>
+        <button class="btn-new-story" title="New document" @click="onAddDocument">+</button>
+      </div>
+      <div v-if="fileTree.length === 0" class="sidebar-hint">No documents yet. Click + to create one.</div>
+      <FileTreeNodes
+        v-else
+        :entries="fileTree"
+        :expanded="expandedDirs"
+        @toggle="toggleDir"
+        @open="onFileClick"
+        @add="onAddInFolder"
+      />
     </div>
 
-    <!-- Reports mode (only in analyzer) -->
     <div v-if="sidebarMode === 'reports' && appMode === 'analyzer'" class="reports-section">
       <div v-if="!storiesCtx.activeFolder.value" class="sidebar-hint">
         Select a story to see reports.
@@ -271,7 +297,6 @@ function formatTimestamp(ts: string): string {
       </template>
     </div>
 
-    <!-- Series section (only in analyzer) -->
     <div v-if="appMode === 'analyzer'" class="series-section">
       <div class="nav-label-row">
         <span class="nav-label">Series</span>
@@ -290,7 +315,6 @@ function formatTimestamp(ts: string): string {
       </div>
     </div>
 
-    <!-- Settings at bottom -->
     <div class="nav-section settings-section">
       <button class="nav-item" @click="showPanel('settings')">
         Settings
@@ -397,6 +421,7 @@ function formatTimestamp(ts: string): string {
   align-items: center;
   justify-content: center;
   padding: 0;
+  flex-shrink: 0;
 }
 
 .btn-new-story:hover {
@@ -406,10 +431,30 @@ function formatTimestamp(ts: string): string {
 
 .stories-section {
   padding: 0;
+  flex: 0 0 auto;
+  max-height: 28vh;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .stories-list {
   padding: 0 8px 8px;
+}
+
+.files-section {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0 6px;
+  min-height: 120px;
+}
+
+.files-header {
+  padding: 4px 8px 6px;
+}
+
+.series-section {
+  padding: 0;
+  flex: 0 0 auto;
 }
 
 .story-item {
@@ -463,11 +508,17 @@ function formatTimestamp(ts: string): string {
   opacity: 1;
 }
 
-/* ── Mode toggle ───────────────────────────────────────────────────────────── */
+.mode-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 10px 8px;
+}
 
 .mode-toggle {
   display: flex;
-  margin: 4px 10px 8px;
+  flex: 1;
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
@@ -499,82 +550,10 @@ function formatTimestamp(ts: string): string {
   color: var(--text);
 }
 
-/* ── File tree ─────────────────────────────────────────────────────────────── */
-
-.files-section {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0 6px;
-}
-
-.file-tree-dir {
-  margin: 0;
-}
-
-.file-tree-dir-header {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 8px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-  cursor: pointer;
-  border-radius: var(--radius);
-}
-
-.file-tree-dir-header:hover {
-  background: var(--surface2);
-}
-
-.file-tree-arrow {
-  font-size: 10px;
-  color: var(--text-muted);
-  width: 12px;
-  text-align: center;
-}
-
-.file-tree-dir-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-tree-children {
-  padding-left: 16px;
-}
-
-.file-tree-file {
-  padding: 4px 8px 4px 12px;
-  font-size: 12px;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-radius: var(--radius);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.file-tree-file:hover {
-  background: var(--surface2);
-  color: var(--text);
-}
-
-/* ── Reports section ───────────────────────────────────────────────────────── */
-
 .reports-section {
   flex: 1;
   overflow-y: auto;
   min-height: 0;
-}
-
-.sidebar-section-header {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-muted);
-  padding: 8px 10px 4px;
 }
 
 .report-type {
@@ -666,8 +645,8 @@ function formatTimestamp(ts: string): string {
   color: var(--text-muted);
 }
 
-.series-section {
-  padding: 0;
+.files-hint {
+  flex: 1;
 }
 
 .series-list {

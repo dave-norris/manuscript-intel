@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, inject } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { useSettings } from '../composables/useSettings';
 import { formatMarkdown } from '../formatMarkdown';
@@ -19,6 +19,7 @@ const emit = defineEmits<{
 }>();
 
 const settings = useSettings();
+const bumpFileTree = inject<() => void>('bumpFileTree', () => {});
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -27,6 +28,7 @@ const suggestion = ref('');
 const loadingSuggestion = ref(false);
 const suggestionError = ref('');
 const applyText = ref('');
+const deleting = ref(false);
 
 const editorRef = ref<InstanceType<typeof ChapterEditor> | null>(null);
 
@@ -131,6 +133,27 @@ function onClose(): void {
   editorRef.value?.saveNow();
   emit('close');
 }
+
+async function onDelete(): Promise<void> {
+  const path = finding.value?.filePath;
+  if (!path || !props.storyFolder) return;
+  const name = finding.value?.chapterTitle || 'this document';
+  if (!confirm(`Delete “${name}”? This cannot be undone.`)) return;
+
+  deleting.value = true;
+  try {
+    await invoke<void>('delete_story_document', {
+      storyFolder: props.storyFolder,
+      filePath: path,
+    });
+    bumpFileTree();
+    emit('close');
+  } catch (e) {
+    alert('Could not delete: ' + String(e));
+  } finally {
+    deleting.value = false;
+  }
+}
 </script>
 
 <template>
@@ -141,10 +164,14 @@ function onClose(): void {
         <button class="mv-back" @click="onClose">&larr; Back</button>
         <span class="mv-chapter-title">{{ finding?.chapterTitle || '' }}</span>
       </div>
-      <div v-if="!isReadMode" class="mv-nav">
-        <span class="mv-nav-label">{{ currentIndex + 1 }} of {{ totalFindings }}</span>
-        <button class="mv-nav-btn" :disabled="currentIndex === 0" @click="onPrev">&larr; Prev</button>
-        <button class="mv-nav-btn" :disabled="currentIndex === totalFindings - 1" @click="onNext">Next &rarr;</button>
+      <div class="mv-header-right">
+        <div v-if="!isReadMode" class="mv-nav">
+          <span class="mv-nav-label">{{ currentIndex + 1 }} of {{ totalFindings }}</span>
+          <button class="mv-nav-btn" :disabled="currentIndex === 0" @click="onPrev">&larr; Prev</button>
+          <button class="mv-nav-btn" :disabled="currentIndex === totalFindings - 1" @click="onNext">Next &rarr;</button>
+        </div>
+        <button type="button" class="mv-action" @click="onClose">Close</button>
+        <button type="button" class="mv-action danger" :disabled="deleting" @click="onDelete">Delete</button>
       </div>
     </div>
 
@@ -235,6 +262,37 @@ function onClose(): void {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.mv-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mv-action {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.mv-action:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.mv-action.danger:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.mv-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .mv-nav-label {

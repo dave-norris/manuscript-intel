@@ -25,7 +25,12 @@ const createMode = ref<CreateMode>('link');
 
 const structureHint = computed(() => {
   const s = settingsCtx.folderStructure.value;
-  return [s.manuscript, s.bible, s.characters, ...(s.extra || [])]
+  const ms = s.manuscript || 'Manuscript';
+  return [
+    `${ms}/Act-1`, `${ms}/Act-2`, `${ms}/Act-3`,
+    s.bible, s.characters, s.locations,
+    ...(s.extra || []),
+  ]
     .filter(Boolean)
     .join(', ');
 });

@@ -126,7 +126,7 @@ fn sanitize_folder_name(name: &str) -> String {
 fn ensure_story_scaffold(story_dir: &std::path::Path) -> Result<(), String> {
     let structure = crate::folder_structure::current();
     for sub in structure.scaffold_dirs() {
-        fs::create_dir_all(story_dir.join(sub))
+        fs::create_dir_all(story_dir.join(&sub))
             .map_err(|e| format!("Cannot create {}/: {}", sub, e))?;
     }
     Ok(())
@@ -262,4 +262,117 @@ pub async fn delete_story(app: AppHandle, id: String) -> StoriesResult {
             }
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct CreateDocumentRequest {
+    pub story_folder: String,
+    /// Display / title name (becomes the `.md` filename)
+    pub name: String,
+    /// Relative directory under the story folder (e.g. `Manuscript`, `Research`)
+    pub location: String,
+}
+
+#[derive(Serialize)]
+pub struct CreateDocumentResult {
+    pub path: String,
+    pub title: String,
+}
+
+/// Sanitize a document title into a safe `.md` filename stem.
+fn sanitize_file_stem(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            c if c.is_control() => '-',
+            c => c,
+        })
+        .collect::<String>()
+        .trim()
+        .trim_matches('.')
+        .to_string();
+    if cleaned.is_empty() {
+        "Untitled".to_string()
+    } else {
+        cleaned
+    }
+}
+
+fn sanitize_relative_location(location: &str) -> Result<String, String> {
+    let trimmed = location.trim().trim_matches('/').trim_matches('\\');
+    if trimmed.is_empty() {
+        return Err("Please choose a location for the new file.".to_string());
+    }
+    if trimmed.contains("..") {
+        return Err("Location cannot contain '..'.".to_string());
+    }
+    Ok(trimmed.replace('\\', "/"))
+}
+
+/// Create a new empty markdown document under a story folder.
+#[tauri::command]
+pub async fn create_story_document(
+    request: CreateDocumentRequest,
+) -> Result<CreateDocumentResult, String> {
+    let title = request.name.trim().to_string();
+    if title.is_empty() {
+        return Err("Please enter a document name.".to_string());
+    }
+
+    let story = PathBuf::from(&request.story_folder);
+    if !story.is_dir() {
+        return Err(format!("Story folder does not exist: {}", request.story_folder));
+    }
+
+    let location = sanitize_relative_location(&request.location)?;
+    let dir = story.join(&location);
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("Cannot create {}: {}", dir.display(), e))?;
+
+    let stem = sanitize_file_stem(&title);
+    let file_path = dir.join(format!("{}.md", stem));
+    if file_path.exists() {
+        return Err(format!(
+            "A file already exists at: {}",
+            file_path.to_string_lossy()
+        ));
+    }
+
+    let content = format!("# {}\n\n", title);
+    fs::write(&file_path, content)
+        .map_err(|e| format!("Cannot write {}: {}", file_path.display(), e))?;
+
+    Ok(CreateDocumentResult {
+        path: file_path.to_string_lossy().to_string(),
+        title,
+    })
+}
+
+/// Delete a document file. Path must resolve under the given story folder.
+#[tauri::command]
+pub async fn delete_story_document(
+    story_folder: String,
+    file_path: String,
+) -> Result<(), String> {
+    let story = PathBuf::from(&story_folder)
+        .canonicalize()
+        .map_err(|e| format!("Story folder not found: {}", e))?;
+    let path = PathBuf::from(&file_path);
+    let real = if path.exists() {
+        path.canonicalize()
+            .map_err(|e| format!("Cannot resolve {}: {}", file_path, e))?
+    } else {
+        return Err(format!("File does not exist: {}", file_path));
+    };
+
+    if !real.starts_with(&story) {
+        return Err("Refusing to delete a file outside the story folder.".to_string());
+    }
+    if real.extension().and_then(|e| e.to_str()) != Some("md") {
+        return Err("Only markdown (.md) documents can be deleted here.".to_string());
+    }
+
+    fs::remove_file(&real).map_err(|e| format!("Cannot delete {}: {}", real.display(), e))?;
+    Ok(())
 }

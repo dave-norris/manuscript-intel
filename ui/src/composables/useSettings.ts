@@ -22,6 +22,8 @@ export interface FolderStructure {
   bible: string;
   /** Character docs */
   characters: string;
+  /** Location docs */
+  locations: string;
   /** Extra scaffold-only folders (app does not use these) */
   extra: string[];
 }
@@ -30,15 +32,30 @@ const DEFAULT_FOLDER_STRUCTURE: FolderStructure = {
   manuscript: 'Manuscript',
   bible: 'Bible',
   characters: 'Characters',
+  locations: 'Locations',
   extra: ['Publishing/Cover', 'Research'],
 };
 
+/** Fixed act folders always created under Manuscript (not optional extras). */
+export const MANUSCRIPT_ACTS = ['Act-1', 'Act-2', 'Act-3'] as const;
+
+export function manuscriptActPaths(manuscript = 'Manuscript'): string[] {
+  const root = manuscript.trim() || 'Manuscript';
+  return MANUSCRIPT_ACTS.map(act => `${root}/${act}`);
+}
+
 function cloneStructure(s: FolderStructure): FolderStructure {
+  const manuscript = s.manuscript || DEFAULT_FOLDER_STRUCTURE.manuscript;
+  const rawExtra = Array.isArray(s.extra) ? [...s.extra] : [...DEFAULT_FOLDER_STRUCTURE.extra];
+  // Strip Act paths if they were previously stored as extras
+  const actSet = new Set(manuscriptActPaths(manuscript).map(p => p.toLowerCase()));
+  const extra = rawExtra.filter(p => !actSet.has(p.replace(/\\/g, '/').toLowerCase()));
   return {
-    manuscript: s.manuscript || DEFAULT_FOLDER_STRUCTURE.manuscript,
+    manuscript,
     bible: s.bible || DEFAULT_FOLDER_STRUCTURE.bible,
     characters: s.characters || DEFAULT_FOLDER_STRUCTURE.characters,
-    extra: Array.isArray(s.extra) ? [...s.extra] : [...DEFAULT_FOLDER_STRUCTURE.extra],
+    locations: s.locations || DEFAULT_FOLDER_STRUCTURE.locations,
+    extra,
   };
 }
 
@@ -58,6 +75,23 @@ function loadAssignments(): ModelAssignments {
     defaults.prose = oldProse;
   }
   return defaults;
+}
+
+export type ThemeMode = 'dark' | 'light';
+
+function applyTheme(mode: ThemeMode): void {
+  document.documentElement.setAttribute('data-theme', mode);
+}
+
+const theme = ref<ThemeMode>(
+  (localStorage.getItem('theme') as ThemeMode) === 'light' ? 'light' : 'dark'
+);
+applyTheme(theme.value);
+
+function setTheme(mode: ThemeMode): void {
+  theme.value = mode;
+  localStorage.setItem('theme', mode);
+  applyTheme(mode);
 }
 
 const provider = ref(localStorage.getItem('provider') || 'tokenmix');
@@ -128,6 +162,7 @@ function removeFolderEntry(index: number): void {
 }
 
 async function saveSettings(): Promise<void> {
+  localStorage.setItem('theme', theme.value);
   localStorage.setItem('provider', provider.value);
   localStorage.setItem('apiKey', apiKey.value.trim());
   localStorage.setItem('modelAssignments', JSON.stringify(modelAssignments.value));
@@ -173,6 +208,8 @@ async function testDataforseo(): Promise<{ success: boolean; error: string }> {
 
 export function useSettings() {
   return {
+    theme,
+    setTheme,
     provider,
     apiKey,
     model,

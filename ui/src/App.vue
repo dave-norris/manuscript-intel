@@ -19,6 +19,7 @@ import ReportsViewer from './components/ReportsViewer.vue';
 import SettingsPanel from './components/SettingsPanel.vue';
 import StoryForm from './components/StoryForm.vue';
 import SeriesForm from './components/SeriesForm.vue';
+import NewDocumentForm from './components/NewDocumentForm.vue';
 import ManuscriptViewer from './components/ManuscriptViewer.vue';
 import WritingPanel from './components/WritingPanel.vue';
 
@@ -48,9 +49,12 @@ provide('setAppMode', (mode: AppMode) => { appMode.value = mode; });
 
 // ── Panel state (within Analyzer mode) ────────────────────────────────────────
 
-type Panel = 'analyzer' | 'reports' | 'settings' | 'story-form' | 'series' | 'manuscript';
+type Panel = 'analyzer' | 'reports' | 'settings' | 'story-form' | 'series' | 'manuscript' | 'new-document';
 const activePanel = ref<Panel>('analyzer');
 const prevPanel = ref<Panel>('analyzer');
+/** Panel to restore after cancelling New Document (works across writing/analyzer). */
+const panelBeforeNewDoc = ref<Panel>('analyzer');
+const modeBeforeNewDoc = ref<AppMode>('analyzer');
 
 function showPanel(name: Panel): void {
   if (name === 'settings' && activePanel.value === 'settings') {
@@ -65,15 +69,37 @@ function showPanel(name: Panel): void {
 
 provide(showPanelKey, showPanel as (name: string) => void);
 
+const fileTreeTick = ref(0);
+provide('fileTreeTick', fileTreeTick);
+
 // ── Manuscript editor state (for report findings) ─────────────────────────────
 
 const manuscriptFindings = ref<Finding[]>([]);
 const manuscriptStartIndex = ref(0);
+/** Where to return after closing the manuscript editor. */
+const manuscriptReturnPanel = ref<Panel>('analyzer');
 
 function openManuscriptEditor(findings: Finding[], startIndex: number): void {
   manuscriptFindings.value = findings;
   manuscriptStartIndex.value = startIndex;
+  // From a report → return to reports; from Files/elsewhere → analyzer.
+  // If already in the manuscript editor, keep the existing return target.
+  if (activePanel.value === 'reports') {
+    manuscriptReturnPanel.value = 'reports';
+  } else if (activePanel.value !== 'manuscript') {
+    manuscriptReturnPanel.value = 'analyzer';
+  }
   activePanel.value = 'manuscript';
+}
+
+function closeManuscriptEditor(): void {
+  const target = manuscriptReturnPanel.value;
+  // Don't land on an empty reports shell (Copy/Delete with no title)
+  if (target === 'reports' && !reportsCtx.currentReport.value) {
+    activePanel.value = 'analyzer';
+  } else {
+    activePanel.value = target;
+  }
 }
 
 provide(openManuscriptEditorKey, openManuscriptEditor);
@@ -82,6 +108,7 @@ provide(openManuscriptEditorKey, openManuscriptEditor);
 
 const writingFilePath = ref('');
 const writingChapterTitle = ref('');
+const newDocLocation = ref<string | undefined>(undefined);
 
 function openInWritingMode(filePath: string, title: string): void {
   writingFilePath.value = filePath;
@@ -90,6 +117,44 @@ function openInWritingMode(filePath: string, title: string): void {
 }
 
 provide('openInWritingMode', openInWritingMode);
+
+function closeWritingDocument(): void {
+  writingFilePath.value = '';
+  writingChapterTitle.value = '';
+}
+
+provide('closeWritingDocument', closeWritingDocument);
+
+function bumpFileTree(): void {
+  fileTreeTick.value += 1;
+}
+
+provide('bumpFileTree', bumpFileTree);
+
+function openNewDocumentForm(location?: string): void {
+  if (!storiesCtx.activeFolder.value) return;
+  panelBeforeNewDoc.value = activePanel.value;
+  modeBeforeNewDoc.value = appMode.value;
+  newDocLocation.value = location;
+  activePanel.value = 'new-document';
+}
+
+provide('openNewDocumentForm', openNewDocumentForm);
+
+function onDocumentCreated(path: string, title: string): void {
+  fileTreeTick.value += 1;
+  newDocLocation.value = undefined;
+  writingFilePath.value = path;
+  writingChapterTitle.value = title;
+  appMode.value = 'writing';
+  activePanel.value = 'analyzer';
+}
+
+function onDocumentFormCancel(): void {
+  newDocLocation.value = undefined;
+  activePanel.value = panelBeforeNewDoc.value;
+  appMode.value = modeBeforeNewDoc.value;
+}
 
 // ── Story form state ──────────────────────────────────────────────────────────
 
@@ -161,16 +226,23 @@ onMounted(() => {
     <TitleBar />
     <Sidebar @open-story-form="openStoryForm" @open-series-form="openSeriesForm" />
     <main id="main">
+      <NewDocumentForm
+        v-if="activePanel === 'new-document'"
+        :initial-location="newDocLocation"
+        @created="onDocumentCreated"
+        @cancel="onDocumentFormCancel"
+      />
+
       <!-- Writing mode -->
       <WritingPanel
-        v-if="appMode === 'writing'"
+        v-else-if="appMode === 'writing'"
         :file-path="writingFilePath"
         :chapter-title="writingChapterTitle"
         :story-folder="storiesCtx.activeFolder.value"
       />
 
       <!-- Analyzer mode panels -->
-      <template v-if="appMode === 'analyzer'">
+      <template v-else-if="appMode === 'analyzer'">
         <AnalyzerPanel v-if="activePanel === 'analyzer'" />
         <ReportsViewer v-if="activePanel === 'reports'" />
         <SettingsPanel v-if="activePanel === 'settings'" />
@@ -181,7 +253,7 @@ onMounted(() => {
           :findings="manuscriptFindings"
           :start-index="manuscriptStartIndex"
           :story-folder="storiesCtx.activeFolder.value"
-          @close="showPanel('reports')"
+          @close="closeManuscriptEditor"
         />
       </template>
     </main>

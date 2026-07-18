@@ -17,11 +17,14 @@ export default defineConfig({
   clearScreen: false,
   customLogger: logger,
   server: {
-    host: host || false,
+    // Always bind IPv4 loopback so Tauri + ensure-ui-dev.sh can reach it reliably.
+    host: host || '127.0.0.1',
     port: 5173,
     strictPort: true,
     open: false,
-    hmr: host ? { protocol: 'ws', host, port: 5183 } : undefined,
+    hmr: host
+      ? { protocol: 'ws', host, port: 5183 }
+      : { protocol: 'ws', host: '127.0.0.1', port: 5173 },
     watch: { ignored: ['**/src-tauri/**'] },
   },
   build: {

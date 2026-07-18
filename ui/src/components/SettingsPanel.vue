@@ -156,6 +156,31 @@ async function onRemoveStale(): Promise<void> {
     <h2 class="panel-title">Settings</h2>
 
     <div class="settings-form">
+      <!-- Appearance -->
+      <label>Theme</label>
+      <div class="provider-options">
+        <label class="provider-option" :class="{ active: settingsCtx.theme.value === 'dark' }">
+          <input
+            type="radio"
+            name="theme"
+            value="dark"
+            :checked="settingsCtx.theme.value === 'dark'"
+            @change="settingsCtx.setTheme('dark')"
+          />
+          Dark
+        </label>
+        <label class="provider-option" :class="{ active: settingsCtx.theme.value === 'light' }">
+          <input
+            type="radio"
+            name="theme"
+            value="light"
+            :checked="settingsCtx.theme.value === 'light'"
+            @change="settingsCtx.setTheme('light')"
+          />
+          Light
+        </label>
+      </div>
+
       <!-- Provider -->
       <label>Provider</label>
       <div class="provider-options">
@@ -285,18 +310,28 @@ async function onRemoveStale(): Promise<void> {
     <h3 class="section-title">Folder Structure</h3>
     <div class="settings-form">
       <p class="panel-desc">
-        Used when you choose <strong>Create empty story</strong>. The app uses these three folders by purpose
+        Used when you choose <strong>Create empty story</strong>. The app uses these folders by purpose
         — you can rename the paths, but not remove them.
       </p>
 
       <label>Manuscript <span class="form-hint">— chapter files (analysis)</span></label>
       <input type="text" v-model="settingsCtx.folderStructure.value.manuscript" placeholder="Manuscript" />
+      <p class="panel-desc manuscript-acts-hint">
+        Always created as
+        <strong>{{ settingsCtx.folderStructure.value.manuscript || 'Manuscript' }}/Act-1</strong>,
+        <strong>Act-2</strong>,
+        <strong>Act-3</strong>
+        — not optional.
+      </p>
 
       <label>Bible <span class="form-hint">— story bible docs</span></label>
       <input type="text" v-model="settingsCtx.folderStructure.value.bible" placeholder="Bible" />
 
       <label>Characters <span class="form-hint">— character docs</span></label>
       <input type="text" v-model="settingsCtx.folderStructure.value.characters" placeholder="Characters" />
+
+      <label>Locations <span class="form-hint">— location docs</span></label>
+      <input type="text" v-model="settingsCtx.folderStructure.value.locations" placeholder="Locations" />
 
       <label class="extra-folders-label">Additional folders</label>
       <p class="panel-desc extra-folders-desc">

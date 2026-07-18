@@ -13,7 +13,7 @@ import type {
   ModelInfo,
 } from './types';
 import type { ContinuityScope } from './composables/useAnalysis';
-import type { ModelAssignments, FolderStructure } from './composables/useSettings';
+import type { ModelAssignments, FolderStructure, ThemeMode } from './composables/useSettings';
 
 // ── Stories ───────────────────────────────────────────────────────────────────
 
@@ -62,6 +62,8 @@ export const platformKey: InjectionKey<PlatformContext> = Symbol('platform');
 // ── Settings ──────────────────────────────────────────────────────────────────
 
 export interface SettingsContext {
+  theme: Ref<ThemeMode>;
+  setTheme: (mode: ThemeMode) => void;
   provider: Ref<string>;
   apiKey: Ref<string>;
   model: ComputedRef<string>;

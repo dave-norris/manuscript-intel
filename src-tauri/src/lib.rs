@@ -98,6 +98,8 @@ pub fn run() {
             stories::init_story,
             stories::update_story,
             stories::delete_story,
+            stories::create_story_document,
+            stories::delete_story_document,
             folder_structure::get_folder_structure,
             folder_structure::save_folder_structure,
             series::list_series,

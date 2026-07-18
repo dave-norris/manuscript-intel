@@ -9,6 +9,12 @@ const props = defineProps<{
   chapterTitle: string;
   storyFolder: string;
   selectedText: string;
+  pinnedCount: number;
+}>();
+
+const emit = defineEmits<{
+  (e: 'pin'): void;
+  (e: 'clear-pins'): void;
 }>();
 
 const settings = useSettings();
@@ -138,8 +144,15 @@ watch(() => props.chapterTitle, () => {
 
     <div v-if="error" class="chat-error">{{ error }}</div>
 
-    <div v-if="props.selectedText" class="chat-selection-indicator">
-      <span class="selection-label">Selected:</span> {{ props.selectedText.length > 60 ? props.selectedText.substring(0, 60) + '...' : props.selectedText }}
+    <div v-if="props.selectedText || props.pinnedCount > 0" class="chat-selection-bar">
+      <div v-if="props.selectedText" class="chat-selection-indicator">
+        <span class="selection-label">{{ props.pinnedCount > 0 ? `${props.pinnedCount} pinned` : 'Selected' }}:</span>
+        {{ props.selectedText.length > 80 ? props.selectedText.substring(0, 80) + '...' : props.selectedText }}
+      </div>
+      <div class="chat-pin-actions">
+        <button class="pin-btn" @click="emit('pin')" title="Pin selection (⌘D)">📌 Pin</button>
+        <button v-if="props.pinnedCount > 0" class="pin-btn pin-clear" @click="emit('clear-pins')" title="Clear all pins (Esc)">Clear pins</button>
+      </div>
     </div>
 
     <div class="chat-input-row">
@@ -293,13 +306,16 @@ watch(() => props.chapterTitle, () => {
   flex-shrink: 0;
 }
 
+.chat-selection-bar {
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  background: rgba(232, 97, 44, 0.04);
+}
+
 .chat-selection-indicator {
   font-size: 11px;
   color: var(--accent);
-  padding: 4px 14px;
-  background: rgba(232, 97, 44, 0.06);
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
+  padding: 4px 14px 2px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -307,6 +323,36 @@ watch(() => props.chapterTitle, () => {
 
 .selection-label {
   font-weight: 600;
+}
+
+.chat-pin-actions {
+  display: flex;
+  gap: 6px;
+  padding: 2px 14px 6px;
+}
+
+.pin-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 10px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.pin-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.pin-clear {
+  color: var(--text-muted);
+}
+
+.pin-clear:hover {
+  border-color: #e74c3c;
+  color: #e74c3c;
 }
 
 .chat-input-row {

@@ -46,7 +46,7 @@ const editor = useEditor({
     },
     handleDOMEvents: {
       blur: () => { if (dirty.value) scheduleSave(); return false; },
-      keydown: (view: any, event: KeyboardEvent) => {
+      keydown: (_view: any, event: KeyboardEvent) => {
         // Cmd+D (Mac) or Ctrl+D (Win) = pin selection
         if ((event.metaKey || event.ctrlKey) && event.key === 'd') {
           event.preventDefault();

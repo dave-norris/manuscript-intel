@@ -7,8 +7,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
-use super::{emit, err, extract_json_object, GenreResult, FolderRequest, AnalyzeStoryRequest};
-use crate::commands::call_llm;
+use super::{emit, err, GenreResult, FolderRequest, AnalyzeStoryRequest};
 use crate::db;
 use crate::models::KeywordResult;
 
@@ -19,7 +18,7 @@ use super::bisac::ai_pick_bisac;
 use super::keywords::{
     call_keyword_optimizer, call_keyword_optimizer_with_pool,
     derive_keyword_seeds, run_keyword_searches_canopy, run_keyword_searches_dataforseo,
-    generate_discovery_keywords, render_kdp_keywords, render_search_terms,
+    generate_discovery_keywords, generate_mi_search_terms, render_kdp_keywords, render_search_terms,
 };
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -145,7 +144,7 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
 
     // ── Step 4: Optimize KDP keywords ─────────────────────────────────────
     emit(&app, "Step 4: Optimizing KDP keywords...");
-    match call_keyword_optimizer(&request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals).await {
+    match call_keyword_optimizer(&database, &request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals).await {
         Ok((entries, strategy)) => {
             let conn = database.0.lock().unwrap();
             let _ = db::save_kdp_keywords(&conn, &request.folder, &entries, &strategy, "*(Generated from genre analysis.)*");
@@ -159,40 +158,14 @@ pub async fn run_everything(app: AppHandle, request: FolderRequest) -> GenreResu
 
     // ── Step 5: Generate search terms ──────────────────────────────────────
     emit(&app, "Step 5: Generating competition search terms...");
-    let pr_system = r#"You are a book market research expert. Generate short search phrases for competition analysis.
-
-Rules:
-- 2-4 words maximum per phrase
-- Plain English, no special characters
-- Think like a reader browsing Amazon
-- Include: genre combinations, setting descriptors, theme words, reader mood phrases
-
-Return ONLY a JSON array of strings. No markdown, no preamble. Example:
-["christian historical fiction", "first century rome", "faith romance clean"]"#;
-
-    let pr_user = format!(
-        "Book genre: {}\nKDP categories: {}\nGenre signals:\n{}",
-        genre_data.industry_ebook,
-        genre_data.kdp_ebook.iter()
-            .map(|p| p.split('>').last().unwrap_or(p).trim().to_string())
-            .collect::<Vec<_>>().join(", "),
-        &genre_data.genre_signals[..genre_data.genre_signals.len().min(500)]
-    );
-
-    match call_llm(&request.provider, &request.api_key, &request.model, pr_system, &pr_user, 300).await {
-        Ok(raw) => {
-            if let Some(clean) = extract_json_object(&raw) {
-                if let Ok(keywords) = serde_json::from_str::<Vec<String>>(&clean) {
-                    let conn = database.0.lock().unwrap();
-                    let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
-                    let rendered = render_search_terms(&keywords);
-                    let _ = db::save_document_at(&conn, &request.folder, "mi_search_terms", &rendered, &run_ts);
-                    emit(&app, &format!("  ✓ {} search terms saved to database.", keywords.len()));
-                    for kw in &keywords { emit(&app, &format!("    • {}", kw)); }
-                }
-            } else {
-                emit(&app, "  ⚠ Could not parse search terms response.");
-            }
+    match generate_mi_search_terms(&database, &request.provider, &request.api_key, &request.model, &genre_data).await {
+        Ok(keywords) => {
+            let conn = database.0.lock().unwrap();
+            let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
+            let rendered = render_search_terms(&keywords);
+            let _ = db::save_document_at(&conn, &request.folder, "mi_search_terms", &rendered, &run_ts);
+            emit(&app, &format!("  ✓ {} search terms saved to database.", keywords.len()));
+            for kw in &keywords { emit(&app, &format!("    • {}", kw)); }
         }
         Err(e) => emit(&app, &format!("  ⚠ Search terms generation failed: {}", e)),
     }
@@ -312,7 +285,7 @@ async fn find_genres_and_categories_inner(app: AppHandle, request: FolderRequest
             genre_data.industry_ebook, genre_data.kdp_ebook.join("; "), genre_data.genre_signals
         );
 
-        let ai_ranked = match ai_rank_genres(&request.provider, &request.api_key, &request.model, &description, &master_list).await {
+        let ai_ranked = match ai_rank_genres(&database, &request.provider, &request.api_key, &request.model, &description, &master_list).await {
             Ok(r) => r,
             Err(e) => return err(&format!("Genre ranking failed: {}", e)),
         };
@@ -404,7 +377,7 @@ async fn find_genres_and_categories_inner(app: AppHandle, request: FolderRequest
     let same_as_ebook = genre_data.industry_print.trim().eq_ignore_ascii_case(genre_data.industry_ebook.trim());
 
     let ebook_desc = format!("{}\n\n{}", genre_data.industry_ebook, genre_data.genre_signals);
-    let ebook_picks = ai_pick_bisac(&request.provider, &request.api_key, &request.model, &ebook_desc, &bisac_master).await.unwrap_or_default();
+    let ebook_picks = ai_pick_bisac(&database, &request.provider, &request.api_key, &request.model, &ebook_desc, &bisac_master).await.unwrap_or_default();
     {
         let conn = database.0.lock().unwrap();
         let rows: Vec<(String, String, u8, String)> = ebook_picks.iter().map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone())).collect();
@@ -418,7 +391,7 @@ async fn find_genres_and_categories_inner(app: AppHandle, request: FolderRequest
         None
     } else {
         let print_desc = format!("{}\n\n{}", genre_data.industry_print, genre_data.genre_signals);
-        let print_picks = ai_pick_bisac(&request.provider, &request.api_key, &request.model, &print_desc, &bisac_master).await.unwrap_or_default();
+        let print_picks = ai_pick_bisac(&database, &request.provider, &request.api_key, &request.model, &print_desc, &bisac_master).await.unwrap_or_default();
         let conn = database.0.lock().unwrap();
         let rows: Vec<(String, String, u8, String)> = print_picks.iter().map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone())).collect();
         let _ = db::replace_bisac_classifications(&conn, &request.folder, "print", &rows);
@@ -612,7 +585,7 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
             genre_data.industry_ebook, genre_data.kdp_ebook.join("; "), genre_data.genre_signals
         );
 
-        let ai_ranked = match ai_rank_genres(&request.provider, &request.api_key, &request.model, &description, &master_list).await {
+        let ai_ranked = match ai_rank_genres(&database, &request.provider, &request.api_key, &request.model, &description, &master_list).await {
             Ok(r) => r,
             Err(e) => return err(&format!("Genre ranking failed: {}", e)),
         };
@@ -718,38 +691,13 @@ async fn analyze_story_inner(app: AppHandle, request: AnalyzeStoryRequest) -> Ge
     if !is_wide {
     emit(&app, "Step 5: Generating competition search terms...");
     {
-        let system = r#"You are a book market research expert. Generate short search phrases for competition analysis.
-
-Rules:
-- 2-4 words maximum per phrase
-- Plain English, no special characters
-- Think like a reader browsing Amazon
-- Include: genre combinations, setting descriptors, theme words, reader mood phrases
-
-Return ONLY a JSON array of strings. No markdown, no preamble."#;
-
-        let user = format!(
-            "Book genre: {}\nKDP categories: {}\nGenre signals:\n{}",
-            genre_data.industry_ebook,
-            genre_data.kdp_ebook.iter()
-                .map(|p| p.split('>').last().unwrap_or(p).trim().to_string())
-                .collect::<Vec<_>>().join(", "),
-            &genre_data.genre_signals[..genre_data.genre_signals.len().min(500)]
-        );
-
-        match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 300).await {
-            Ok(raw) => {
-                if let Some(clean) = extract_json_object(&raw) {
-                    if let Ok(keywords) = serde_json::from_str::<Vec<String>>(&clean) {
-                        let conn = database.0.lock().unwrap();
-                        let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
-                        let rendered = render_search_terms(&keywords);
-                        let _ = db::save_document_at(&conn, &request.folder, "mi_search_terms", &rendered, &run_ts);
-                        emit(&app, &format!("  ✓ {} search terms saved.", keywords.len()));
-                    }
-                } else {
-                    emit(&app, "  ⚠ Could not parse search terms response.");
-                }
+        match generate_mi_search_terms(&database, &request.provider, &request.api_key, &request.model, &genre_data).await {
+            Ok(keywords) => {
+                let conn = database.0.lock().unwrap();
+                let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
+                let rendered = render_search_terms(&keywords);
+                let _ = db::save_document_at(&conn, &request.folder, "mi_search_terms", &rendered, &run_ts);
+                emit(&app, &format!("  ✓ {} search terms saved.", keywords.len()));
             }
             Err(e) => emit(&app, &format!("  ⚠ Search terms generation failed: {}", e)),
         }
@@ -764,7 +712,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
         let same_as_ebook = genre_data.industry_print.trim().eq_ignore_ascii_case(genre_data.industry_ebook.trim());
 
         let ebook_desc = format!("{}\n\n{}", genre_data.industry_ebook, genre_data.genre_signals);
-        let ebook_picks = ai_pick_bisac(&request.provider, &request.api_key, &request.model, &ebook_desc, &bisac_master).await.unwrap_or_default();
+        let ebook_picks = ai_pick_bisac(&database, &request.provider, &request.api_key, &request.model, &ebook_desc, &bisac_master).await.unwrap_or_default();
         {
             let conn = database.0.lock().unwrap();
             let rows: Vec<(String, String, u8, String)> = ebook_picks.iter().map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone())).collect();
@@ -778,7 +726,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
             None
         } else {
             let print_desc = format!("{}\n\n{}", genre_data.industry_print, genre_data.genre_signals);
-            let picks = ai_pick_bisac(&request.provider, &request.api_key, &request.model, &print_desc, &bisac_master).await.unwrap_or_default();
+            let picks = ai_pick_bisac(&database, &request.provider, &request.api_key, &request.model, &print_desc, &bisac_master).await.unwrap_or_default();
             let conn = database.0.lock().unwrap();
             let rows: Vec<(String, String, u8, String)> = picks.iter().map(|(c, h, cf, r)| (c.clone(), h.clone(), *cf, r.clone())).collect();
             let _ = db::replace_bisac_classifications(&conn, &request.folder, "print", &rows);
@@ -846,7 +794,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
     } else {
     emit(&app, "Step 8: Optimizing KDP keywords...");
     {
-        let res = call_keyword_optimizer_with_pool(&request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals, &keyword_pool).await;
+        let res = call_keyword_optimizer_with_pool(&database, &request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals, &keyword_pool).await;
 
         match res {
             Ok((entries, strategy)) => {
@@ -872,7 +820,7 @@ Return ONLY a JSON array of strings. No markdown, no preamble."#;
     // ── Step 9: Discovery Keywords ─────────────────────────────────────────
     emit(&app, "Step 9: Generating discovery keywords...");
     let discovery_entries: Vec<db::DiscoveryKeywordEntry> = {
-        let res = generate_discovery_keywords(&request.provider, &request.api_key, &request.model, &genre_data).await;
+        let res = generate_discovery_keywords(&database, &request.provider, &request.api_key, &request.model, &genre_data).await;
 
         match res {
             Ok(entries) => {

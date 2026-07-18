@@ -4,13 +4,14 @@
 // genre data (industry classification, KDP paths, comps, signals), and
 // renders reports from that data.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use super::{emit, err, extract_json_object, GenreResult, FolderRequest};
-use crate::commands::call_llm;
 use crate::db;
+use crate::prompts;
 
 use super::chapters::{collect_chapters, phase1_summaries, build_combined_context};
 
@@ -58,7 +59,7 @@ pub async fn rank_genres_for_story(app: AppHandle, request: FolderRequest) -> Ge
     };
     emit(&app, &format!("  Scoring against {} known genres.", master_list.len()));
 
-    match ai_rank_genres(&request.provider, &request.api_key, &request.model, &description, &master_list).await {
+    match ai_rank_genres(&database, &request.provider, &request.api_key, &request.model, &description, &master_list).await {
         Err(e) => err(&e),
         Ok(ai_ranked) => {
             let mut ranked: Vec<RankedGenre> = ai_ranked.into_iter().map(|r| {
@@ -157,7 +158,7 @@ pub(crate) async fn phase2_analyze(
         summaries.len(), combined.len(), model
     ));
 
-    match call_ai_genre_analysis(provider, api_key, model, &combined).await {
+    match call_ai_genre_analysis(database, provider, api_key, model, &combined).await {
         Err(e) => err(&format!("Phase 2 AI error: {}", e)),
         Ok(g) => {
             let conn = database.0.lock().unwrap();
@@ -178,31 +179,23 @@ pub(crate) async fn phase2_analyze(
 // ── AI calls ─────────────────────────────────────────────────────────────────
 
 pub(crate) async fn ai_rank_genres(
+    database: &db::Db,
     provider: &str,
     api_key: &str,
     model: &str,
     description: &str,
     master_list: &[db::GenreRow],
 ) -> Result<Vec<AiGenreRank>, String> {
-    let listing = master_list.iter()
+    let genre_list = master_list.iter()
         .map(|g| format!("- {}: {}", g.name, g.description))
         .collect::<Vec<_>>()
         .join("\n");
 
-    let system = format!(
-        r#"You are a publishing genre classification expert. Score this book INDEPENDENTLY against EACH genre in the list below. Do not normalize or force scores to sum to 100 — a genuinely cross-genre book can score high (even 80%+) on more than one genre at once, and that is correct, not an error.
+    let mut vars = HashMap::new();
+    vars.insert("genre_list", genre_list.as_str());
+    vars.insert("description", description);
 
-Return ONLY a JSON array, no markdown, no preamble.
-Include only genres scoring above 15.
-Each item: {{ "genre": "<exact name from list>", "confidence": <0-100>, "reason": "<one sentence>" }}
-Sort descending by confidence.
-
-Genre list:
-{}"#,
-        listing
-    );
-
-    let raw = call_llm(provider, api_key, model, &system, description, 1200).await?;
+    let raw = prompts::execute_prompt(database, "genre_ranking", provider, api_key, model, vars).await?;
     let clean = raw.trim()
         .trim_start_matches("```json").trim_start_matches("```")
         .trim_end_matches("```").trim();
@@ -212,38 +205,16 @@ Genre list:
 }
 
 pub(crate) async fn call_ai_genre_analysis(
+    database: &db::Db,
     provider: &str,
     api_key: &str,
     model: &str,
     combined: &str,
 ) -> Result<db::GenreDataRow, String> {
-    let system = r#"You are a senior publishing consultant specializing in Amazon KDP and the broader ebook/print marketplace.
+    let mut vars = HashMap::new();
+    vars.insert("combined", combined);
 
-Analyze the provided chapter genre-signal summaries and return a JSON object with this EXACT structure:
-
-{
-  "industry_ebook": "Primary genre / subgenre for ebook market",
-  "industry_print": "Primary genre / subgenre for print market",
-  "kdp_ebook": ["Full > Category > Path", "Second > Full > Path"],
-  "kdp_print": ["Full > Category > Path", "Second > Full > Path"],
-  "genre_signals": "One paragraph summary of dominant genre signals.",
-  "comps_ebook": ["Title by Author (Year)", "Title by Author (Year)"],
-  "comps_print": ["Title by Author (Year)", "Title by Author (Year)"],
-  "reader_demographic": "Description of the target reader",
-  "bookstore_shelving": "Where this would be shelved in a physical bookstore",
-  "marketing_notes": ["Note 1", "Note 2", "Note 3"]
-}
-
-Rules:
-- KDP paths must be real, full paths from the Kindle Store category tree
-- Include exactly 2 category paths per format (ebook and print)
-- Return ONLY the JSON object, no markdown fences, no preamble"#;
-
-    let raw = call_llm(
-        provider, api_key, model, system,
-        &format!("Genre signals from all chapters:\n\n{}", combined),
-        1500,
-    ).await?;
+    let raw = prompts::execute_prompt(database, "genre_analysis", provider, api_key, model, vars).await?;
 
     let clean = extract_json_object(&raw)
         .ok_or_else(|| format!("No JSON object found: {}", &raw[..raw.len().min(200)]))?;

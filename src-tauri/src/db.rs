@@ -22,6 +22,9 @@ const SEED_GENRE_LIST_JSON:    &str = include_str!("../data/genre-list.json");
 const SEED_GENRE_KDP_MAP_JSON: &str = include_str!("../data/genre-kdp-map.json");
 const SEED_BISAC_JSON:         &str = include_str!("../data/bisac-fiction.json");
 const SEED_ZEIGARNIK_CONFIG_JSON: &str = include_str!("../data/zeigarnik-config.json");
+const SEED_PROMPT_TEMPLATES_JSON: &str = include_str!("../data/prompt-templates.json");
+const SEED_PROVIDER_MODELS_JSON: &str = include_str!("../data/provider-models.json");
+const SEED_LOOKUP_CONFIG_JSON: &str = include_str!("../data/lookup-config.json");
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS genres (
@@ -186,11 +189,33 @@ CREATE TABLE IF NOT EXISTS saved_reports (
 CREATE INDEX IF NOT EXISTS idx_saved_reports_folder ON saved_reports(story_folder, doc_type);
 
 CREATE TABLE IF NOT EXISTS report_types (
+    id                TEXT PRIMARY KEY,
+    label             TEXT NOT NULL,
+    description       TEXT NOT NULL,
+    platforms         TEXT NOT NULL DEFAULT 'kdp,wide',  -- comma-separated: 'kdp', 'wide', 'craft'
+    depends_on        TEXT NOT NULL DEFAULT '',          -- comma-separated report_type ids
+    cost_truncation   INTEGER NOT NULL DEFAULT 4000,     -- words of chapter text sent (0 = n/a)
+    cost_output_max   INTEGER NOT NULL DEFAULT 1000,     -- max output tokens per call
+    cost_per_chapter  INTEGER NOT NULL DEFAULT 0,        -- 1 = one LLM call per chapter
+    cost_fixed_calls  INTEGER NOT NULL DEFAULT 1,        -- additional / fixed LLM calls
+    model_slot        TEXT NOT NULL DEFAULT 'default',   -- Settings model assignment key
+    min_tier          TEXT NOT NULL DEFAULT 'basic'      -- basic | capable | strong
+);
+
+-- Static provider model catalogs (e.g. Claude). TokenMix is fetched live.
+CREATE TABLE IF NOT EXISTS provider_models (
     id           TEXT PRIMARY KEY,
-    label        TEXT NOT NULL,
-    description  TEXT NOT NULL,
-    platforms    TEXT NOT NULL DEFAULT 'kdp,wide',  -- comma-separated: 'kdp', 'wide', or 'kdp,wide'
-    depends_on   TEXT NOT NULL DEFAULT ''           -- comma-separated report_type ids
+    provider     TEXT NOT NULL,
+    owned_by     TEXT NOT NULL DEFAULT '',
+    input_price  REAL,
+    output_price REAL,
+    sort_order   INTEGER NOT NULL DEFAULT 0
+);
+
+-- Small JSON lookup lists (honorifics, etc.) editable without a rebuild.
+CREATE TABLE IF NOT EXISTS lookup_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL   -- JSON-encoded
 );
 
 -- Zeigarnik effect detector: pure textual-proxy analysis, no AI. Phrase lists
@@ -402,11 +427,40 @@ pub fn init(app: &AppHandle) -> Result<Db, String> {
     // Migration: series.bible_path column for series bible support.
     let _ = conn.execute("ALTER TABLE series ADD COLUMN bible_path TEXT NOT NULL DEFAULT ''", []);
 
+    // Migration: cost / model metadata on report_types (dev DBs created before these columns).
+    for col_def in [
+        "ALTER TABLE report_types ADD COLUMN cost_truncation INTEGER NOT NULL DEFAULT 4000",
+        "ALTER TABLE report_types ADD COLUMN cost_output_max INTEGER NOT NULL DEFAULT 1000",
+        "ALTER TABLE report_types ADD COLUMN cost_per_chapter INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE report_types ADD COLUMN cost_fixed_calls INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE report_types ADD COLUMN model_slot TEXT NOT NULL DEFAULT 'default'",
+        "ALTER TABLE report_types ADD COLUMN min_tier TEXT NOT NULL DEFAULT 'basic'",
+    ] {
+        let _ = conn.execute(col_def, []);
+    }
+
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS provider_models (
+            id           TEXT PRIMARY KEY,
+            provider     TEXT NOT NULL,
+            owned_by     TEXT NOT NULL DEFAULT '',
+            input_price  REAL,
+            output_price REAL,
+            sort_order   INTEGER NOT NULL DEFAULT 0
+        );
+         CREATE TABLE IF NOT EXISTS lookup_config (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );"
+    );
+
     seed_if_empty(&conn)?;
     seed_bisac_if_empty(&conn)?;
     seed_report_types(&conn)?;
     seed_prompt_templates(&conn)?;
     seed_zeigarnik_config_if_empty(&conn)?;
+    seed_provider_models(&conn)?;
+    seed_lookup_config(&conn)?;
 
     Ok(Db(Mutex::new(conn)))
 }
@@ -485,32 +539,46 @@ fn seed_bisac_if_empty(conn: &Connection) -> Result<(), String> {
 }
 
 fn seed_report_types(conn: &Connection) -> Result<(), String> {
-    let rows: &[(&str, &str, &str, &str, &str)] = &[
-        // (id, label, description, platforms, depends_on)
-        ("chapter_summaries", "Chapter Summaries", "Extract genre signals from each chapter of the manuscript.", "kdp,wide,craft", ""),
-        ("genre_analysis", "Genre Analysis", "Industry genre classification, KDP paths, comps, and reader demographic.", "kdp,wide", "chapter_summaries"),
-        ("genre_ranking", "Genre Ranking", "Score the manuscript against all known genres independently.", "kdp,wide", "chapter_summaries,genre_analysis"),
-        ("kdp_categories", "KDP Categories", "Find the best-fit Amazon categories with discoverability stats.", "kdp", "chapter_summaries,genre_analysis,genre_ranking"),
-        ("kdp_keywords", "KDP Keywords", "Optimize the 7 keyword strings for KDP discoverability.", "kdp", "chapter_summaries,genre_analysis,genre_ranking"),
-        ("bisac_classification", "BISAC Classification", "Select BISAC subject codes for KDP Print and Ingram distribution.", "kdp,wide", "chapter_summaries,genre_analysis"),
-        ("mi_search_terms", "Search Terms", "Generate competition search phrases for market analysis.", "kdp", "chapter_summaries,genre_analysis"),
-        ("discovery_keywords", "Discovery Keywords", "Keywords optimized for Apple Books, Kobo, Google Play, and SEO.", "wide", "chapter_summaries,genre_analysis"),
-        ("analysis", "Full Analysis", "Combined report: categories, BISAC, keywords, and positioning all in one.", "kdp", "chapter_summaries,genre_analysis,genre_ranking,kdp_categories,kdp_keywords,bisac_classification,mi_search_terms"),
-        ("keyword_search", "Keyword Search Results", "Amazon keyword volume and competition data from DataForSEO.", "kdp", "chapter_summaries,genre_analysis,genre_ranking"),
-        ("competition_report", "Competition Analysis", "Market landscape: how competitive the niche is, who dominates.", "kdp", "mi_search_terms"),
-        ("review_mining", "Reader Review Intelligence", "Reader insights extracted from competitor book reviews.", "kdp", "mi_search_terms"),
-        ("author_analysis", "Competitor Author Analysis", "Competitor pricing, release cadence, and series strategy.", "kdp", "mi_search_terms"),
-        ("zeigarnik_analysis", "Zeigarnik Effect", "Analyzes open loops and unresolved tension to maintain reader engagement.", "craft", ""),
-        ("continuity_check", "Continuity Check", "AI-assisted scan for contradicted facts — within a manuscript or across a whole series.", "craft", ""),
-        ("show_dont_tell", "Show Don't Tell", "AI-assisted check for telling instead of showing — flags violations with surrounding manuscript text.", "craft", ""),
-        ("ai_isms", "AI-isms", "AI-assisted check for prose habits that often read as machine-generated — flags passages with surrounding manuscript text.", "craft", ""),
+    // (id, label, description, platforms, depends_on,
+    //  cost_truncation, cost_output_max, cost_per_chapter, cost_fixed_calls, model_slot, min_tier)
+    let rows: &[(&str, &str, &str, &str, &str, i64, i64, i64, i64, &str, &str)] = &[
+        ("chapter_summaries", "Chapter Summaries", "Extract genre signals from each chapter of the manuscript.", "kdp,wide,craft", "", 8000, 600, 1, 0, "summaries", "basic"),
+        ("genre_analysis", "Genre Analysis", "Industry genre classification, KDP paths, comps, and reader demographic.", "kdp,wide", "chapter_summaries", 0, 1200, 0, 1, "genre", "capable"),
+        ("genre_ranking", "Genre Ranking", "Score the manuscript against all known genres independently.", "kdp,wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 1, "genre", "capable"),
+        ("kdp_categories", "KDP Categories", "Find the best-fit Amazon categories with discoverability stats.", "kdp", "chapter_summaries,genre_analysis,genre_ranking", 0, 1200, 0, 2, "keywords", "basic"),
+        ("kdp_keywords", "KDP Keywords", "Optimize the 7 keyword strings for KDP discoverability.", "kdp", "chapter_summaries,genre_analysis,genre_ranking", 0, 1200, 0, 1, "keywords", "basic"),
+        ("bisac_classification", "BISAC Classification", "Select BISAC subject codes for KDP Print and Ingram distribution.", "kdp,wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 2, "keywords", "basic"),
+        ("mi_search_terms", "Search Terms", "Generate competition search phrases for market analysis.", "kdp", "chapter_summaries,genre_analysis", 0, 300, 0, 1, "keywords", "basic"),
+        ("discovery_keywords", "Discovery Keywords", "Keywords optimized for Apple Books, Kobo, Google Play, and SEO.", "wide", "chapter_summaries,genre_analysis", 0, 1200, 0, 1, "keywords", "basic"),
+        ("analysis", "Full Analysis", "Combined report: categories, BISAC, keywords, and positioning all in one.", "kdp", "chapter_summaries,genre_analysis,genre_ranking,kdp_categories,kdp_keywords,bisac_classification,mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
+        ("keyword_search", "Keyword Search Results", "Amazon keyword volume and competition data from DataForSEO.", "kdp", "chapter_summaries,genre_analysis,genre_ranking", 4000, 1000, 0, 1, "keywords", "basic"),
+        ("competition_report", "Competition Analysis", "Market landscape: how competitive the niche is, who dominates.", "kdp", "mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
+        ("review_mining", "Reader Review Intelligence", "Reader insights extracted from competitor book reviews.", "kdp", "mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
+        ("author_analysis", "Competitor Author Analysis", "Competitor pricing, release cadence, and series strategy.", "kdp", "mi_search_terms", 4000, 1000, 0, 1, "default", "basic"),
+        ("zeigarnik_analysis", "Zeigarnik Effect", "Analyzes open loops and unresolved tension to maintain reader engagement.", "craft", "", 0, 0, 0, 0, "default", "basic"),
+        ("continuity_check", "Continuity Check", "AI-assisted scan for contradicted facts — within a manuscript or across a whole series.", "craft", "", 6000, 4000, 1, 3, "continuity", "capable"),
+        ("show_dont_tell", "Show Don't Tell", "AI-assisted check for telling instead of showing — flags violations with surrounding manuscript text.", "craft", "", 4000, 4000, 1, 0, "showDontTell", "capable"),
+        ("ai_isms", "AI-isms", "AI-assisted check for prose habits that often read as machine-generated — flags passages with surrounding manuscript text.", "craft", "", 4000, 4000, 1, 0, "aiIsms", "capable"),
     ];
 
-    for (id, label, description, platforms, depends_on) in rows {
+    for (id, label, description, platforms, depends_on, trunc, out_max, per_ch, fixed, slot, tier) in rows {
         conn.execute(
-            "INSERT INTO report_types (id, label, description, platforms, depends_on) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(id) DO UPDATE SET label = excluded.label, description = excluded.description, platforms = excluded.platforms, depends_on = excluded.depends_on",
-            params![id, label, description, platforms, depends_on],
+            "INSERT INTO report_types (
+                id, label, description, platforms, depends_on,
+                cost_truncation, cost_output_max, cost_per_chapter, cost_fixed_calls, model_slot, min_tier
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(id) DO UPDATE SET
+                label = excluded.label,
+                description = excluded.description,
+                platforms = excluded.platforms,
+                depends_on = excluded.depends_on,
+                cost_truncation = excluded.cost_truncation,
+                cost_output_max = excluded.cost_output_max,
+                cost_per_chapter = excluded.cost_per_chapter,
+                cost_fixed_calls = excluded.cost_fixed_calls,
+                model_slot = excluded.model_slot,
+                min_tier = excluded.min_tier",
+            params![id, label, description, platforms, depends_on, trunc, out_max, per_ch, fixed, slot, tier],
         ).map_err(|e| e.to_string())?;
     }
 
@@ -518,167 +586,74 @@ fn seed_report_types(conn: &Connection) -> Result<(), String> {
 }
 
 fn seed_prompt_templates(conn: &Connection) -> Result<(), String> {
-    // Each row: (id, label, system_prompt, user_template, max_tokens, json_mode)
-    let templates: &[(&str, &str, &str, &str, i64, i64)] = &[
-        (
-            "continuity_extract",
-            "Continuity: Fact Extraction",
-            r#"You are a continuity editor for fiction. Extract only facts likely to matter for continuity — details a careful reader could later catch a contradiction on if they changed without explanation.
+    #[derive(serde::Deserialize)]
+    struct SeedPrompt {
+        id: String,
+        label: String,
+        system_prompt: String,
+        user_template: String,
+        max_tokens: i64,
+        json_mode: i64,
+    }
 
-Cover, when present:
-- Character: appearance, age, occupation, relationships, skills, habits, possessions
-- Place: location, layout, distance from other places
-- Object: description, ownership, condition
-- Timeline: dates, durations, sequences of events
+    let templates: Vec<SeedPrompt> = serde_json::from_str(SEED_PROMPT_TEMPLATES_JSON)
+        .map_err(|e| format!("Cannot parse seed prompt-templates.json: {}", e))?;
 
-Use the character or place's fullest, most formal name as it is introduced in the text (e.g. "Sarah Chen" rather than just "Sarah" or "the detective"), so the same entity can be matched consistently across chapters.
+    // Dev app: always refresh from seed so prompt edits ship with the build.
+    conn.execute("DELETE FROM prompt_templates", [])
+        .map_err(|e| e.to_string())?;
 
-Return ONLY a JSON array, no markdown, no preamble. Maximum 15 items. Be terse.
-Each item exactly:
-{"entity": "<canonical name>", "entity_type": "character|place|object|timeline|other", "attribute": "<short_label>", "value": "<fact in under 10 words>", "snippet": "<verbatim quote, under 12 words>"}
-Keep values and snippets as short as possible. One fact per attribute per entity. No duplicates."#,
-            "Chapter: {chapter_title}\n\n{bible}\n\n---\n\n{chapter_text}",
-            4000, 1
-        ),
-        (
-            "continuity_judge",
-            "Continuity: Contradiction Judgment",
-            r#"You are a meticulous continuity editor for fiction. For each candidate group below, the same named entity has more than one recorded value for the same attribute across chapters (possibly across different books in a series, in reading order).
-
-Judge whether each is a genuine continuity error a careful reader could catch, or an explainable/intentional change: aging over time, injury, disguise, dye job, unreliable narration, a later-revealed secret, or simply imprecise-but-compatible wording that isn't actually a contradiction (e.g. "green eyes" vs "emerald eyes" is NOT a contradiction).
-
-Return ONLY a JSON array. Each item:
-{"entity":"<name>","attribute":"<attr>","verdict":"contradiction|possible|likely_intentional","confidence":<0-100>,"explanation":"<one sentence>"}
-
-Do NOT include reasoning, preamble, or markdown. ONLY the JSON array."#,
-            "{bible}\n\n---\n\nCandidate groups:\n{candidates}",
-            4000, 1
-        ),
-        (
-            "continuity_suggest",
-            "Continuity: Suggest Fix",
-            r#"You are a fiction editor helping an author fix a continuity error in their manuscript. You will be given:
-- The entity and attribute that has contradicting values
-- Where each value appears (which chapter, with a snippet of surrounding text)
-
-Provide 2-3 concrete suggestions for how to fix the inconsistency. For each:
-1. State which occurrence(s) to change
-2. Give the exact revised prose (ready to paste)
-3. One sentence explaining why this fix works
-
-Keep the author's voice and style. Be concise."#,
-            "Entity: {entity}\nAttribute: {attribute}\nExplanation: {explanation}\n\n{bible}\n\nOccurrences:\n{occurrences}",
-            2000, 0
-        ),
-        (
-            "sdt_check",
-            "Show Don't Tell: Check",
-            r#"You check fiction for TELLING instead of SHOWING. Output ONLY a JSON array.
-
-A violation is when the author DIRECTLY STATES an emotion, judgment, or conclusion that should be inferred by the reader from action, dialogue, or sensory detail.
-
-Flag ONLY clear violations. Do NOT flag:
-- Internal monologue that reveals character voice
-- Montage/summary passages that compress time intentionally
-- Metaphors, similes, or sensory comparisons
-- A character's self-aware observations in close POV
-- Stylistic choices that serve pacing or rhythm
-
-For each violation return exactly:
-{"telling_text":"<exact quote, max 15 words>","context":"<1-2 surrounding sentences>","why":"<one sentence>","severity":"minor|moderate|major"}
-
-Rules:
-- severity "major" = undermines a key emotional beat
-- severity "moderate" = weakens the scene noticeably
-- severity "minor" = could be tighter but doesn't hurt much
-- Maximum 8 per chapter. Only flag what genuinely weakens the prose.
-- Return [] if the chapter is clean.
-- Do NOT include reasoning, preamble, or markdown. ONLY the JSON array."#,
-            "Chapter: {chapter_title}\n\n{bible}\n\n---\n\n{chapter_text}",
-            4000, 1
-        ),
-        (
-            "sdt_suggest",
-            "Show Don't Tell: Suggest Fix",
-            r#"You are a fiction editor helping an author rewrite a "telling" passage to "show" instead. You will be given:
-- The passage that tells instead of shows
-- Surrounding context
-- Why it's considered telling
-
-Provide 2-3 alternative rewrites that SHOW instead of TELL. For each:
-1. Give the revised prose (ready to paste — match the author's voice and tense)
-2. One sentence explaining the technique used (body language, sensory detail, action, dialogue, etc.)
-
-Keep rewrites concise — replace only the telling passage, not the surrounding context. Maintain the author's style and point of view."#,
-            "Chapter: {chapter_title}\n\nTelling passage: \"{telling_text}\"\n\nContext: \"{context}\"\n\nWhy it's telling: {why}\n\n{bible}",
-            1500, 0
-        ),
-        (
-            "ai_isms_check",
-            "AI-isms: Check",
-            r#"You check fiction for AI-isms — prose habits that often sound machine-generated or template-written. Output ONLY a JSON array.
-
-Flag passages that feel synthetic, generic, or LLM-flavored, including:
-- Stock AI vocabulary: delve, tapestry, testament to, landscape of, in the realm of, pivotal, underscore, foster, embark, nestled, amidst
-- Throat-clearing / essay filler: "It's important to note", "In a world where", "Little did they know"
-- Overused antithesis templates: "Not X, but Y" / "It wasn't just X — it was Y"
-- Perfectly polished parallel lists or rule-of-three padding that adds no meaning
-- Vague atmospheric abstraction instead of concrete sensory detail
-- Sudden thesaurus inflation or oddly formal diction that breaks voice
-- Em-dash heavy explanatory asides that lecture the reader
-
-Do NOT flag:
-- Deliberate stylistic voice that fits the character/narrator
-- Genre-appropriate elevated or lyrical prose
-- A single unusual word used once with intent
-- Normal literary metaphor or sensory writing
-
-For each flag return exactly:
-{"telling_text":"<exact quote, max 15 words>","context":"<1-2 surrounding sentences>","why":"<one sentence naming the AI-ism>","severity":"minor|moderate|major"}
-
-Rules:
-- severity "major" = loudly synthetic; breaks immersion
-- severity "moderate" = noticeably template-like
-- severity "minor" = mild habit that could be tighter
-- Maximum 8 per chapter. Prefer clear hits over nitpicks.
-- Return [] if the chapter is clean.
-- Do NOT include reasoning, preamble, or markdown. ONLY the JSON array."#,
-            "Chapter: {chapter_title}\n\n{bible}\n\n---\n\n{chapter_text}",
-            4000, 1
-        ),
-        (
-            "ai_isms_suggest",
-            "AI-isms: Suggest Fix",
-            r#"You are a fiction editor helping an author remove AI-sounding prose. You will be given:
-- The passage that reads as an AI-ism
-- Surrounding context
-- Why it was flagged
-
-Provide 2-3 alternative rewrites that sound human and specific. For each:
-1. Give the revised prose (ready to paste — match the author's voice and tense)
-2. One sentence explaining what you changed (concreteness, voice, cut filler, etc.)
-
-Keep rewrites concise — replace only the flagged passage, not the surrounding context. Maintain POV and style."#,
-            "Chapter: {chapter_title}\n\nFlagged passage: \"{telling_text}\"\n\nContext: \"{context}\"\n\nWhy it was flagged: {why}\n\n{bible}",
-            1500, 0
-        ),
-        (
-            "chapter_summary",
-            "Chapter Summary: Genre Signal Extraction",
-            r#"You are a book genre analyst. Read the chapter excerpt and extract genre-relevant signals: themes, tropes, character archetypes, setting type, tone, pacing indicators, and any explicit or implicit genre markers.
-
-Return a SHORT paragraph (3-5 sentences max) summarizing the genre signals. Do not summarize the plot. Focus only on what tells us about the genre and subgenre. Be specific (name tropes, compare to known genres)."#,
-            "Chapter: {chapter_title}\n\n{bible}\n\n---\n\n{chapter_text}",
-            500, 0
-        ),
-    ];
-
-    for (id, label, system_prompt, user_template, max_tokens, json_mode) in templates {
+    for t in &templates {
         conn.execute(
             "INSERT INTO prompt_templates (id, label, system_prompt, user_template, max_tokens, json_mode, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
-             ON CONFLICT(id) DO NOTHING",
-            params![id, label, system_prompt, user_template, max_tokens, json_mode],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))",
+            params![t.id, t.label, t.system_prompt, t.user_template, t.max_tokens, t.json_mode],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn seed_provider_models(conn: &Connection) -> Result<(), String> {
+    #[derive(serde::Deserialize)]
+    struct SeedModel {
+        id: String,
+        provider: String,
+        owned_by: String,
+        input_price: Option<f64>,
+        output_price: Option<f64>,
+        sort_order: i64,
+    }
+
+    let models: Vec<SeedModel> = serde_json::from_str(SEED_PROVIDER_MODELS_JSON)
+        .map_err(|e| format!("Cannot parse seed provider-models.json: {}", e))?;
+
+    conn.execute("DELETE FROM provider_models", [])
+        .map_err(|e| e.to_string())?;
+
+    for m in &models {
+        conn.execute(
+            "INSERT INTO provider_models (id, provider, owned_by, input_price, output_price, sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![m.id, m.provider, m.owned_by, m.input_price, m.output_price, m.sort_order],
+        ).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn seed_lookup_config(conn: &Connection) -> Result<(), String> {
+    let parsed: serde_json::Value = serde_json::from_str(SEED_LOOKUP_CONFIG_JSON)
+        .map_err(|e| format!("Cannot parse seed lookup-config.json: {}", e))?;
+    let obj = parsed.as_object().ok_or("lookup-config.json must be a JSON object")?;
+
+    conn.execute("DELETE FROM lookup_config", [])
+        .map_err(|e| e.to_string())?;
+
+    for (key, value) in obj {
+        conn.execute(
+            "INSERT INTO lookup_config (key, value) VALUES (?1, ?2)",
+            params![key, value.to_string()],
         ).map_err(|e| e.to_string())?;
     }
 
@@ -1698,13 +1673,85 @@ pub struct ReportTypeDef {
     pub description: String,
     pub platforms:   Vec<String>,
     pub depends_on:  Vec<String>,
+    pub model_slot:  String,
+    pub min_tier:    String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReportCostParams {
+    pub truncation:  usize,
+    pub output_max:  usize,
+    pub per_chapter: bool,
+    pub fixed_calls: usize,
+}
+
+impl Default for ReportCostParams {
+    fn default() -> Self {
+        Self { truncation: 4000, output_max: 1000, per_chapter: false, fixed_calls: 1 }
+    }
+}
+
+/// Load cost-estimate parameters for a report type. Falls back to defaults if missing.
+pub fn load_report_cost_params(conn: &Connection, report_id: &str) -> ReportCostParams {
+    conn.query_row(
+        "SELECT cost_truncation, cost_output_max, cost_per_chapter, cost_fixed_calls
+         FROM report_types WHERE id = ?1",
+        params![report_id],
+        |r| Ok(ReportCostParams {
+            truncation:  r.get::<_, i64>(0)? as usize,
+            output_max:  r.get::<_, i64>(1)? as usize,
+            per_chapter: r.get::<_, i64>(2)? != 0,
+            fixed_calls: r.get::<_, i64>(3)? as usize,
+        }),
+    ).unwrap_or_default()
+}
+
+#[derive(serde::Serialize, Clone, Debug)]
+pub struct ProviderModelRow {
+    pub id: String,
+    pub owned_by: String,
+    pub input_price: Option<f64>,
+    pub output_price: Option<f64>,
+}
+
+pub fn list_provider_models(conn: &Connection, provider: &str) -> Vec<ProviderModelRow> {
+    let mut stmt = match conn.prepare(
+        "SELECT id, owned_by, input_price, output_price FROM provider_models
+         WHERE provider = ?1 ORDER BY sort_order ASC, id ASC"
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    stmt.query_map(params![provider], |r| {
+        Ok(ProviderModelRow {
+            id: r.get(0)?,
+            owned_by: r.get(1)?,
+            input_price: r.get(2)?,
+            output_price: r.get(3)?,
+        })
+    }).ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+/// Load a JSON string-array from lookup_config. Returns empty vec if missing/invalid.
+pub fn load_lookup_string_list(conn: &Connection, key: &str) -> Vec<String> {
+    conn.query_row(
+        "SELECT value FROM lookup_config WHERE key = ?1",
+        params![key],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+    .unwrap_or_default()
 }
 
 #[tauri::command]
 pub async fn list_report_types_cmd(db: tauri::State<'_, Db>) -> Result<Vec<ReportTypeDef>, String> {
     let conn = db.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
-        "SELECT id, label, description, platforms, depends_on FROM report_types ORDER BY rowid"
+        "SELECT id, label, description, platforms, depends_on, model_slot, min_tier
+         FROM report_types ORDER BY rowid"
     ).map_err(|e| e.to_string())?;
 
     let rows = stmt.query_map([], |r| {
@@ -1714,6 +1761,8 @@ pub async fn list_report_types_cmd(db: tauri::State<'_, Db>) -> Result<Vec<Repor
             description: r.get(2)?,
             platforms:   r.get::<_, String>(3)?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             depends_on:  r.get::<_, String>(4)?.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+            model_slot:  r.get(5)?,
+            min_tier:    r.get(6)?,
         })
     }).map_err(|e| e.to_string())?;
 

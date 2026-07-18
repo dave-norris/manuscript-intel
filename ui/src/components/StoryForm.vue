@@ -26,8 +26,10 @@ const createMode = ref<CreateMode>('link');
 const structureHint = computed(() => {
   const s = settingsCtx.folderStructure.value;
   const ms = s.manuscript || 'Manuscript';
+  const acts = (s.acts?.length ? s.acts : ['Act-1', 'Act-2', 'Act-3'])
+    .map(a => `${ms}/${a}`);
   return [
-    `${ms}/Act-1`, `${ms}/Act-2`, `${ms}/Act-3`,
+    ...acts,
     s.bible, s.characters, s.locations,
     ...(s.extra || []),
   ]

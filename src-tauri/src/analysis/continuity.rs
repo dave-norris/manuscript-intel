@@ -278,17 +278,32 @@ fn flatten_facts(book: &Book) -> Vec<db::ContinuityFactRow> {
 
 // ── Entity name clustering (no AI — plain heuristic coreference) ───────────
 
-const HONORIFICS: &[&str] = &[
-    "mr", "mrs", "ms", "mx", "dr", "detective", "captain", "officer", "professor",
-    "father", "sister", "aunt", "uncle", "sir", "lady", "sgt", "lieutenant", "lt", "reverend",
-];
+fn load_honorifics(db: &crate::db::Db) -> Vec<String> {
+    let conn = match db.0.lock() {
+        Ok(c) => c,
+        Err(_) => return default_honorifics(),
+    };
+    let list = crate::db::load_lookup_string_list(&conn, "continuity.honorifics");
+    if list.is_empty() { default_honorifics() } else { list }
+}
 
-fn normalize_entity_name(raw: &str) -> String {
+fn default_honorifics() -> Vec<String> {
+    [
+        "mr", "mrs", "ms", "mx", "dr", "detective", "captain", "officer", "professor",
+        "father", "sister", "aunt", "uncle", "sir", "lady", "sgt", "lieutenant", "lt", "reverend",
+    ].into_iter().map(String::from).collect()
+}
+
+fn normalize_entity_name(raw: &str, honorifics: &[String]) -> String {
     let lower = raw.trim().to_lowercase();
     let mut words: Vec<&str> = lower.split_whitespace().collect();
     while let Some(first) = words.first() {
         let stripped = first.trim_end_matches('.');
-        if HONORIFICS.contains(&stripped) { words.remove(0); } else { break; }
+        if honorifics.iter().any(|h| h.eq_ignore_ascii_case(stripped)) {
+            words.remove(0);
+        } else {
+            break;
+        }
     }
     words.join(" ")
 }
@@ -360,6 +375,7 @@ async fn judge_contradictions(
     bible: &str,
 ) -> Result<Vec<db::ContinuityFindingRow>, String> {
     let is_series = books.len() > 1;
+    let honorifics = load_honorifics(database);
 
     // Flatten every fact across every book into occurrences, tagged with
     // display-friendly source info, keyed by (raw entity text, raw attribute).
@@ -375,7 +391,7 @@ async fn judge_contradictions(
     for book in books {
         for ch in &book.chapters {
             for f in &ch.facts {
-                let norm = normalize_entity_name(&f.entity);
+                let norm = normalize_entity_name(&f.entity, &honorifics);
                 if norm.is_empty() { continue; }
                 all_entity_names.push(norm.clone());
                 raw.push(RawOcc {

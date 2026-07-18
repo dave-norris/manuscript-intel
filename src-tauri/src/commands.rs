@@ -1,9 +1,10 @@
 // commands.rs — Tauri command handlers and async LLM client
 
+use std::collections::HashMap;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 // ── Shared result types ───────────────────────────────────────────────────────
 
@@ -46,24 +47,12 @@ pub async fn analyze_csv(
 ) -> AnalyzerResult {
     let _ = app.emit("cdp:log", &format!("Running CSV Analyzer for keyword: {} [{}]...", request.keyword, request.model));
 
-    let system = r#"You are a publishing strategist helping an indie author analyze Amazon keyword competition data.
+    let database = app.state::<crate::db::Db>();
+    let mut vars = HashMap::new();
+    vars.insert("keyword", request.keyword.as_str());
+    vars.insert("csv_content", request.csv_content.as_str());
 
-Produce clear, actionable markdown analysis to be saved in the author's keyword research journal.
-
-Write in plain, direct language. Focus on what the data means for a new author launching Book 1 of a series in the Christian fiction / mystery / suspense niche.
-
-Format your response with exactly these sections:
-
-## Competition Summary
-## Key Books to Study
-## What This Means for Your Book
-## Verdict
-
-Keep each section concise. No padding."#;
-
-    let user = format!("Keyword: {}\n\nRaw CSV data:\n\n{}", request.keyword, request.csv_content);
-
-    match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 1500).await {
+    match crate::prompts::execute_prompt(&database, "csv_competition_analysis", &request.provider, &request.api_key, &request.model, vars).await {
         Ok(markdown) => {
             let _ = app.emit("cdp:log", "✓ CSV analysis complete.");
             AnalyzerResult { success: true, markdown, error: String::new(), rows: Vec::new() }
@@ -218,15 +207,19 @@ pub struct ModelInfo {
 }
 
 #[tauri::command]
-pub async fn list_models(provider: String, api_key: String) -> ModelsResult {
-    match provider.as_str() {
+pub async fn list_models(
+    db: tauri::State<'_, crate::db::Db>,
+    provider: String,
+    api_key: String,
+) -> Result<ModelsResult, String> {
+    Ok(match provider.as_str() {
         "tokenmix" => fetch_tokenmix_models(&api_key).await,
-        "claude" => fetch_claude_models(),
+        "claude" => fetch_claude_models(&db),
         _ => ModelsResult {
             success: false, models: Vec::new(),
             error: format!("Unknown provider: {}", provider),
         },
-    }
+    })
 }
 
 async fn fetch_tokenmix_models(api_key: &str) -> ModelsResult {
@@ -351,14 +344,33 @@ async fn fetch_tokenmix_models_legacy(client: &reqwest::Client, api_key: &str) -
     ModelsResult { success: true, models, error: String::new() }
 }
 
-fn fetch_claude_models() -> ModelsResult {
-    let models = vec![
-        ModelInfo { id: "claude-opus-4-20250514".to_string(), owned_by: "anthropic".to_string(), input_price: Some(15.0), output_price: Some(75.0) },
-        ModelInfo { id: "claude-sonnet-4-20250514".to_string(), owned_by: "anthropic".to_string(), input_price: Some(3.0), output_price: Some(15.0) },
-        ModelInfo { id: "claude-haiku-4-5-20251001".to_string(), owned_by: "anthropic".to_string(), input_price: Some(1.0), output_price: Some(5.0) },
-        ModelInfo { id: "claude-3-5-sonnet-20241022".to_string(), owned_by: "anthropic".to_string(), input_price: Some(3.0), output_price: Some(15.0) },
-        ModelInfo { id: "claude-3-5-haiku-20241022".to_string(), owned_by: "anthropic".to_string(), input_price: Some(0.8), output_price: Some(4.0) },
-    ];
+fn fetch_claude_models(db: &crate::db::Db) -> ModelsResult {
+    let conn = match db.0.lock() {
+        Ok(c) => c,
+        Err(e) => {
+            return ModelsResult {
+                success: false,
+                models: Vec::new(),
+                error: format!("Database lock error: {}", e),
+            };
+        }
+    };
+    let models = crate::db::list_provider_models(&conn, "claude")
+        .into_iter()
+        .map(|m| ModelInfo {
+            id: m.id,
+            owned_by: m.owned_by,
+            input_price: m.input_price,
+            output_price: m.output_price,
+        })
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        return ModelsResult {
+            success: false,
+            models: Vec::new(),
+            error: "No Claude models seeded in provider_models.".to_string(),
+        };
+    }
     ModelsResult { success: true, models, error: String::new() }
 }
 
@@ -595,15 +607,18 @@ pub struct ReportCostEstimate {
 
 /// Estimate the AI cost for each report based on manuscript size and model pricing.
 #[tauri::command]
-pub async fn estimate_report_costs(request: CostEstimateRequest) -> CostEstimateResult {
+pub async fn estimate_report_costs(
+    db: tauri::State<'_, crate::db::Db>,
+    request: CostEstimateRequest,
+) -> Result<CostEstimateResult, String> {
     use crate::analysis::chapters::collect_chapters;
 
     let folder = std::path::PathBuf::from(&request.folder);
     if !folder.exists() {
-        return CostEstimateResult {
+        return Ok(CostEstimateResult {
             success: false, chapter_count: 0, total_words: 0,
             estimates: Vec::new(), error: "Folder does not exist.".to_string(),
-        };
+        });
     }
 
     let chapters = collect_chapters(&folder);
@@ -621,36 +636,18 @@ pub async fn estimate_report_costs(request: CostEstimateRequest) -> CostEstimate
     const WORDS_TO_TOKENS: f64 = 1.3;  // average for English prose
     const SYSTEM_PROMPT_TOKENS: usize = 400;  // approximate for our prompts
 
-    // Per-report parameters: (truncation_limit_words, output_max_tokens, is_per_chapter, fixed_calls)
-    struct ReportParams {
-        truncation: usize,
-        output_max: usize,
-        per_chapter: bool,
-        fixed_calls: usize,
-    }
-
-    let params_for = |report_id: &str| -> ReportParams {
-        match report_id {
-            "chapter_summaries" => ReportParams { truncation: 8000, output_max: 600, per_chapter: true, fixed_calls: 0 },
-            "continuity_check"  => ReportParams { truncation: 6000, output_max: 4000, per_chapter: true, fixed_calls: 3 }, // extract (per ch) + judge (few batches)
-            "show_dont_tell"    => ReportParams { truncation: 4000, output_max: 4000, per_chapter: true, fixed_calls: 0 },
-            "ai_isms"           => ReportParams { truncation: 4000, output_max: 4000, per_chapter: true, fixed_calls: 0 },
-            "genre_analysis"    => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 1 },
-            "genre_ranking"     => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 1 },
-            "kdp_categories"    => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 2 },
-            "bisac_classification" => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 2 },
-            "kdp_keywords"      => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 1 },
-            "mi_search_terms"   => ReportParams { truncation: 0, output_max: 300, per_chapter: false, fixed_calls: 1 },
-            "discovery_keywords" => ReportParams { truncation: 0, output_max: 1200, per_chapter: false, fixed_calls: 1 },
-            "zeigarnik_analysis" => ReportParams { truncation: 0, output_max: 0, per_chapter: false, fixed_calls: 0 }, // no AI
-            _ => ReportParams { truncation: 4000, output_max: 1000, per_chapter: false, fixed_calls: 1 },
-        }
+    let cost_params: std::collections::HashMap<String, crate::db::ReportCostParams> = {
+        let conn = db.0.lock().map_err(|e| e.to_string())?;
+        request.model_prices.iter().map(|rp| {
+            let p = crate::db::load_report_cost_params(&conn, &rp.report_id);
+            (rp.report_id.clone(), p)
+        }).collect()
     };
 
     let mut estimates = Vec::new();
 
     for rp in &request.model_prices {
-        let params = params_for(&rp.report_id);
+        let params = cost_params.get(&rp.report_id).cloned().unwrap_or_default();
 
         // Skip non-AI reports
         if params.output_max == 0 && params.fixed_calls == 0 && !params.per_chapter {
@@ -693,13 +690,13 @@ pub async fn estimate_report_costs(request: CostEstimateRequest) -> CostEstimate
         });
     }
 
-    CostEstimateResult {
+    Ok(CostEstimateResult {
         success: true,
         chapter_count,
         total_words,
         estimates,
         error: String::new(),
-    }
+    })
 }
 
 // ── AI Chat with context ──────────────────────────────────────────────────────
@@ -732,35 +729,39 @@ pub struct ChatResponse {
 /// Contextual AI chat for the Writing panel.
 /// Sends the user's message with the current chapter and bible as context.
 #[tauri::command]
-pub async fn chat_with_context(request: ChatRequest) -> ChatResponse {
+pub async fn chat_with_context(
+    db: tauri::State<'_, crate::db::Db>,
+    request: ChatRequest,
+) -> Result<ChatResponse, ()> {
     if request.api_key.is_empty() || request.model.is_empty() {
-        return ChatResponse { success: false, reply: String::new(), error: "Set an API key and model in Settings.".to_string() };
+        return Ok(ChatResponse { success: false, reply: String::new(), error: "Set an API key and model in Settings.".to_string() });
     }
 
-    let system = format!(
-        r#"You are a fiction writing assistant. You help the author with their manuscript — brainstorming, rewrites, continuity questions, prose feedback, and anything else they ask about their story.
+    let template = match {
+        let conn = db.0.lock().map_err(|e| e.to_string());
+        conn.and_then(|c| crate::prompts::load_template(&c, "writing_chat"))
+    } {
+        Ok(t) => t,
+        Err(e) => return Ok(ChatResponse { success: false, reply: String::new(), error: e }),
+    };
 
-You have access to:
-- The chapter the author is currently editing
-- The story bible (character details, world rules, canon facts)
+    let bible_section = if request.bible.is_empty() {
+        String::new()
+    } else {
+        format!("Story Bible:\n{}\n\n---", request.bible)
+    };
+    let chapter_text = if request.chapter_text.len() > 12000 {
+        format!("{}...[truncated]", &request.chapter_text[..12000])
+    } else {
+        request.chapter_text.clone()
+    };
 
-Be concise and direct. Match the author's voice when suggesting prose. If they paste text and ask for a rewrite, give the revised version ready to paste back.
+    let mut vars = HashMap::new();
+    vars.insert("bible_section", bible_section.as_str());
+    vars.insert("chapter_title", request.chapter_title.as_str());
+    vars.insert("chapter_text", chapter_text.as_str());
 
-{}
-
----
-
-Current chapter: {}
----
-{}"#,
-        if request.bible.is_empty() { String::new() } else { format!("Story Bible:\n{}\n\n---", request.bible) },
-        request.chapter_title,
-        if request.chapter_text.len() > 12000 {
-            format!("{}...[truncated]", &request.chapter_text[..12000])
-        } else {
-            request.chapter_text.clone()
-        }
-    );
+    let system = crate::prompts::fill_template(&template.system_prompt, &vars);
 
     // Build messages array: system + history + new user message
     let mut messages = Vec::new();
@@ -781,7 +782,7 @@ Current chapter: {}
         .build()
     {
         Ok(c) => c,
-        Err(e) => return ChatResponse { success: false, reply: String::new(), error: format!("Client error: {}", e) },
+        Err(e) => return Ok(ChatResponse { success: false, reply: String::new(), error: format!("Client error: {}", e) }),
     };
 
     let base_url = match request.provider.as_str() {
@@ -811,20 +812,20 @@ Current chapter: {}
             .send().await
         {
             Ok(r) => r,
-            Err(e) => return ChatResponse { success: false, reply: String::new(), error: format!("Request failed: {}", e) },
+            Err(e) => return Ok(ChatResponse { success: false, reply: String::new(), error: format!("Request failed: {}", e) }),
         };
 
         let json: Value = match resp.json().await {
             Ok(v) => v,
-            Err(e) => return ChatResponse { success: false, reply: String::new(), error: format!("Parse failed: {}", e) },
+            Err(e) => return Ok(ChatResponse { success: false, reply: String::new(), error: format!("Parse failed: {}", e) }),
         };
 
         if let Some(err) = json.get("error") {
-            return ChatResponse { success: false, reply: String::new(), error: format!("Claude: {}", err["message"].as_str().unwrap_or("unknown")) };
+            return Ok(ChatResponse { success: false, reply: String::new(), error: format!("Claude: {}", err["message"].as_str().unwrap_or("unknown")) });
         }
 
         let reply = json["content"][0]["text"].as_str().unwrap_or("").to_string();
-        return ChatResponse { success: true, reply, error: String::new() };
+        return Ok(ChatResponse { success: true, reply, error: String::new() });
     }
 
     // OpenAI-compatible (TokenMix)
@@ -835,18 +836,18 @@ Current chapter: {}
         .send().await
     {
         Ok(r) => r,
-        Err(e) => return ChatResponse { success: false, reply: String::new(), error: format!("Request failed: {}", e) },
+        Err(e) => return Ok(ChatResponse { success: false, reply: String::new(), error: format!("Request failed: {}", e) }),
     };
 
     let json: Value = match resp.json().await {
         Ok(v) => v,
-        Err(e) => return ChatResponse { success: false, reply: String::new(), error: format!("Parse failed: {}", e) },
+        Err(e) => return Ok(ChatResponse { success: false, reply: String::new(), error: format!("Parse failed: {}", e) }),
     };
 
     if let Some(err) = json.get("error") {
-        return ChatResponse { success: false, reply: String::new(), error: format!("API: {}", err["message"].as_str().unwrap_or("unknown")) };
+        return Ok(ChatResponse { success: false, reply: String::new(), error: format!("API: {}", err["message"].as_str().unwrap_or("unknown")) });
     }
 
     let reply = json["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string();
-    ChatResponse { success: true, reply, error: String::new() }
+    Ok(ChatResponse { success: true, reply, error: String::new() })
 }

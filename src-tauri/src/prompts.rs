@@ -245,12 +245,13 @@ pub async fn execute_prompt(
         load_template(&conn, template_id)?
     };
 
+    let system_prompt = fill_template(&template.system_prompt, &vars);
     let user_content = fill_template(&template.user_template, &vars);
 
     if template.json_mode {
-        call_llm_json(provider, api_key, model, &template.system_prompt, &user_content, template.max_tokens).await
+        call_llm_json(provider, api_key, model, &system_prompt, &user_content, template.max_tokens).await
     } else {
-        call_llm(provider, api_key, model, &template.system_prompt, &user_content, template.max_tokens).await
+        call_llm(provider, api_key, model, &system_prompt, &user_content, template.max_tokens).await
     }
 }
 

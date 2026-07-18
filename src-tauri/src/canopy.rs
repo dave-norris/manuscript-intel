@@ -577,7 +577,6 @@ pub async fn analyze_categories_canopy(
 // ── Competition Analysis via Canopy ───────────────────────────────────────────
 
 use crate::competition_analyzer::{CompetitorBook, CompetitionResult, CompetitionData};
-use crate::commands::call_llm;
 
 #[derive(Deserialize)]
 pub struct CompetitionCanopyRequest {
@@ -698,21 +697,13 @@ async fn run_competition_canopy(app: &AppHandle, database: &db::Db, req: &Compet
             i + 1, b.title, b.author, b.absr, b.price, b.review_score, b.ratings, b.dy_sales, b.keyword)
     }).collect::<Vec<_>>().join("\n");
 
-    let system = r#"You are a publishing strategist. Analyze this competition data for an indie author. Produce a clear, actionable report covering:
-1. Competition Summary — how competitive is this niche?
-2. Key Books to Study — what are the top competitors doing right?
-3. Pricing Analysis — what price points work?
-4. What This Means for the Author's Book
-5. Verdict — is this niche viable for a debut?
+    let keywords_str = keywords.join(", ");
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("genre_context", genre_context.as_str());
+    vars.insert("keywords", keywords_str.as_str());
+    vars.insert("books_summary", books_summary.as_str());
 
-Be direct, concise, no filler."#;
-
-    let user = format!(
-        "Genre context: {}\n\nKeywords analyzed: {}\n\nTop competitor books:\n{}",
-        genre_context, keywords.join(", "), books_summary
-    );
-
-    match call_llm(&req.provider, &req.api_key, &req.model, system, &user, 2000).await {
+    match crate::prompts::execute_prompt(&database, "competition_report", &req.provider, &req.api_key, &req.model, vars).await {
         Err(e) => CompetitionResult { success: false, report: String::new(), error: format!("AI error: {}", e) },
         Ok(report) => {
             let json = serde_json::json!({
@@ -953,24 +944,16 @@ pub async fn mine_competitor_reviews(app: AppHandle, request: ReviewMiningReques
 
     emit_canopy(&app, "  Running AI analysis on reviews...");
 
-    let system = r#"You are a publishing strategist. Analyze these competitor book reviews and extract actionable intelligence. Produce a structured report:
-
-1. **What Readers Love** — themes, elements, tropes that get praised repeatedly
-2. **What Readers Hate** — common complaints, disappointments, unmet expectations
-3. **Reader Language** — exact phrases and words readers use that could go in book descriptions and ad copy
-4. **Gap Opportunities** — things readers want but aren't getting from current books
-5. **Positioning Advice** — how to position a new book to capture these readers
-
-Be specific. Quote review language directly when useful. Keep it actionable."#;
-
     let genre_context = {
         let conn = database.0.lock().unwrap();
         db::load_genre_data(&conn, &request.folder).map(|g| g.genre_signals).unwrap_or_default()
     };
 
-    let user = format!("Genre context: {}\n\nCompetitor reviews:\n{}", genre_context, review_text);
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("genre_context", genre_context.as_str());
+    vars.insert("review_text", review_text.as_str());
 
-    match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 2500).await {
+    match crate::prompts::execute_prompt(&database, "review_mining", &request.provider, &request.api_key, &request.model, vars).await {
         Ok(report) => {
             let json = serde_json::json!({
                 "schema": "review_mining_v1",
@@ -1084,25 +1067,17 @@ pub async fn analyze_comp_authors(app: AppHandle, request: AuthorAnalysisRequest
 
     emit_canopy(&app, "  Running AI analysis on author catalogs...");
 
-    let system = r#"You are a publishing strategist. Analyze these competitor author catalogs and extract strategic intelligence. Produce a structured report:
-
-1. **Catalog Size & Release Cadence** — how many books, how often they publish
-2. **Pricing Strategy** — price points across their catalog, any patterns (loss leaders, premium pricing)
-3. **Series vs Standalone** — do they write series? How long? Does the first book price differently?
-4. **Review Performance** — average ratings, which books perform best
-5. **Strategic Takeaways** — what can a debut author learn from their approach?
-
-Be specific and data-driven."#;
-
     let genre_context = {
         let conn = database.0.lock().unwrap();
         db::load_genre_data(&conn, &request.folder).map(|g| g.genre_signals).unwrap_or_default()
     };
 
     let author_summary = serde_json::to_string_pretty(&author_data).unwrap_or_default();
-    let user = format!("Genre context: {}\n\nCompetitor author catalogs:\n{}", genre_context, author_summary);
+    let mut vars = std::collections::HashMap::new();
+    vars.insert("genre_context", genre_context.as_str());
+    vars.insert("author_summary", author_summary.as_str());
 
-    match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 2500).await {
+    match crate::prompts::execute_prompt(&database, "author_analysis", &request.provider, &request.api_key, &request.model, vars).await {
         Ok(report) => {
             let json = serde_json::json!({
                 "schema": "author_analysis_v1",

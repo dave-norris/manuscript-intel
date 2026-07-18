@@ -1,12 +1,13 @@
 // analysis/keywords.rs — KDP keyword optimization, search term generation,
 // discovery keywords, and Canopy-based keyword search.
 
+use std::collections::HashMap;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::{emit, err, extract_json_object, GenreResult};
-use crate::commands::call_llm;
 use crate::db;
+use crate::prompts;
 use crate::models::KeywordResult;
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -33,50 +34,18 @@ pub async fn generate_search_terms(app: AppHandle, request: KeywordRequest) -> G
     emit(&app, "Generating competition search terms...");
     emit(&app, &format!("  Genre: {}", genre_data.industry_ebook));
 
-    let system = r#"You are a book market research expert. Generate short search phrases for competition analysis.
-
-These search phrases work like Amazon search — they need to be SHORT, SPECIFIC phrases that real readers type.
-
-Rules:
-- 2-4 words maximum per phrase
-- Plain English, no special characters
-- Think like a reader browsing Amazon, not a marketer
-- Phrases should find competing books in the same genre niche
-- Include: genre combinations, setting descriptors, theme words, reader mood phrases
-
-Return ONLY a JSON array of strings. No markdown, no preamble. Example:
-["christian historical fiction", "first century rome", "biblical mystery", "faith romance clean"]"#;
-
-    let user = format!(
-        "Book genre: {}\nKDP categories: {}\nGenre signals:\n{}",
-        genre_data.industry_ebook,
-        genre_data.kdp_ebook.iter()
-            .map(|p| p.split('>').last().unwrap_or(p).trim().to_string())
-            .collect::<Vec<_>>().join(", "),
-        &genre_data.genre_signals[..genre_data.genre_signals.len().min(500)]
-    );
-
-    match call_llm(&request.provider, &request.api_key, &request.model, system, &user, 300).await {
+    match generate_mi_search_terms(&database, &request.provider, &request.api_key, &request.model, &genre_data).await {
         Err(e) => err(&format!("AI error: {}", e)),
-        Ok(raw) => {
-            let clean = raw.trim()
-                .trim_start_matches("```json").trim_start_matches("```")
-                .trim_end_matches("```").trim();
+        Ok(keywords) => {
+            emit(&app, &format!("  ✓ {} search terms generated:", keywords.len()));
+            for kw in &keywords { emit(&app, &format!("    • {}", kw)); }
 
-            match serde_json::from_str::<Vec<String>>(clean) {
-                Err(e) => err(&format!("Parse error: {} | got: {}", e, &clean[..clean.len().min(200)])),
-                Ok(keywords) => {
-                    emit(&app, &format!("  ✓ {} search terms generated:", keywords.len()));
-                    for kw in &keywords { emit(&app, &format!("    • {}", kw)); }
+            let rendered = render_search_terms(&keywords);
+            let conn = database.0.lock().unwrap();
+            let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
+            let _ = db::save_document(&conn, &request.folder, "mi_search_terms", &rendered);
 
-                    let rendered = render_search_terms(&keywords);
-                    let conn = database.0.lock().unwrap();
-                    let _ = db::save_mi_search_terms(&conn, &request.folder, &keywords);
-                    let _ = db::save_document(&conn, &request.folder, "mi_search_terms", &rendered);
-
-                    GenreResult { success: true, report: rendered, error: String::new(), run_ts: String::new() }
-                }
-            }
+            GenreResult { success: true, report: rendered, error: String::new(), run_ts: String::new() }
         }
     }
 }
@@ -99,7 +68,7 @@ pub async fn optimize_keywords(app: AppHandle, request: KeywordRequest) -> Genre
 
     emit(&app, &format!("Asking {} to optimize keywords...", &request.model));
 
-    match call_keyword_optimizer(&request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals).await {
+    match call_keyword_optimizer(&database, &request.provider, &request.api_key, &request.model, &genre_data, &genre_data.genre_signals).await {
         Err(e) => err(&format!("AI error: {}", e)),
         Ok((entries, strategy)) => {
             let rendered = render_kdp_keywords(&entries, &strategy, source_note);
@@ -114,39 +83,53 @@ pub async fn optimize_keywords(app: AppHandle, request: KeywordRequest) -> Genre
 
 // ── Core logic ───────────────────────────────────────────────────────────────
 
-pub(crate) async fn call_keyword_optimizer(provider: &str, api_key: &str, model: &str, genre_data: &db::GenreDataRow, keywords_text: &str)
-    -> Result<(Vec<db::KdpKeywordEntry>, String), String>
+pub(crate) async fn generate_mi_search_terms(
+    db: &db::Db,
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    genre_data: &db::GenreDataRow,
+) -> Result<Vec<String>, String> {
+    let kdp_categories = genre_data.kdp_ebook.iter()
+        .map(|p| p.split('>').last().unwrap_or(p).trim().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let genre_signals = &genre_data.genre_signals[..genre_data.genre_signals.len().min(500)];
+
+    let mut vars = HashMap::new();
+    vars.insert("genre", genre_data.industry_ebook.as_str());
+    vars.insert("kdp_categories", kdp_categories.as_str());
+    vars.insert("genre_signals", genre_signals);
+
+    let raw = prompts::execute_prompt(db, "mi_search_terms", provider, api_key, model, vars).await?;
+    let clean = raw.trim()
+        .trim_start_matches("```json").trim_start_matches("```")
+        .trim_end_matches("```").trim();
+
+    serde_json::from_str::<Vec<String>>(clean)
+        .map_err(|e| format!("Parse error: {} | got: {}", e, &clean[..clean.len().min(200)]))
+}
+
+pub(crate) async fn call_keyword_optimizer(
+    db: &db::Db,
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    genre_data: &db::GenreDataRow,
+    keywords_text: &str,
+) -> Result<(Vec<db::KdpKeywordEntry>, String), String>
 {
-    let system = r#"You are an Amazon KDP keyword strategist helping an indie author maximize book discoverability.
+    let kdp_ebook = genre_data.kdp_ebook.join(", ");
+    let kdp_print = genre_data.kdp_print.join(", ");
 
-Produce exactly 7 KDP keyword strings ready to paste into the KDP keyword fields.
+    let mut vars = HashMap::new();
+    vars.insert("industry_ebook", genre_data.industry_ebook.as_str());
+    vars.insert("industry_print", genre_data.industry_print.as_str());
+    vars.insert("kdp_ebook", kdp_ebook.as_str());
+    vars.insert("kdp_print", kdp_print.as_str());
+    vars.insert("keywords_text", keywords_text);
 
-Rules:
-- Each string must be 50 characters or fewer (hard limit — count carefully)
-- Natural search phrases a reader would actually type on Amazon
-- Multi-word phrases only — Amazon already indexes your title and categories
-- Do NOT repeat words already in the book's categories
-- Vary the strings: setting, theme, reader mood, comp authors, tropes
-- No punctuation except spaces and hyphens
-- All lowercase
-
-Return ONLY a JSON object:
-{
-  "keywords": [
-    { "string": "the phrase", "chars": 10, "rationale": "one sentence why" },
-    ... (exactly 7 items)
-  ],
-  "strategy": "One paragraph on the overall keyword strategy."
-}"#;
-
-    let user = format!(
-        "Genre (ebook): {}\nGenre (print): {}\nKDP ebook categories: {}\nKDP print categories: {}\n\nKeyword material:\n\n{}",
-        genre_data.industry_ebook, genre_data.industry_print,
-        genre_data.kdp_ebook.join(", "), genre_data.kdp_print.join(", "),
-        keywords_text
-    );
-
-    let raw = call_llm(provider, api_key, model, system, &user, 1000).await?;
+    let raw = prompts::execute_prompt(db, "kdp_keywords", provider, api_key, model, vars).await?;
     let clean = extract_json_object(&raw)
         .ok_or_else(|| format!("No JSON object found in response: {}", &raw[..raw.len().min(200)]))?;
 
@@ -184,6 +167,7 @@ pub(crate) fn format_keyword_pool_table(pool: &[KeywordResult]) -> String {
 }
 
 pub(crate) async fn call_keyword_optimizer_with_pool(
+    db: &db::Db,
     provider: &str,
     api_key: &str,
     model: &str,
@@ -192,49 +176,22 @@ pub(crate) async fn call_keyword_optimizer_with_pool(
     keyword_pool: &[KeywordResult],
 ) -> Result<(Vec<db::KdpKeywordEntry>, String), String> {
     if keyword_pool.is_empty() {
-        return call_keyword_optimizer(provider, api_key, model, genre_data, keywords_text).await;
+        return call_keyword_optimizer(db, provider, api_key, model, genre_data, keywords_text).await;
     }
 
     let pool_table = format_keyword_pool_table(keyword_pool);
+    let kdp_ebook = genre_data.kdp_ebook.join(", ");
+    let kdp_print = genre_data.kdp_print.join(", ");
 
-    let system = r#"You are an Amazon KDP keyword strategist helping an indie author maximize book discoverability.
+    let mut vars = HashMap::new();
+    vars.insert("industry_ebook", genre_data.industry_ebook.as_str());
+    vars.insert("industry_print", genre_data.industry_print.as_str());
+    vars.insert("kdp_ebook", kdp_ebook.as_str());
+    vars.insert("kdp_print", kdp_print.as_str());
+    vars.insert("keywords_text", keywords_text);
+    vars.insert("pool_table", pool_table.as_str());
 
-Produce exactly 7 KDP keyword strings ready to paste into the KDP keyword fields.
-
-Rules:
-- Each string must be 50 characters or fewer (hard limit — count carefully)
-- Natural search phrases a reader would actually type on Amazon
-- Multi-word phrases only — Amazon already indexes your title and categories
-- Do NOT repeat words already in the book's categories
-- Vary the strings: setting, theme, reader mood, comp authors, tropes
-- No punctuation except spaces and hyphens
-- All lowercase
-- PREFER keywords from the real search data provided — these have measured Amazon search volume
-- When a keyword comes from real data, include its search volume in the rationale: "real: X searches/mo"
-- When a keyword is AI-derived (not from the real data table), note it: "AI-derived"
-
-Return ONLY a JSON object:
-{
-  "keywords": [
-    { "string": "the phrase", "chars": 10, "rationale": "real: 1,200 searches/mo — one sentence why" },
-    ... (exactly 7 items)
-  ],
-  "strategy": "One paragraph on the overall keyword strategy."
-}"#;
-
-    let user = format!(
-        "Genre (ebook): {}\nGenre (print): {}\n\
-         KDP ebook categories: {}\nKDP print categories: {}\n\n\
-         ## Real Keyword Search Data\n\
-         (Prefer these — they have measured Amazon search volume)\n\n\
-         {}\n\n\
-         ## Additional keyword material\n\n{}",
-        genre_data.industry_ebook, genre_data.industry_print,
-        genre_data.kdp_ebook.join(", "), genre_data.kdp_print.join(", "),
-        pool_table, keywords_text
-    );
-
-    let raw = call_llm(provider, api_key, model, system, &user, 1200).await?;
+    let raw = prompts::execute_prompt(db, "kdp_keywords_with_pool", provider, api_key, model, vars).await?;
     let clean = extract_json_object(&raw)
         .ok_or_else(|| format!("No JSON object found in response: {}", &raw[..raw.len().min(200)]))?;
 
@@ -259,40 +216,20 @@ Return ONLY a JSON object:
 
 /// Generate 10 discovery keyword phrases for non-Amazon platforms.
 pub(crate) async fn generate_discovery_keywords(
+    db: &db::Db,
     provider: &str,
     api_key: &str,
     model: &str,
     genre_data: &db::GenreDataRow,
 ) -> Result<Vec<db::DiscoveryKeywordEntry>, String> {
-    let system = r#"You are a book marketing strategist for non-Amazon platforms.
+    let mut vars = HashMap::new();
+    vars.insert("industry_ebook", genre_data.industry_ebook.as_str());
+    vars.insert("industry_print", genre_data.industry_print.as_str());
+    vars.insert("reader_demographic", genre_data.reader_demographic.as_str());
+    vars.insert("bookstore_shelving", genre_data.bookstore_shelving.as_str());
+    vars.insert("genre_signals", genre_data.genre_signals.as_str());
 
-Produce exactly 10 discovery keyword phrases optimized for these platforms:
-Apple Books, Kobo, Google Play, Barnes & Noble, BookBub, Goodreads, and general web search (SEO).
-
-Rules:
-- Natural search phrases a reader would type on these platforms
-- Multi-word phrases (2-5 words)
-- Cover different discovery angles: genre, theme, mood, comp authors, setting, tropes
-- These are NOT measured by any tool — label each rationale with the prefix "AI-reasoned:"
-
-Return ONLY a JSON object:
-{
-  "keywords": [
-    { "phrase": "the phrase", "rationale": "AI-reasoned: one sentence why this phrase works for non-Amazon discovery" },
-    ... (exactly 10 items)
-  ]
-}"#;
-
-    let user = format!(
-        "Genre (ebook): {}\nGenre (print): {}\nReader demographic: {}\nBookstore shelving: {}\nGenre signals: {}",
-        genre_data.industry_ebook,
-        genre_data.industry_print,
-        genre_data.reader_demographic,
-        genre_data.bookstore_shelving,
-        genre_data.genre_signals
-    );
-
-    let raw = call_llm(provider, api_key, model, system, &user, 1200).await?;
+    let raw = prompts::execute_prompt(db, "discovery_keywords", provider, api_key, model, vars).await?;
     let clean = extract_json_object(&raw)
         .ok_or_else(|| format!("No JSON in discovery response: {}", &raw[..raw.len().min(200)]))?;
     let v: serde_json::Value = serde_json::from_str(&clean)

@@ -4,12 +4,13 @@
 // submitted as metadata for KDP Print and any wide/Ingram distribution.
 // Convention is max 3 codes per book, primary first.
 
+use std::collections::HashMap;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 
 use super::{emit, err, GenreResult, FolderRequest};
-use crate::commands::call_llm;
 use crate::db;
+use crate::prompts;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,7 +37,7 @@ pub async fn classify_bisac_for_story(app: AppHandle, request: FolderRequest) ->
 
     let description = format!("{}\n\n{}", genre_data.industry_ebook, genre_data.genre_signals);
 
-    match ai_pick_bisac(&request.provider, &request.api_key, &request.model, &description, &master_list).await {
+    match ai_pick_bisac(&database, &request.provider, &request.api_key, &request.model, &description, &master_list).await {
         Err(e) => err(&e),
         Ok(picks) => {
             if picks.is_empty() { return err("AI did not select any BISAC codes."); }
@@ -83,27 +84,25 @@ pub async fn classify_bisac_for_story(app: AppHandle, request: FolderRequest) ->
 
 // ── Core logic ───────────────────────────────────────────────────────────────
 
-pub(crate) async fn ai_pick_bisac(provider: &str, api_key: &str, model: &str, description: &str, master_list: &[db::BisacCodeRow])
-    -> Result<Vec<(String, String, u8, String)>, String>
+pub(crate) async fn ai_pick_bisac(
+    database: &db::Db,
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    description: &str,
+    master_list: &[db::BisacCodeRow],
+) -> Result<Vec<(String, String, u8, String)>, String>
 {
-    let listing = master_list.iter()
+    let bisac_list = master_list.iter()
         .map(|c| format!("{} — {}", c.code, c.heading))
         .collect::<Vec<_>>()
         .join("\n");
 
-    let system = format!(
-        r#"You are a BISAC subject-code classification expert. Choose the BEST 1 to 3 BISAC codes for this book from ONLY the list below — never invent a code that isn't listed. List the single best (primary) code first.
+    let mut vars = HashMap::new();
+    vars.insert("bisac_list", bisac_list.as_str());
+    vars.insert("description", description);
 
-Return ONLY a JSON array, no markdown, no preamble.
-Each item: {{ "code": "<exact code from list>", "confidence": <0-100>, "reason": "<one sentence>" }}
-Order primary-first (highest confidence first).
-
-BISAC codes:
-{}"#,
-        listing
-    );
-
-    let raw = call_llm(provider, api_key, model, &system, description, 500).await?;
+    let raw = prompts::execute_prompt(database, "bisac_pick", provider, api_key, model, vars).await?;
     let clean = raw.trim()
         .trim_start_matches("```json").trim_start_matches("```")
         .trim_end_matches("```").trim();

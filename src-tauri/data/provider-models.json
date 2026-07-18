@@ -1,0 +1,7 @@
+[
+  {"id": "claude-opus-4-20250514", "provider": "claude", "owned_by": "anthropic", "input_price": 15.0, "output_price": 75.0, "sort_order": 1},
+  {"id": "claude-sonnet-4-20250514", "provider": "claude", "owned_by": "anthropic", "input_price": 3.0, "output_price": 15.0, "sort_order": 2},
+  {"id": "claude-haiku-4-5-20251001", "provider": "claude", "owned_by": "anthropic", "input_price": 1.0, "output_price": 5.0, "sort_order": 3},
+  {"id": "claude-3-5-sonnet-20241022", "provider": "claude", "owned_by": "anthropic", "input_price": 3.0, "output_price": 15.0, "sort_order": 4},
+  {"id": "claude-3-5-haiku-20241022", "provider": "claude", "owned_by": "anthropic", "input_price": 0.8, "output_price": 4.0, "sort_order": 5}
+]

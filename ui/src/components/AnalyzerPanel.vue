@@ -155,22 +155,20 @@ async function fetchCostEstimates(): Promise<void> {
   }
 }
 
-/** Map report_id to the modelFor() function key */
+/** Map report_id to the modelFor() function key (from report_types.model_slot). */
 function reportToModelFn(reportId: string): 'default' | 'summaries' | 'genre' | 'keywords' | 'continuity' | 'showDontTell' | 'aiIsms' | 'prose' {
-  switch (reportId) {
-    case 'chapter_summaries': return 'summaries';
-    case 'genre_analysis':
-    case 'genre_ranking': return 'genre';
-    case 'kdp_keywords':
-    case 'kdp_categories':
-    case 'bisac_classification':
-    case 'mi_search_terms':
-    case 'discovery_keywords':
-    case 'keyword_search': return 'keywords';
-    case 'continuity_check': return 'continuity';
-    case 'show_dont_tell': return 'showDontTell';
-    case 'ai_isms': return 'aiIsms';
-    default: return 'default';
+  const slot = reportTypes.value.find(r => r.id === reportId)?.model_slot;
+  switch (slot) {
+    case 'summaries':
+    case 'genre':
+    case 'keywords':
+    case 'continuity':
+    case 'showDontTell':
+    case 'aiIsms':
+    case 'prose':
+      return slot;
+    default:
+      return 'default';
   }
 }
 

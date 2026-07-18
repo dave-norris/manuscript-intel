@@ -3,9 +3,12 @@ import { inject, ref, computed } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { settingsKey, showPanelKey } from '../injectionKeys';
 import type { ModelInfo, WinningCatImportResult, StaleCleanupResult } from '../types';
+import { useReportTypes } from '../composables/useReportTypes';
 
 const settingsCtx = inject(settingsKey)!;
 const showPanel = inject(showPanelKey)!;
+const { reportTypes, loadReportTypes } = useReportTypes();
+loadReportTypes();
 
 const savedMsg = ref('');
 const modelFetchStatus = ref('');
@@ -43,20 +46,18 @@ function modelTier(m: ModelInfo): Tier {
 
 const TIER_RANK: Record<Tier, number> = { basic: 0, capable: 1, strong: 2 };
 
-// Minimum tier needed for each function
-const MIN_TIER: Record<string, Tier> = {
-  summaries: 'basic',
-  genre: 'capable',
-  keywords: 'basic',
-  continuity: 'capable',
-  showDontTell: 'capable',
-  aiIsms: 'capable',
-  prose: 'strong',
-};
+function minTierFor(fnKey: string): Tier {
+  if (fnKey === 'prose') return 'strong';
+  const tiers = reportTypes.value
+    .filter(r => r.model_slot === fnKey)
+    .map(r => (r.min_tier as Tier) || 'basic');
+  if (tiers.length === 0) return 'basic';
+  return tiers.reduce((best, t) => (TIER_RANK[t] > TIER_RANK[best] ? t : best), 'basic' as Tier);
+}
 
 function modelFitLabel(m: ModelInfo, fnKey: string): string {
   const tier = modelTier(m);
-  const min = MIN_TIER[fnKey] || 'basic';
+  const min = minTierFor(fnKey);
   if (TIER_RANK[tier] >= TIER_RANK[min]) return ' ✓';
   return ' ⚠';
 }
@@ -329,10 +330,10 @@ async function onRemoveStale(): Promise<void> {
       <label>Manuscript <span class="form-hint">— chapter files (analysis)</span></label>
       <input type="text" v-model="settingsCtx.folderStructure.value.manuscript" placeholder="Manuscript" />
       <p class="panel-desc manuscript-acts-hint">
-        Always created as
-        <strong>{{ settingsCtx.folderStructure.value.manuscript || 'Manuscript' }}/Act-1</strong>,
-        <strong>Act-2</strong>,
-        <strong>Act-3</strong>
+        Always created under Manuscript:
+        <template v-for="(act, i) in (settingsCtx.folderStructure.value.acts || [])" :key="act">
+          <strong>{{ settingsCtx.folderStructure.value.manuscript || 'Manuscript' }}/{{ act }}</strong><span v-if="i < (settingsCtx.folderStructure.value.acts.length - 1)">, </span>
+        </template>
         — not optional.
       </p>
 

@@ -21,9 +21,6 @@ use tauri::Manager;
 
 use crate::db::Db;
 
-/// Fixed act subfolders always created under the manuscript folder.
-pub const MANUSCRIPT_ACTS: &[&str] = &["Act-1", "Act-2", "Act-3"];
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FolderStructure {
     /// Chapter `.md` files (analysis reads only here)
@@ -34,9 +31,16 @@ pub struct FolderStructure {
     pub characters: String,
     /// Location docs (merged into bible discovery)
     pub locations: String,
+    /// Act subfolders always created under manuscript (e.g. Act-1, Act-2, Act-3)
+    #[serde(default = "default_acts")]
+    pub acts: Vec<String>,
     /// Additional relative paths created on "Create empty story" (app ignores them)
     #[serde(default)]
     pub extra: Vec<String>,
+}
+
+fn default_acts() -> Vec<String> {
+    vec!["Act-1".into(), "Act-2".into(), "Act-3".into()]
 }
 
 impl Default for FolderStructure {
@@ -46,6 +50,7 @@ impl Default for FolderStructure {
             bible: "Bible".into(),
             characters: "Characters".into(),
             locations: "Locations".into(),
+            acts: default_acts(),
             // Optional only — Acts are part of manuscript, not extras
             extra: vec!["Publishing/Cover".into(), "Research".into()],
         }
@@ -69,12 +74,13 @@ impl FolderStructure {
         if self.locations.trim().is_empty() { "Locations" } else { self.locations.as_str() }
     }
 
-    /// Manuscript/Act-1, Manuscript/Act-2, Manuscript/Act-3
+    /// Manuscript/Act-1, Manuscript/Act-2, …
     pub fn manuscript_act_dirs(&self) -> Vec<String> {
         let root = self.manuscript();
-        MANUSCRIPT_ACTS
+        self.acts
             .iter()
-            .map(|act| format!("{}/{}", root, act))
+            .filter(|a| !a.trim().is_empty())
+            .map(|act| format!("{}/{}", root, act.trim()))
             .collect()
     }
 
@@ -118,13 +124,20 @@ impl FolderStructure {
         }
     }
 
-    fn is_manuscript_act_path(path: &str, manuscript: &str) -> bool {
+    fn is_manuscript_act_path(&self, path: &str) -> bool {
         let path = path.replace('\\', "/");
+        let manuscript = self.manuscript();
         let prefix = format!("{}/", manuscript.trim_matches('/'));
+        let act_names: Vec<String> = self
+            .acts
+            .iter()
+            .map(|a| a.trim().to_ascii_lowercase())
+            .filter(|a| !a.is_empty())
+            .collect();
         if let Some(rest) = path.strip_prefix(&prefix) {
-            return MANUSCRIPT_ACTS.iter().any(|a| rest.eq_ignore_ascii_case(a));
+            return act_names.iter().any(|a| rest.eq_ignore_ascii_case(a));
         }
-        MANUSCRIPT_ACTS.iter().any(|a| path.eq_ignore_ascii_case(a))
+        act_names.iter().any(|a| path.eq_ignore_ascii_case(a))
     }
 
     pub fn normalized(mut self) -> Self {
@@ -133,8 +146,23 @@ impl FolderStructure {
         self.bible = Self::sanitize_path(&self.bible, &defaults.bible);
         self.characters = Self::sanitize_path(&self.characters, &defaults.characters);
         self.locations = Self::sanitize_path(&self.locations, &defaults.locations);
-        let manuscript = self.manuscript.clone();
+        self.acts = self
+            .acts
+            .into_iter()
+            .filter_map(|a| {
+                let t = a.trim().trim_matches('/').trim_matches('\\');
+                if t.is_empty() || t.contains("..") || t.contains('/') || t.contains('\\') {
+                    None
+                } else {
+                    Some(t.to_string())
+                }
+            })
+            .collect();
+        if self.acts.is_empty() {
+            self.acts = defaults.acts;
+        }
         // Acts belong to Manuscript — never store them as optional extras
+        let act_check = self.clone();
         self.extra = self
             .extra
             .into_iter()
@@ -144,7 +172,7 @@ impl FolderStructure {
                     None
                 } else {
                     let path = trimmed.replace('\\', "/");
-                    if Self::is_manuscript_act_path(&path, &manuscript) {
+                    if act_check.is_manuscript_act_path(&path) {
                         None
                     } else {
                         Some(path)
@@ -204,6 +232,7 @@ fn from_legacy_list(folders: Vec<LegacyListEntry>) -> FolderStructure {
         bible: "Bible".into(),
         characters: "Characters".into(),
         locations: "Locations".into(),
+        acts: Vec::new(),
         extra: Vec::new(),
     };
     for e in folders {
@@ -216,6 +245,7 @@ fn from_legacy_list(folders: Vec<LegacyListEntry>) -> FolderStructure {
             "bible" => s.bible = path.into(),
             "characters" => s.characters = path.into(),
             "locations" => s.locations = path.into(),
+            "act" => s.acts.push(path.replace('\\', "/")),
             "publishing" | "research" | _ => s.extra.push(path.replace('\\', "/")),
         }
     }
@@ -239,6 +269,7 @@ fn read_from_db(conn: &Connection) -> Result<FolderStructure, String> {
         bible: "Bible".into(),
         characters: "Characters".into(),
         locations: "Locations".into(),
+        acts: Vec::new(),
         extra: Vec::new(),
     };
     let mut any = false;
@@ -254,6 +285,7 @@ fn read_from_db(conn: &Connection) -> Result<FolderStructure, String> {
             "bible" => s.bible = path.into(),
             "characters" => s.characters = path.into(),
             "locations" => s.locations = path.into(),
+            "act" => s.acts.push(path.replace('\\', "/")),
             _ => s.extra.push(path.replace('\\', "/")),
         }
     }
@@ -273,6 +305,12 @@ fn write_to_db(conn: &Connection, structure: &FolderStructure) -> Result<(), Str
         (structure.characters().to_string(), "characters".into()),
         (structure.locations().to_string(), "locations".into()),
     ];
+    for act in &structure.acts {
+        let t = act.trim();
+        if !t.is_empty() {
+            rows.push((t.to_string(), "act".into()));
+        }
+    }
     for p in &structure.extra {
         let t = p.trim();
         if !t.is_empty() {
@@ -320,6 +358,7 @@ fn migrate_legacy_json(app: &AppHandle) -> Option<FolderStructure> {
             bible: flat.bible.unwrap_or_else(|| "Bible".into()),
             characters: flat.characters.unwrap_or_else(|| "Characters".into()),
             locations: "Locations".into(),
+            acts: default_acts(),
             extra,
         }
         .normalized()

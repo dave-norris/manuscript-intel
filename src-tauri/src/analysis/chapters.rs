@@ -3,13 +3,14 @@
 // Collects .md files from a manuscript folder, sends each to an LLM for
 // genre-signal extraction, and persists the results to SQLite.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
 use tauri::{AppHandle, Manager};
 
 use super::{emit, err, GenreResult, FolderRequest};
-use crate::commands::call_llm;
 use crate::db;
+use crate::prompts;
 
 // ── Tauri command ────────────────────────────────────────────────────────────
 
@@ -73,7 +74,7 @@ pub(crate) async fn phase1_summaries(
         let word_count = content.split_whitespace().count();
         emit(app, &format!("    {} words", word_count));
 
-        match summarize_chapter(provider, api_key, model, &fname, &truncate_words(&content, 8000)).await {
+        match summarize_chapter(database, provider, api_key, model, story_folder, &fname, &truncate_words(&content, 8000)).await {
             Ok(signals) => {
                 let title = extract_title(&content).unwrap_or_else(|| fname.clone());
                 let conn = database.0.lock().unwrap();
@@ -94,35 +95,23 @@ pub(crate) async fn phase1_summaries(
 // ── AI call ──────────────────────────────────────────────────────────────────
 
 pub(crate) async fn summarize_chapter(
+    db: &db::Db,
     provider: &str,
     api_key: &str,
     model: &str,
+    story_folder: &str,
     filename: &str,
     content: &str,
 ) -> Result<String, String> {
-    let system = r#"You are a literary analyst specializing in book genre classification for publishing.
+    let bible = prompts::discover_bible(story_folder);
+    let title = extract_title(content).unwrap_or_else(|| filename.to_string());
 
-Extract ONLY the genre signals from this chapter — not a plot summary.
+    let mut vars = HashMap::new();
+    vars.insert("chapter_title", title.as_str());
+    vars.insert("chapter_text", content);
+    vars.insert("bible", bible.as_str());
 
-Cover:
-- Setting: time period, location, world type (historical, contemporary, fantasy, etc.)
-- Tone: dark/cozy/literary/commercial/inspirational/gritty/romantic
-- Themes: faith, redemption, justice, love, survival, identity, etc.
-- Conflict type: internal/external, romantic, mystery, adventure, spiritual
-- Romantic elements: present/absent, heat level (clean/sweet/sensual/explicit)
-- Faith/spiritual elements: Christian, general spiritual, secular
-- Supernatural: none/mild/heavy
-- Pacing: fast/slow, action/character/dialogue driven
-- Narrative voice: POV, distance, register
-- Recognizable tropes or genre conventions
-
-Write 2-3 dense paragraphs. Be specific."#;
-
-    call_llm(
-        provider, api_key, model, system,
-        &format!("Chapter: {}\n\n---\n\n{}", filename, content),
-        600,
-    ).await
+    prompts::execute_prompt(db, "chapter_summary", provider, api_key, model, vars).await
 }
 
 // ── File helpers (manuscript source files only — these stay on disk) ──────────

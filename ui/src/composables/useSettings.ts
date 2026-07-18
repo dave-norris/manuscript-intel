@@ -25,6 +25,8 @@ export interface FolderStructure {
   characters: string;
   /** Location docs */
   locations: string;
+  /** Act subfolders under manuscript (e.g. Act-1, Act-2, Act-3) */
+  acts: string[];
   /** Extra scaffold-only folders (app does not use these) */
   extra: string[];
 }
@@ -34,28 +36,39 @@ const DEFAULT_FOLDER_STRUCTURE: FolderStructure = {
   bible: 'Bible',
   characters: 'Characters',
   locations: 'Locations',
+  acts: ['Act-1', 'Act-2', 'Act-3'],
   extra: ['Publishing/Cover', 'Research'],
 };
 
-/** Fixed act folders always created under Manuscript (not optional extras). */
-export const MANUSCRIPT_ACTS = ['Act-1', 'Act-2', 'Act-3'] as const;
-
-export function manuscriptActPaths(manuscript = 'Manuscript'): string[] {
-  const root = manuscript.trim() || 'Manuscript';
-  return MANUSCRIPT_ACTS.map(act => `${root}/${act}`);
+export function manuscriptActPaths(structure?: FolderStructure): string[] {
+  const s = structure || DEFAULT_FOLDER_STRUCTURE;
+  const root = (s.manuscript || 'Manuscript').trim() || 'Manuscript';
+  const acts = (Array.isArray(s.acts) && s.acts.length > 0)
+    ? s.acts
+    : DEFAULT_FOLDER_STRUCTURE.acts;
+  return acts
+    .map(a => a.trim())
+    .filter(Boolean)
+    .map(act => `${root}/${act}`);
 }
 
 function cloneStructure(s: FolderStructure): FolderStructure {
   const manuscript = s.manuscript || DEFAULT_FOLDER_STRUCTURE.manuscript;
+  const acts = (Array.isArray(s.acts) && s.acts.length > 0)
+    ? [...s.acts]
+    : [...DEFAULT_FOLDER_STRUCTURE.acts];
   const rawExtra = Array.isArray(s.extra) ? [...s.extra] : [...DEFAULT_FOLDER_STRUCTURE.extra];
   // Strip Act paths if they were previously stored as extras
-  const actSet = new Set(manuscriptActPaths(manuscript).map(p => p.toLowerCase()));
+  const actSet = new Set(
+    manuscriptActPaths({ ...DEFAULT_FOLDER_STRUCTURE, manuscript, acts }).map(p => p.toLowerCase())
+  );
   const extra = rawExtra.filter(p => !actSet.has(p.replace(/\\/g, '/').toLowerCase()));
   return {
     manuscript,
     bible: s.bible || DEFAULT_FOLDER_STRUCTURE.bible,
     characters: s.characters || DEFAULT_FOLDER_STRUCTURE.characters,
     locations: s.locations || DEFAULT_FOLDER_STRUCTURE.locations,
+    acts,
     extra,
   };
 }

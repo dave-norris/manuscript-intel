@@ -3,12 +3,13 @@
 // Matches a story's ranked genres against the imported KDP category catalog,
 // gates on honest fit, then verifies live discoverability via Canopy API.
 
+use std::collections::HashMap;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 
 use super::{emit, err, GenreResult};
-use crate::commands::call_llm;
 use crate::db;
+use crate::prompts;
 use crate::canopy;
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -332,7 +333,7 @@ pub(crate) async fn match_categories_by_store(
         emit(app, &format!("      {} candidates found.", candidates.len()));
 
         let desc = format!("{}\n\nScore specifically against this one genre: {}", base_description, genre_name);
-        let picks = match ai_match_from_catalog(provider, api_key, model, &desc, &candidates, 2).await {
+        let picks = match ai_match_from_catalog(database, provider, api_key, model, &desc, &candidates, 2).await {
             Ok(p) => p,
             Err(e) => { emit(app, &format!("      ⚠ AI error for this genre: {}", e)); Vec::new() }
         };
@@ -412,28 +413,28 @@ pub(crate) fn render_store_match_section(store: &str, per_genre: &[(String, u8, 
     json.to_string()
 }
 
-pub(crate) async fn ai_match_from_catalog(provider: &str, api_key: &str, model: &str, description: &str, candidates: &[(String, String)], max_picks: usize)
-    -> Result<Vec<(String, u8, String)>, String>
+pub(crate) async fn ai_match_from_catalog(
+    database: &db::Db,
+    provider: &str,
+    api_key: &str,
+    model: &str,
+    description: &str,
+    candidates: &[(String, String)],
+    max_picks: usize,
+) -> Result<Vec<(String, u8, String)>, String>
 {
-    let numbered = candidates.iter().enumerate()
+    let category_list = candidates.iter().enumerate()
         .map(|(i, (path, _))| format!("{}. {}", i + 1, path))
         .collect::<Vec<_>>()
         .join("\n");
+    let max_picks_str = max_picks.to_string();
 
-    let system = format!(
-        r#"You are an Amazon KDP category expert. Below is a REAL list of existing Amazon category paths for this book's store, pulled directly from Amazon's own category tree — not a guess. Pick the 1 to {} best-fitting categories for this book from ONLY this list.
+    let mut vars = HashMap::new();
+    vars.insert("max_picks", max_picks_str.as_str());
+    vars.insert("category_list", category_list.as_str());
+    vars.insert("description", description);
 
-Return ONLY a JSON array, no markdown, no preamble.
-Each item: {{ "index": <1-based row number from the list>, "confidence": <0-100>, "reason": "<one sentence>" }}
-Only include categories that are genuinely strong fits — an empty array is a valid answer if nothing fits well.
-Sort descending by confidence.
-
-Categories:
-{}"#,
-        max_picks, numbered
-    );
-
-    let raw = call_llm(provider, api_key, model, &system, description, 500).await?;
+    let raw = prompts::execute_prompt(database, "kdp_category_match", provider, api_key, model, vars).await?;
     let clean = raw.trim()
         .trim_start_matches("```json").trim_start_matches("```")
         .trim_end_matches("```").trim();

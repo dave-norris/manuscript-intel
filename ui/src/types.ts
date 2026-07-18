@@ -152,6 +152,8 @@ export interface ReportTypeDef {
   description: string;
   platforms: string[];
   depends_on: string[];
+  model_slot: string;
+  min_tier: string;
 }
 
 export interface SeriesBook {

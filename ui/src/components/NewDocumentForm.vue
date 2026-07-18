@@ -25,8 +25,7 @@ interface DocTypeOption {
 
 const docTypes = computed<DocTypeOption[]>(() => {
   const s = settingsCtx.folderStructure.value;
-  const ms = s.manuscript || 'Manuscript';
-  const types: DocTypeOption[] = manuscriptActPaths(ms).map((path, i) => ({
+  const types: DocTypeOption[] = manuscriptActPaths(s).map((path, i) => ({
     id: `act-${i + 1}`,
     label: `Chapter (${path.split('/').pop()})`,
     path,

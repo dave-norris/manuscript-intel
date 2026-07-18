@@ -320,6 +320,15 @@ CREATE TABLE IF NOT EXISTS preprocessed_chapters (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_preproc_unique ON preprocessed_chapters(story_folder, chapter_file, report_type);
+
+-- Configurable story folder layout (scaffolded on Create empty story).
+-- role: '' | 'manuscript' | 'bible' | 'characters'
+CREATE TABLE IF NOT EXISTS folder_structure (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    path       TEXT NOT NULL,
+    role       TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0
+);
 "#;
 
 pub struct Db(pub Mutex<Connection>);

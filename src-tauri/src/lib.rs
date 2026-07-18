@@ -7,6 +7,7 @@ mod commands;
 mod competition_analyzer;
 mod dataforseo;
 mod db;
+mod folder_structure;
 mod genre_taxonomy;
 mod models;
 mod prompts;
@@ -29,6 +30,7 @@ pub fn run() {
             let handle = app.handle().clone();
             let database = db::init(&handle).expect("failed to initialize database");
             app.manage(database);
+            let _ = folder_structure::load(&handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -96,6 +98,8 @@ pub fn run() {
             stories::init_story,
             stories::update_story,
             stories::delete_story,
+            folder_structure::get_folder_structure,
+            folder_structure::save_folder_structure,
             series::list_series,
             series::create_series,
             series::update_series,

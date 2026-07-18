@@ -400,7 +400,7 @@ fn find_file_recursive(dir: &std::path::Path, target_name: &str) -> Option<std::
     for entry in entries.flatten() {
         let path = entry.path();
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if name.starts_with('.') || name == "_analysis" { continue; }
+        if name.starts_with('.') || crate::folder_structure::is_hidden_story_dir(&name) { continue; }
         if path.is_dir() {
             if let Some(found) = find_file_recursive(&path, target_name) {
                 return Some(found);
@@ -481,9 +481,10 @@ pub struct FileTreeEntry {
 }
 
 /// Returns the manuscript folder tree: directories and .md files, sorted naturally.
-/// Skips hidden files/folders and _analysis directories.
+/// Skips hidden files/folders and the configured analysis directory.
 #[tauri::command]
-pub async fn list_manuscript_files(folder: String) -> Result<Vec<FileTreeEntry>, String> {
+pub async fn list_manuscript_files(app: tauri::AppHandle, folder: String) -> Result<Vec<FileTreeEntry>, String> {
+    let _ = crate::folder_structure::load(&app);
     let root = std::path::PathBuf::from(&folder);
     if !root.exists() {
         return Err(format!("Folder does not exist: {}", folder));
@@ -493,6 +494,7 @@ pub async fn list_manuscript_files(folder: String) -> Result<Vec<FileTreeEntry>,
 
 fn build_file_tree(dir: &std::path::Path) -> Vec<FileTreeEntry> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let keep_empty = crate::folder_structure::current().keep_empty_names();
 
     let mut dirs: Vec<FileTreeEntry> = Vec::new();
     let mut files: Vec<FileTreeEntry> = Vec::new();
@@ -501,17 +503,14 @@ fn build_file_tree(dir: &std::path::Path) -> Vec<FileTreeEntry> {
         let path = entry.path();
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
 
-        // Skip hidden and _analysis
-        if name.starts_with('.') || name == "_analysis" { continue; }
+        // Skip hidden and analysis output folder
+        if name.starts_with('.') || crate::folder_structure::is_hidden_story_dir(&name) { continue; }
 
         if path.is_dir() {
             let children = build_file_tree(&path);
-            let keep_empty = matches!(
-                name.to_ascii_lowercase().as_str(),
-                "bible" | "characters" | "manuscript" | "publishing" | "cover" | "research"
-            );
+            let keep = keep_empty.iter().any(|n| n == &name.to_ascii_lowercase());
             // Include dirs that have content, or known story scaffold folders
-            if !children.is_empty() || keep_empty {
+            if !children.is_empty() || keep {
                 dirs.push(FileTreeEntry {
                     name,
                     path: path.to_string_lossy().to_string(),

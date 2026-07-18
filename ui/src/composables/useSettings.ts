@@ -15,6 +15,33 @@ export interface ModelAssignments {
   prose:         string;  // Creative suggestions / rewrites
 }
 
+export interface FolderStructure {
+  /** Chapter files — analysis reads only here */
+  manuscript: string;
+  /** Story bible docs */
+  bible: string;
+  /** Character docs */
+  characters: string;
+  /** Extra scaffold-only folders (app does not use these) */
+  extra: string[];
+}
+
+const DEFAULT_FOLDER_STRUCTURE: FolderStructure = {
+  manuscript: 'Manuscript',
+  bible: 'Bible',
+  characters: 'Characters',
+  extra: ['Publishing/Cover', 'Research'],
+};
+
+function cloneStructure(s: FolderStructure): FolderStructure {
+  return {
+    manuscript: s.manuscript || DEFAULT_FOLDER_STRUCTURE.manuscript,
+    bible: s.bible || DEFAULT_FOLDER_STRUCTURE.bible,
+    characters: s.characters || DEFAULT_FOLDER_STRUCTURE.characters,
+    extra: Array.isArray(s.extra) ? [...s.extra] : [...DEFAULT_FOLDER_STRUCTURE.extra],
+  };
+}
+
 function loadAssignments(): ModelAssignments {
   const stored = localStorage.getItem('modelAssignments');
   const defaults: ModelAssignments = {
@@ -40,6 +67,7 @@ const canopyApiKey = ref(localStorage.getItem('canopyApiKey') || '');
 const dataforseoLogin = ref(localStorage.getItem('dataforseoLogin') || '');
 const dataforseoPassword = ref(localStorage.getItem('dataforseoPassword') || '');
 const models = ref<ModelInfo[]>(loadModelsFromStorage());
+const folderStructure = ref<FolderStructure>(cloneStructure(DEFAULT_FOLDER_STRUCTURE));
 
 function loadModelsFromStorage(): ModelInfo[] {
   const stored = localStorage.getItem('cachedModels');
@@ -82,7 +110,24 @@ async function fetchModels(): Promise<{ success: boolean; error: string }> {
   }
 }
 
-function saveSettings(): void {
+async function loadFolderStructure(): Promise<void> {
+  try {
+    const result = await invoke<FolderStructure>('get_folder_structure');
+    folderStructure.value = cloneStructure(result);
+  } catch {
+    folderStructure.value = cloneStructure(DEFAULT_FOLDER_STRUCTURE);
+  }
+}
+
+function addFolderEntry(): void {
+  folderStructure.value.extra.push('');
+}
+
+function removeFolderEntry(index: number): void {
+  folderStructure.value.extra.splice(index, 1);
+}
+
+async function saveSettings(): Promise<void> {
   localStorage.setItem('provider', provider.value);
   localStorage.setItem('apiKey', apiKey.value.trim());
   localStorage.setItem('modelAssignments', JSON.stringify(modelAssignments.value));
@@ -92,6 +137,11 @@ function saveSettings(): void {
   localStorage.setItem('canopyApiKey', canopyApiKey.value.trim());
   localStorage.setItem('dataforseoLogin', dataforseoLogin.value.trim());
   localStorage.setItem('dataforseoPassword', dataforseoPassword.value.trim());
+
+  const saved = await invoke<FolderStructure>('save_folder_structure', {
+    structure: folderStructure.value,
+  });
+  folderStructure.value = cloneStructure(saved);
 }
 
 async function testCanopy(): Promise<{ success: boolean; error: string }> {
@@ -133,7 +183,11 @@ export function useSettings() {
     dataforseoLogin,
     dataforseoPassword,
     models,
+    folderStructure,
     fetchModels,
+    loadFolderStructure,
+    addFolderEntry,
+    removeFolderEntry,
     saveSettings,
     testCanopy,
     testDataforseo,

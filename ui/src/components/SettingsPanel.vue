@@ -88,10 +88,13 @@ async function onFetchModels(): Promise<void> {
 }
 
 function onSave(): void {
-  settingsCtx.saveSettings();
-  savedMsg.value = '✓ Saved';
-  setTimeout(() => { savedMsg.value = ''; }, 1500);
-  showPanel('analyzer');
+  settingsCtx.saveSettings().then(() => {
+    savedMsg.value = '✓ Saved';
+    setTimeout(() => { savedMsg.value = ''; }, 1500);
+    showPanel('analyzer');
+  }).catch((e) => {
+    savedMsg.value = 'Save failed: ' + String(e);
+  });
 }
 
 async function onTestCanopy(): Promise<void> {
@@ -274,6 +277,55 @@ async function onRemoveStale(): Promise<void> {
 
       <!-- Save -->
       <button class="btn" @click="onSave">Save Settings</button>
+      <div class="settings-saved">{{ savedMsg }}</div>
+    </div>
+
+    <!-- Folder structure -->
+    <div class="settings-section-divider"></div>
+    <h3 class="section-title">Folder Structure</h3>
+    <div class="settings-form">
+      <p class="panel-desc">
+        Used when you choose <strong>Create empty story</strong>. The app uses these three folders by purpose
+        — you can rename the paths, but not remove them.
+      </p>
+
+      <label>Manuscript <span class="form-hint">— chapter files (analysis)</span></label>
+      <input type="text" v-model="settingsCtx.folderStructure.value.manuscript" placeholder="Manuscript" />
+
+      <label>Bible <span class="form-hint">— story bible docs</span></label>
+      <input type="text" v-model="settingsCtx.folderStructure.value.bible" placeholder="Bible" />
+
+      <label>Characters <span class="form-hint">— character docs</span></label>
+      <input type="text" v-model="settingsCtx.folderStructure.value.characters" placeholder="Characters" />
+
+      <label class="extra-folders-label">Additional folders</label>
+      <p class="panel-desc extra-folders-desc">
+        Created with new stories for your own use. The app does not read these specially — add or delete freely.
+      </p>
+      <div
+        v-for="(_path, index) in settingsCtx.folderStructure.value.extra"
+        :key="index"
+        class="folder-entry-row"
+      >
+        <input
+          type="text"
+          v-model="settingsCtx.folderStructure.value.extra[index]"
+          placeholder="Extra/Folder"
+          class="folder-path-input"
+        />
+        <button
+          type="button"
+          class="btn btn-sm btn-danger"
+          title="Remove folder"
+          @click="settingsCtx.removeFolderEntry(index)"
+        >Delete</button>
+      </div>
+      <div class="folder-entry-actions">
+        <button type="button" class="btn btn-sm btn-secondary" @click="settingsCtx.addFolderEntry()">
+          Add Folder
+        </button>
+        <button class="btn" @click="onSave">Save Settings</button>
+      </div>
       <div class="settings-saved">{{ savedMsg }}</div>
     </div>
 
@@ -554,6 +606,52 @@ async function onRemoveStale(): Promise<void> {
   color: #fff;
 }
 .btn-danger:hover { background: #a93226; }
+
+.btn-secondary {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.btn-secondary:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.folder-entry-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.folder-path-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.extra-folders-label {
+  margin-top: 12px;
+}
+
+.extra-folders-desc {
+  margin: -4px 0 8px;
+  font-size: 12px;
+}
+
+.folder-entry-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.form-hint {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-muted);
+}
 
 .stale-row {
   display: flex;

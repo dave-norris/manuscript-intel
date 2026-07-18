@@ -671,10 +671,7 @@ async fn run_competition_canopy(app: &AppHandle, database: &db::Db, req: &Compet
 
     emit_canopy(app, &format!("Total: {} unique competitor books", all_books.len()));
 
-    // Save raw data
-    let folder = std::path::PathBuf::from(&req.folder);
-    let analysis_dir = folder.join("_analysis");
-    let _ = std::fs::create_dir_all(&analysis_dir);
+    // Persist raw competition data in the app DB (never write into the story folder)
     let data = CompetitionData {
         generated: chrono::Utc::now().to_rfc3339(),
         keywords_analyzed: keywords.clone(),
@@ -682,8 +679,11 @@ async fn run_competition_canopy(app: &AppHandle, database: &db::Db, req: &Compet
         categories: Vec::new(), // No category CSV from Canopy — we already have WinningCat
     };
     if let Ok(json) = serde_json::to_string_pretty(&data) {
-        let _ = std::fs::write(analysis_dir.join("competition-data.json"), &json);
-        emit_canopy(app, "  ✓ competition-data.json saved.");
+        let conn = database.0.lock().unwrap();
+        match db::save_document(&conn, &req.folder, "competition_data", &json) {
+            Ok(()) => emit_canopy(app, "  ✓ competition data saved."),
+            Err(e) => emit_canopy(app, &format!("  ⚠ could not save competition data: {}", e)),
+        }
     }
 
     // AI analysis

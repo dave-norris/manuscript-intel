@@ -83,15 +83,15 @@ pub struct StoriesResult {
 }
 
 #[derive(Deserialize)]
-pub struct AddStoryRequest {
-    pub name:   String,
-    pub folder: String,
-}
-
-#[derive(Deserialize)]
 pub struct InitStoryRequest {
     pub name:          String,
     pub parent_folder: String,
+}
+
+#[derive(Deserialize)]
+pub struct AddStoryRequest {
+    pub name:   String,
+    pub folder: String,
 }
 
 #[derive(Deserialize)]
@@ -102,15 +102,6 @@ pub struct UpdateStoryRequest {
     #[serde(default)]
     pub bible_path: String,
 }
-
-/// Subfolders created for a brand-new empty story.
-const STORY_SUBDIRS: &[&str] = &[
-    "Bible",
-    "Characters",
-    "Manuscript",
-    "Publishing/Cover",
-    "Research",
-];
 
 /// Turn a story name into a safe single path segment.
 fn sanitize_folder_name(name: &str) -> String {
@@ -133,7 +124,8 @@ fn sanitize_folder_name(name: &str) -> String {
 }
 
 fn ensure_story_scaffold(story_dir: &std::path::Path) -> Result<(), String> {
-    for sub in STORY_SUBDIRS {
+    let structure = crate::folder_structure::current();
+    for sub in structure.scaffold_dirs() {
         fs::create_dir_all(story_dir.join(sub))
             .map_err(|e| format!("Cannot create {}/: {}", sub, e))?;
     }
@@ -171,25 +163,25 @@ fn register_story(app: &AppHandle, name: String, folder: String) -> StoriesResul
     }
 }
 
-/// Add a story that already has a folder on disk.
+/// Register an existing story folder (does not create folders).
 #[tauri::command]
 pub async fn add_story(app: AppHandle, request: AddStoryRequest) -> StoriesResult {
     let folder = PathBuf::from(&request.folder);
-
-    if !folder.exists() {
+    if !folder.is_dir() {
         return StoriesResult {
             success: false, stories: Vec::new(),
             error: format!("Folder does not exist: {}", request.folder),
         };
     }
-
     register_story(&app, request.name.trim().to_string(), request.folder.clone())
 }
 
-/// Create a new empty story folder named after the story, with Bible / Characters /
-/// Manuscript / Publishing/Cover / Research subfolders, then register it.
+/// Create a new empty story folder named after the story, with the configured
+/// subfolders from Settings → Folder Structure, then register it.
 #[tauri::command]
 pub async fn init_story(app: AppHandle, request: InitStoryRequest) -> StoriesResult {
+    // Ensure cache matches disk before scaffolding
+    let _ = crate::folder_structure::load(&app);
     let name = request.name.trim().to_string();
     if name.is_empty() {
         return StoriesResult {

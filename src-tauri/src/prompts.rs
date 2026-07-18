@@ -43,38 +43,29 @@ pub fn load_template(conn: &Connection, template_id: &str) -> Result<PromptTempl
 
 // ── Bible loading ─────────────────────────────────────────────────────────────
 
-/// Auto-discover bible content from a story folder using conventions:
-///   1. Bible/ or bible/ subfolder — all .md files concatenated
-///   2. Characters/ or characters/ subfolder — all .md files concatenated
+/// Auto-discover bible content from a story folder using Settings → Folder Structure:
+///   1. Configured bible subfolder — all .md files concatenated
+///   2. Configured characters subfolder — all .md files concatenated
 ///   3. bible.md or story-bible.md in the folder root
 /// Returns the combined text, or empty string if nothing found.
 pub fn discover_bible(story_folder: &str) -> String {
     let root = Path::new(story_folder);
     if !root.exists() { return String::new(); }
 
+    let structure = crate::folder_structure::current();
     let mut parts: Vec<String> = Vec::new();
 
-    // Check for Bible/ or bible/ subfolder
-    for name in &["Bible", "bible"] {
-        let dir = root.join(name);
-        if dir.is_dir() {
-            let content = read_md_folder(&dir);
-            if !content.is_empty() {
-                parts.push(format!("## Story Bible\n\n{}", content));
-            }
-            break;
+    if let Some(dir) = crate::folder_structure::resolve_subdir(root, structure.bible()) {
+        let content = read_md_folder(&dir);
+        if !content.is_empty() {
+            parts.push(format!("## Story Bible\n\n{}", content));
         }
     }
 
-    // Check for Characters/ or characters/ subfolder
-    for name in &["Characters", "characters"] {
-        let dir = root.join(name);
-        if dir.is_dir() {
-            let content = read_md_folder(&dir);
-            if !content.is_empty() {
-                parts.push(format!("## Characters\n\n{}", content));
-            }
-            break;
+    if let Some(dir) = crate::folder_structure::resolve_subdir(root, structure.characters()) {
+        let content = read_md_folder(&dir);
+        if !content.is_empty() {
+            parts.push(format!("## Characters\n\n{}", content));
         }
     }
 

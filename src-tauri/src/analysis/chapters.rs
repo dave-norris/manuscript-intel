@@ -127,11 +127,12 @@ Write 2-3 dense paragraphs. Be specific."#;
 
 // ── File helpers (manuscript source files only — these stay on disk) ──────────
 
-/// Collect chapter `.md` files from `Manuscript/` (or `manuscript/`) only.
-/// Other story folders (Bible, Characters, Publishing, etc.) are ignored.
+/// Collect chapter `.md` files from the configured manuscript folder only.
+/// Other story folders (bible, characters, publishing, etc.) are ignored.
 pub(crate) fn collect_chapters(folder: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    let Some(manuscript_dir) = resolve_manuscript_dir(folder) else {
+    let structure = crate::folder_structure::current();
+    let Some(manuscript_dir) = crate::folder_structure::resolve_subdir(folder, structure.manuscript()) else {
         return files;
     };
     collect_md_recursive(&manuscript_dir, &mut files);
@@ -140,16 +141,6 @@ pub(crate) fn collect_chapters(folder: &Path) -> Vec<PathBuf> {
             .cmp(&natural_sort_key(b.to_string_lossy().as_ref()))
     });
     files
-}
-
-fn resolve_manuscript_dir(story_folder: &Path) -> Option<PathBuf> {
-    for name in &["Manuscript", "manuscript"] {
-        let dir = story_folder.join(name);
-        if dir.is_dir() {
-            return Some(dir);
-        }
-    }
-    None
 }
 
 fn collect_md_recursive(dir: &Path, out: &mut Vec<PathBuf>) {

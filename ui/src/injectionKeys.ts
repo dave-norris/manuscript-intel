@@ -13,7 +13,7 @@ import type {
   ModelInfo,
 } from './types';
 import type { ContinuityScope } from './composables/useAnalysis';
-import type { ModelAssignments } from './composables/useSettings';
+import type { ModelAssignments, FolderStructure } from './composables/useSettings';
 
 // ── Stories ───────────────────────────────────────────────────────────────────
 
@@ -72,8 +72,12 @@ export interface SettingsContext {
   dataforseoLogin: Ref<string>;
   dataforseoPassword: Ref<string>;
   models: Ref<ModelInfo[]>;
+  folderStructure: Ref<FolderStructure>;
   fetchModels: () => Promise<{ success: boolean; error: string }>;
-  saveSettings: () => void;
+  loadFolderStructure: () => Promise<void>;
+  addFolderEntry: () => void;
+  removeFolderEntry: (index: number) => void;
+  saveSettings: () => Promise<void>;
   testCanopy: () => Promise<{ success: boolean; error: string }>;
   testDataforseo: () => Promise<{ success: boolean; error: string }>;
 }
